@@ -1,0 +1,5 @@
+bin/
+.licensei.cache
+config.json
+signing-key.json
+users.json

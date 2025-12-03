@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Register User - Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet" />
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Montserrat', sans-serif;
+            font-optical-sizing: auto;
+            font-weight: 400;
+            font-style: normal;
+            font-size: 14px;
+            color: #0f1425;
+            width: 100%;
+            height: 100%;
+            background: white;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        h1 {
+            margin: 0;
+            padding: 0;
+            font-size: 48px;
+            font-weight: 700;
+        }
+
+        /* Layout */
+        .layout {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: row;
+            min-width: 100%;
+            min-height: 100%;
+            position: relative;
+        }
+
+        /* Left */
+        .layout-left {
+            min-width: 300px;
+            max-width: 60%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            position: relative;
+            overflow: hidden;
+            background: #e7e8ef;
+        }
+
+        .logo-symbol {
+            min-width: 500%;
+            min-height: 500%;
+        }
+
+        /* Right */
+        .layout-right {
+            flex-grow: 1;
+            padding: 0 140px;
+            display: flex;
+            align-items: center;
+        }
+
+        /* Container */
+        .register-container {
+            width: 405px;
+            display: flex;
+            flex-direction: column;
+            gap: 28px;
+        }
+
+        /* Button */
+        button, a.button {
+            margin: 0;
+            padding: 0;
+            border: 0;
+            outline: 0;
+            line-height: 50px;
+            font-size: 16px;
+            font-weight: 600;
+            background: #ff6500;
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            text-align: center;
+            text-decoration: none;
+        }
+
+        button:focus,
+        button:hover,
+        a.button:focus,
+        a.button:hover {
+            background: #ffb280;
+        }
+
+        /* Input */
+        .label {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-weight: 700;
+        }
+
+        .input {
+            display: flex;
+            flex-direction: row;
+            gap: 12px;
+            align-items: center;
+            border-radius: 8px;
+            border: 1px solid #bfc2c8;
+            background: white;
+            padding: 13px 16px;
+        }
+
+        .input:hover {
+            border-color: #010a22;
+        }
+
+        .input:focus-within {
+            border-color: #24d5fc;
+        }
+
+        input[type="text"],
+        input[type="email"],
+        input[type="password"] {
+            margin: 0;
+            padding: 0;
+            height: 20px;
+            line-height: 20px;
+            outline: none;
+            flex-grow: 1;
+            border: none;
+            font-size: 16px;
+            font-weight: 500;
+        }
+
+        input::placeholder {
+            color: rgba(1, 10, 34, 0.25);
+        }
+
+        /* Checkboxes */
+        .checkbox-group {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+        }
+
+        input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        /* Error */
+        .error {
+            color: #ec0b43;
+            font-size: 12px;
+            font-weight: 700;
+            display: block;
+        }
+
+        /* Navigation */
+        .nav {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            font-size: 12px;
+        }
+
+        .nav a {
+            color: #010a22;
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        @media (max-width: 600px) {
+            .layout {
+                flex-direction: column;
+            }
+
+            .layout-left {
+                min-width: 300px;
+                max-width: 100%;
+                height: 120px;
+            }
+
+            .layout-right {
+                padding: 0 32px;
+                justify-content: center;
+            }
+
+            .register-container {
+                min-width: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="layout">
+    <div class="layout-left">
+        <svg class="logo-symbol" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 5200 5200" preserveAspectRatio="xMidYMid meet">
+            <path fill="#F3F4F7" d="M2454.77 43.353c142.88-82.481 322.53-43.494 419.42 84.902.3.398.59.804.89 1.203 1.25 1.667 2.49 3.342 3.71 5.038a321.532 321.532 0 0 1 18.27 28.447L4202.64 2424.1c89.26 154.59 36.29 352.27-118.31 441.52s-352.29 36.29-441.55-118.3l-645.39-1117.77v.15l-171.03-296.2c-66.93-115.92-215.17-155.64-331.1-88.71-115.93 66.92-155.65 215.15-88.72 331.07l490.2 848.99c88.53 154.43 35.49 351.46-118.78 440.53-154.57 89.23-352.22 36.28-441.46-118.28l-163.37-282.93h-.06c-67.1-115.55-215.11-155.06-330.9-88.21-38.07 21.98-67.93 52.72-88.49 88.21h-.02l-163.51 283.18c-89.25 154.58-286.91 207.54-441.5 118.3-154.583-89.24-207.544-286.9-118.29-441.47L2330.41 172.555c27.45-52.204 69.51-97.53 124.36-129.202Z" />
+            <path fill="#FF6500" d="M2442 2560h80.009v80H2442z" />
+            <path fill="#fff" d="M2479.3 2575.99a5.387 5.387 0 0 1 7 1.42c.01 0 .01.01.02.02.02.03.04.05.06.08.11.16.21.31.3.48l21.81 37.77c1.49 2.58.61 5.88-1.98 7.37a5.394 5.394 0 0 1-7.37-1.97l-10.78-18.68v.01l-2.86-4.95c-1.11-1.94-3.59-2.6-5.53-1.48a4.05 4.05 0 0 0-1.48 5.53l8.19 14.18c1.48 2.58.59 5.87-1.99 7.36-2.58 1.49-5.88.6-7.37-1.98l-2.73-4.72a4.06 4.06 0 0 0-5.53-1.48c-.63.37-1.13.88-1.47 1.48l-2.73 4.73c-1.49 2.58-4.8 3.46-7.38 1.97a5.394 5.394 0 0 1-1.97-7.37l21.71-37.61a5.39 5.39 0 0 1 2.08-2.16Z" />
+            <path fill="#0F1425" d="m2760.03 2589.2-8.79 30.8h-7.4l-2.97-10.36-3.08-14.06h-1.01l-3.08 14.06-2.97 10.36h-7.39l-8.79-30.8h6.27l2.74 9.68 3.59 14.4 3.58-14.4 2.75-9.68h7.62l2.69 9.68 3.64 14.28 3.58-14.28 2.69-9.68h6.33ZM2698.89 2588.52c8.85 0 15.96 6.78 15.96 16.07 0 9.24-7 16.02-15.96 16.02-8.91 0-15.97-6.83-15.97-16.02 0-9.29 7.17-16.07 15.97-16.07Zm0 6.05c-5.32 0-9.58 4.09-9.58 10.02 0 5.94 4.2 10.03 9.58 10.03s9.58-4.09 9.58-10.03c0-5.93-4.26-10.02-9.58-10.02ZM2673.12 2620v-43.12h6.38V2620h-6.38Z" />
+            <path fill="#0F1425" d="M2665.51 2576.2c.83 0 1.69.07 2.55.18v5.56c-.63-.09-1.24-.14-1.82-.14-4.43 0-6.39 2.52-6.39 7.23v.17h15.35v5.93h-15.35V2620h-6.33v-24.87h-5.71v-5.93h5.71v-.45c0-8.4 5.38-12.55 11.99-12.55ZM2630.68 2588.52c8.85 0 15.96 6.78 15.96 16.07 0 9.24-7 16.02-15.96 16.02-8.91 0-15.97-6.83-15.97-16.02 0-9.29 7.17-16.07 15.97-16.07Zm0 6.05c-5.33 0-9.58 4.09-9.58 10.02 0 5.94 4.2 10.03 9.58 10.03 5.37 0 9.57-4.09 9.57-10.03 0-5.93-4.25-10.02-9.57-10.02Z" />
+            <path fill="#0F1425" d="m2615.05 2589.2-10.42 15.06 10.98 15.74h-7.56l-7.45-11.04-7.17 11.04h-7.62l11.03-15.85-10.42-14.95h7.57l6.83 10.24 6.61-10.24h7.62ZM2547.1 2619.99l15.18-39.2h8.07l15.18 39.2h-6.73l-3.97-10.53h-17.03l-3.98 10.53h-6.72Zm13-16.52h12.43l-6.22-16.46-6.21 16.46Z" />
+        </svg>
+    </div>
+
+    <div class="layout-right">
+        <form class="register-container" action="/admin/register" method="post">
+            <div class="nav">
+                <a href="/admin">← Back to Admin Panel</a>
+            </div>
+
+            <h1>Register User</h1>
+
+            <div class="nav">
+                Admin: {{ .Username }}
+            </div>
+
+            <label class="label">
+                Username
+                <div class="input">
+                    <input type="text" name="username" placeholder="Enter username" required />
+                </div>
+            </label>
+
+            <label class="label">
+                Email
+                <div class="input">
+                    <input type="email" name="email" placeholder="Enter email" required />
+                </div>
+            </label>
+
+            <label class="label">
+                Password
+                <div class="input">
+                    <input type="password" name="password" placeholder="Enter password" required />
+                </div>
+            </label>
+
+            <label class="label">
+                Groups
+                <div class="checkbox-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" name="groups" value="user" checked />
+                        user
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" name="groups" value="admins" />
+                        admin
+                    </label>
+                </div>
+            </label>
+
+            <button type="submit">Register User</button>
+
+            {{ if .Message }}
+            <div class="error">{{ .Message }}</div>
+            {{ end }}
+        </form>
+    </div>
+</div>
+</body>
+</html>

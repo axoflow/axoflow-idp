@@ -1,0 +1,39 @@
+<html>
+    <head>
+        <title>Register - Go OIDC IdP Example</title>
+    </head>
+    <body>
+        <h1><a href="/">Go OIDC IdP Example</a></h1>
+        <hr />
+        {{ if .Message }}
+        <div>{{ .Message }}</div>
+        {{ end }}
+        <div>
+            <form action="/register" method="post">
+                <div>
+                    <label for="username">Username</label>
+                    <input type="text" id="username" name="username" />
+                </div>
+                <div>
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" />
+                </div>
+                <div>
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" />
+                </div>
+                <div>
+                    <label for="password_confirm">Password (confirm)</label>
+                    <input
+                        type="password"
+                        id="password_confirm"
+                        name="password_confirm"
+                    />
+                </div>
+                <div>
+                    <button type="submit">Register</button>
+                </div>
+            </form>
+        </div>
+    </body>
+</html>

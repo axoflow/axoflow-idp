@@ -1,0 +1,147 @@
+name: Image build
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish artifacts to ghcr.io
+        default: false
+        required: false
+        type: boolean
+      release:
+        description: Whether this is a release build
+        default: false
+        required: false
+        type: boolean
+    outputs:
+      container-image-name:
+        description: Container image name
+        value: ${{ jobs.container-image.outputs.name }}
+      container-image-digest:
+        description: Container image digest
+        value: ${{ jobs.container-image.outputs.digest }}
+      container-image-tag:
+        description: Container image tag
+        value: ${{ jobs.container-image.outputs.tag }}
+
+permissions:
+  contents: read
+
+jobs:
+  container-image:
+    name: Container image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    outputs:
+      name: ${{ steps.image-name.outputs.value }}
+      digest: ${{ steps.build.outputs.digest }}
+      tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up Cosign
+        uses: sigstore/cosign-installer@v3
+        if: inputs.publish
+
+      - name: Set image name
+        id: image-name
+        run: echo "value=ghcr.io/axoflow/axoflow-idp" >> "$GITHUB_OUTPUT"
+
+      - name: Gather build metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image-name.outputs.value }}
+          flavor: |
+            latest = false
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr,prefix=pr-
+            type=semver,pattern={{raw}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.description=Simple OpenID Connect Identity Provider for Axoflow
+            org.opencontainers.image.title=Axoflow OIDC Identity Provider
+            org.opencontainers.image.authors=Axoflow
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+        if: inputs.publish
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: |
+            type=image,push=${{ inputs.publish }},name=target,annotation-index.org.opencontainers.image.description=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.description'] }}
+            type=oci,dest=image.tar,name=target,annotation-index.org.opencontainers.image.description=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.description'] }}
+
+      - name: Sign image with GitHub OIDC Token
+        if: ${{ inputs.publish && github.repository_owner == 'axoflow' }} # Check if the workflow is called by the same GitHub organization
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          readarray -t tag_array <<< "$TAGS"
+          for tag in "${tag_array[@]}"; do
+            full_image="${tag}@${DIGEST}"
+            cosign sign --yes --rekor-url "https://rekor.sigstore.dev/" "${full_image}"
+          done
+
+      - name: Verify signed image with cosign
+        if: ${{ inputs.publish && github.repository_owner == 'axoflow' }} # Check if the workflow is called by the same GitHub organization
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          for tag in $TAGS; do
+            cosign verify "${tag}@${DIGEST}" \
+              --rekor-url "https://rekor.sigstore.dev/" \
+              --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/image-build.yaml@${{ github.ref }}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" | jq
+          done
+
+      - name: Extract OCI tarball
+        run: |
+          mkdir -p image
+          tar -xf image.tar -C image
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2,mirror.gcr.io/aquasec/trivy-db:2
+          TRIVY_JAVA_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-java-db:1,ghcr.io/aquasecurity/trivy-java-db:1,mirror.gcr.io/aquasec/trivy-java-db:1
+        with:
+          input: image
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy scan results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "[${{ github.job }}] Trivy scan results"
+          path: trivy-results.sarif
+          retention-days: 5

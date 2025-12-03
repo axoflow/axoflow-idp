@@ -1,0 +1,53 @@
+version: "2"
+run:
+  timeout: 10m
+  allow-parallel-runners: true
+
+formatters:
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/axoflow/axoflow-idp)
+    goimports:
+      local-prefixes:
+        - github.com/axoflow/axoflow-idp
+    gofmt:
+      simplify: true
+    gofumpt:
+      extra-rules: false
+
+linters:
+  settings:
+    misspell:
+      locale: US
+    gocyclo:
+      min-complexity: 15
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: false
+          arguments:
+            - allow-regex: "^_"
+  enable:
+    # Axoflow standards
+    - copyloopvar
+    - durationcheck
+    - grouper
+    - interfacebloat
+    - nilerr
+    - nolintlint
+    - unparam
+    - revive
+    # enhanced checks
+    - bodyclose
+    - misspell
+    - unconvert
+    - whitespace
+    # the following are enabled by default, but we list them explicitly so that they remain even if the defaults change
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused

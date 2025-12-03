@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "release-[0-9]+.[0-9]+*"
+  pull_request:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: '.go-version'
+          cache-dependency-path: go/go.sum
+
+      - name: Install just
+        run: apt install just
+
+      - name: Test
+        run: just test
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: '.go-version'
+          cache-dependency-path: go/go.sum
+
+      - name: Install just
+        run: apt install just
+
+      - name: Lint
+        run: just lint-go
+
+  license-check:
+    name: License check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: '.go-version'
+          cache-dependency-path: go/go.sum
+
+      - name: Install just
+        run: apt install just
+
+      - name: Cache licenses
+        uses: actions/cache@v4
+        with:
+          key: licensei-cache-${{ hashFiles('go.sum') }}
+          path: ".licensei.cache"
+          restore-keys: licensei-cache
+
+      - name: Download license information for dependencies
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: just license-cache
+
+      - name: Check licenses
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: just license-check
+
+  image-build:
+    name: Image build
+    uses: ./.github/workflows/image-build.yaml
+    with:
+      publish: ${{ github.event_name == 'push' }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
