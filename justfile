@@ -36,7 +36,7 @@ license-cache: (_install-licensei LICENSEI_VERSION GOVERSION)
 
 [private]
 _install-golangci-lint version goversion: _bin
-    #!/usr/bin/env sh
+    #!/usr/bin/env bash
     set -euo pipefail
     binary="{{GOLANGCI_LINT}}_${version}_${goversion}"
     if [ ! -f "$binary" ]; then
@@ -47,7 +47,7 @@ _install-golangci-lint version goversion: _bin
 
 [private]
 _install-editorconfig-checker version goversion: _bin
-    #!/usr/bin/env sh
+    #!/usr/bin/env bash
     set -euo pipefail
     binary="{{EDITORCONFIG_CHECKER}}_${version}_${goversion}"
     if [ ! -f "$binary" ]; then
@@ -58,7 +58,7 @@ _install-editorconfig-checker version goversion: _bin
 
 [private]
 _install-licensei version goversion: _bin
-    #!/usr/bin/env sh
+    #!/usr/bin/env bash
     set -euo pipefail
     binary="{{LICENSEI}}_${version}_${goversion}"
     if [ ! -f "$binary" ]; then
