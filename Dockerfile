@@ -29,5 +29,6 @@ CMD ["/go/bin/dlv", "--listen=:40000", "--headless=true", "--api-version=2", "--
 FROM gcr.io/distroless/static:latest@sha256:87bce11be0af225e4ca761c40babb06d6d559f5767fbf7dc3c47f0f1a466b92c
 
 COPY --from=builder /usr/local/bin/axoidp /axoidp
+COPY --from=builder /usr/local/src/axoidp/templates /templates
 
 ENTRYPOINT ["/axoidp"]
