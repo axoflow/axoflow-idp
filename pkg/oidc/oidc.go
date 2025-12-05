@@ -155,16 +155,25 @@ type IDTokenPayload struct {
 	Email      string   `json:"email"`
 }
 
+type authMethod string
+
+const (
+	AuthMethodClientSecretPost authMethod = "client_secret_post"
+)
+
 type OpenIDProviderMetadata struct {
-	Issuer                           string   `json:"issuer"`
-	AuthorizationEndpoint            string   `json:"authorization_endpoint"`
-	JWKsUri                          string   `json:"jwks_uri"`
-	ResponseTypesSupported           []string `json:"response_types_supported"`
-	SubjectTypesSupported            []string `json:"subject_types_supported"`
-	IdTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
-	TokenURL                         string   `json:"token_endpoint"`
-	EndSessionEndpoint               string   `json:"end_session_endpoint,omitempty"`
-	RevocationEndpoint               string   `json:"revocation_endpoint,omitempty"`
+	Issuer                            string   `json:"issuer"`
+	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
+	JWKsUri                           string   `json:"jwks_uri"`
+	ResponseTypesSupported            []string `json:"response_types_supported"`
+	SubjectTypesSupported             []string `json:"subject_types_supported"`
+	IdTokenSigningAlgValuesSupported  []string `json:"id_token_signing_alg_values_supported"`
+	TokenURL                          string   `json:"token_endpoint"`
+	EndSessionEndpoint                string   `json:"end_session_endpoint,omitempty"`
+	ScopesSupported                   []string `json:"scopes_supported,omitempty"`
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	UserinfoEndpoint                  string   `json:"userinfo_endpoint,omitempty"`
+	RevocationEndpoint                string   `json:"revocation_endpoint,omitempty"`
 }
 
 func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
@@ -177,11 +186,19 @@ func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
 			"id_token",
 			"code",
 		},
+		ScopesSupported: []string{
+			"openid",
+			"profile",
+			"email",
+		},
 		SubjectTypesSupported: []string{
 			"public",
 		},
 		IdTokenSigningAlgValuesSupported: []string{
 			string(jose.RS256),
+		},
+		TokenEndpointAuthMethodsSupported: []string{
+			string(AuthMethodClientSecretPost),
 		},
 		EndSessionEndpoint: o.baseUrl + "/logout",
 		RevocationEndpoint: o.baseUrl + "/revoke",

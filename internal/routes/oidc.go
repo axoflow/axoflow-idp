@@ -53,9 +53,9 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	var user *user.UserInfo
 	var authReq oidc.AuthenticationRequest
 	switch req.Method {
-	case "GET":
+	case http.MethodGet:
 		authReq = authRequest(req.URL.Query())
-	case "POST":
+	case http.MethodPost:
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
@@ -130,7 +130,7 @@ func (r *Routes) OidcJwks(res http.ResponseWriter, _ *http.Request) {
 func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	var tokenRequest oidc.TokenRequest
 	switch req.Method {
-	case "POST":
+	case http.MethodPost:
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
@@ -144,15 +144,14 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			Code:         req.Form.Get("code"),
 		}
 	default:
-		res.Header().Add("allow", "POST")
+		res.Header().Add("allow", http.MethodPost)
 		http.Error(res, "unsupported method (must be POST)", http.StatusMethodNotAllowed)
 		return
 	}
 
 	fmt.Printf("%#v\n", tokenRequest)
 
-	err := r.oidc.ValidateTokenRequest(tokenRequest)
-	if err != nil {
+	if err := r.oidc.ValidateTokenRequest(tokenRequest); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -190,7 +189,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
-	if req.Method != "POST" {
+	if req.Method != http.MethodPost {
 		res.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -214,8 +213,6 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 	}
 
 	r.tokenStore.Revoke(revocationRequest.Token)
-
-	r.tokenStore.ClearRevokedTokens()
 
 	res.WriteHeader(http.StatusOK)
 }
