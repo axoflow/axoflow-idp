@@ -188,3 +188,34 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		slog.Error("failed to write token response", "error", err)
 	}
 }
+
+func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
+	if req.Method != "POST" {
+		res.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := req.ParseForm(); err != nil {
+		http.Error(res, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	revocationRequest := oidc.RevocationRequest{
+		Token:        req.Form.Get("token"),
+		ClientID:     req.Form.Get("client_id"),
+		ClientSecret: req.Form.Get("client_secret"),
+	}
+
+	if err := r.oidc.ValidateRevocationRequest(revocationRequest); err != nil {
+		slog.Error("failed to validate revocation request", "error", err)
+		// Per RFC 7009, we should return 200 OK even if the token is invalid
+		res.WriteHeader(http.StatusOK)
+		return
+	}
+
+	r.tokenStore.Revoke(revocationRequest.Token)
+
+	r.tokenStore.ClearRevokedTokens()
+
+	res.WriteHeader(http.StatusOK)
+}

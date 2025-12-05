@@ -164,6 +164,7 @@ type OpenIDProviderMetadata struct {
 	IdTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
 	TokenURL                         string   `json:"token_endpoint"`
 	EndSessionEndpoint               string   `json:"end_session_endpoint,omitempty"`
+	RevocationEndpoint               string   `json:"revocation_endpoint,omitempty"`
 }
 
 func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
@@ -183,6 +184,7 @@ func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
 			string(jose.RS256),
 		},
 		EndSessionEndpoint: o.baseUrl + "/logout",
+		RevocationEndpoint: o.baseUrl + "/revoke",
 	}
 }
 
@@ -260,6 +262,12 @@ type TokenRequest struct {
 	Code         string
 }
 
+type RevocationRequest struct {
+	Token        string
+	ClientID     string
+	ClientSecret string
+}
+
 func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 	if req.GrantType != "authorization_code" {
 		return errors.New("unsupported grant type")
@@ -274,7 +282,26 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return errors.New("bad client secret")
 	}
 
-	// TODO check redirect url?
+	if client.RedirectUri != req.RedirectUri {
+		return errors.New("invalid_redirect_uri")
+	}
+
+	return nil
+}
+
+func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
+	if req.Token == "" {
+		return errors.New("token is required")
+	}
+
+	client, ok := o.getClient(req.ClientID)
+	if !ok {
+		return errors.New("invalid client")
+	}
+
+	if client.ClientSecret != req.ClientSecret {
+		return errors.New("invalid client credentials")
+	}
 
 	return nil
 }
