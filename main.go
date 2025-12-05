@@ -162,6 +162,7 @@ func main() {
 	http.HandleFunc("/logout", r.Logout)
 	http.HandleFunc("/oidc/auth", r.OidcAuth)
 	http.HandleFunc("/oidc/jwks", r.OidcJwks)
+	http.HandleFunc("/oidc/userinfo", r.OidcUserinfo)
 	http.HandleFunc("/token", r.OidcToken)
 	http.HandleFunc("/revoke", r.OidcRevoke)
 

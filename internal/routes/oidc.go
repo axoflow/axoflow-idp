@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
@@ -215,4 +216,42 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 	r.tokenStore.Revoke(revocationRequest.Token)
 
 	res.WriteHeader(http.StatusOK)
+}
+
+func (r *Routes) OidcUserinfo(res http.ResponseWriter, req *http.Request) {
+	authHeader := req.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(res, "missing authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		http.Error(res, "invalid authorization header format", http.StatusUnauthorized)
+		return
+	}
+
+	token := parts[1]
+
+	if r.tokenStore.IsRevoked(token) {
+		http.Error(res, "token has been revoked", http.StatusUnauthorized)
+		return
+	}
+
+	userinfo, err := r.oidc.GetUserinfoFromToken(token)
+	if err != nil {
+		http.Error(res, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	userinfoJSON, err := json.Marshal(userinfo)
+	if err != nil {
+		http.Error(res, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	res.Header().Set("Content-Type", "application/json")
+	if _, err := res.Write(userinfoJSON); err != nil {
+		slog.Error("failed to write userinfo response", "error", err)
+	}
 }

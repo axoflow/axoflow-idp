@@ -181,6 +181,7 @@ func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
 		Issuer:                o.baseUrl,
 		AuthorizationEndpoint: o.baseUrl + "/oidc/auth",
 		JWKsUri:               o.baseUrl + "/oidc/jwks",
+		UserinfoEndpoint:      o.baseUrl + "/oidc/userinfo",
 		TokenURL:              o.baseUrl + "/token",
 		ResponseTypesSupported: []string{
 			"id_token",
@@ -285,6 +286,13 @@ type RevocationRequest struct {
 	ClientSecret string
 }
 
+type UserinfoResponse struct {
+	Subject string   `json:"sub"`
+	Name    string   `json:"name,omitempty"`
+	Email   string   `json:"email,omitempty"`
+	Groups  []string `json:"groups,omitempty"`
+}
+
 func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 	if req.GrantType != "authorization_code" {
 		return errors.New("unsupported grant type")
@@ -321,4 +329,32 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 	}
 
 	return nil
+}
+
+func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
+	token, err := jose.ParseSigned(tokenString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse token: %w", err)
+	}
+
+	payload, err := token.Verify(o.keychain.GetAll()[0].Public().Key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify token: %w", err)
+	}
+
+	var claims IDTokenPayload
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal claims: %w", err)
+	}
+
+	if time.Now().Unix() > claims.Expiration {
+		return nil, errors.New("token expired")
+	}
+
+	return &UserinfoResponse{
+		Subject: claims.Subject,
+		Name:    claims.Name,
+		Email:   claims.Email,
+		Groups:  claims.Groups,
+	}, nil
 }
