@@ -23,7 +23,7 @@ jobs:
           cache-dependency-path: go/go.sum
 
       - name: Install just
-        run: apt install just
+        uses: extractions/setup-just@v3
 
       - name: Test
         run: just test
@@ -43,7 +43,7 @@ jobs:
           cache-dependency-path: go/go.sum
 
       - name: Install just
-        run: apt install just
+        uses: extractions/setup-just@v3
 
       - name: Lint
         run: just lint-go
@@ -63,7 +63,7 @@ jobs:
           cache-dependency-path: go/go.sum
 
       - name: Install just
-        run: apt install just
+        uses: extractions/setup-just@v3
 
       - name: Cache licenses
         uses: actions/cache@v4

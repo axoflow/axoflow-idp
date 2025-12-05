@@ -65,7 +65,10 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		if err := r.template.ExecuteTemplate(res, "admin_register.html", struct{ Username string }{Username: admin.Username}); err != nil {
+		if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
+			Username string
+			Message  string
+		}{Username: admin.Username}); err != nil {
 			slog.Error("failed to render admin register template", "error", err)
 		}
 		return
