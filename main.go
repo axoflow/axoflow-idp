@@ -23,19 +23,22 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/internal/routes"
 	"github.com/axoflow/axoflow-idp/internal/session"
+	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 type config struct {
-	BaseUrl    string        `json:"baseUrl"`
-	Clients    []oidc.Client `json:"clients"`
-	Users      *user.Config  `json:"users,omitempty"`
+	BaseUrl    string             `json:"baseUrl"`
+	Clients    []oidc.Client      `json:"clients"`
+	Users      *user.Config       `json:"users,omitempty"`
+	Token      *tokenstore.Config `json:"token,omitempty"`
 	SigningKey struct {
 		FilePath          string `json:"filePath,omitempty"`
 		GenerateIfMissing bool   `json:"generateIfMissing,omitempty"`
@@ -59,6 +62,12 @@ func LoadConfig() (cfg config, err error) {
 
 	if cfg.Users == nil {
 		cfg.Users = &user.Config{}
+	}
+
+	if cfg.Token == nil {
+		cfg.Token = &tokenstore.Config{
+			TTL: 24 * time.Hour,
+		}
 	}
 
 	return
@@ -135,10 +144,11 @@ func main() {
 	}
 
 	r := routes.New(routes.Config{
-		Oidc:      o,
-		Session:   session.New(),
-		User:      u,
-		CodeStore: codestore.New(),
+		Oidc:       o,
+		Session:    session.New(),
+		User:       u,
+		CodeStore:  codestore.New(),
+		TokenStore: tokenstore.New(*cfg.Token),
 	})
 	http.HandleFunc("/", func(res http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/" {
@@ -152,7 +162,9 @@ func main() {
 	http.HandleFunc("/logout", r.Logout)
 	http.HandleFunc("/oidc/auth", r.OidcAuth)
 	http.HandleFunc("/oidc/jwks", r.OidcJwks)
+	http.HandleFunc("/oidc/userinfo", r.OidcUserinfo)
 	http.HandleFunc("/token", r.OidcToken)
+	http.HandleFunc("/revoke", r.OidcRevoke)
 
 	if u.SelfRegistration {
 		slog.Info("self-registration is enabled")

@@ -155,15 +155,25 @@ type IDTokenPayload struct {
 	Email      string   `json:"email"`
 }
 
+type authMethod string
+
+const (
+	AuthMethodClientSecretPost authMethod = "client_secret_post"
+)
+
 type OpenIDProviderMetadata struct {
-	Issuer                           string   `json:"issuer"`
-	AuthorizationEndpoint            string   `json:"authorization_endpoint"`
-	JWKsUri                          string   `json:"jwks_uri"`
-	ResponseTypesSupported           []string `json:"response_types_supported"`
-	SubjectTypesSupported            []string `json:"subject_types_supported"`
-	IdTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
-	TokenURL                         string   `json:"token_endpoint"`
-	EndSessionEndpoint               string   `json:"end_session_endpoint,omitempty"`
+	Issuer                            string   `json:"issuer"`
+	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
+	JWKsUri                           string   `json:"jwks_uri"`
+	ResponseTypesSupported            []string `json:"response_types_supported"`
+	SubjectTypesSupported             []string `json:"subject_types_supported"`
+	IdTokenSigningAlgValuesSupported  []string `json:"id_token_signing_alg_values_supported"`
+	TokenURL                          string   `json:"token_endpoint"`
+	EndSessionEndpoint                string   `json:"end_session_endpoint,omitempty"`
+	ScopesSupported                   []string `json:"scopes_supported,omitempty"`
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	UserinfoEndpoint                  string   `json:"userinfo_endpoint,omitempty"`
+	RevocationEndpoint                string   `json:"revocation_endpoint,omitempty"`
 }
 
 func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
@@ -171,10 +181,16 @@ func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
 		Issuer:                o.baseUrl,
 		AuthorizationEndpoint: o.baseUrl + "/oidc/auth",
 		JWKsUri:               o.baseUrl + "/oidc/jwks",
+		UserinfoEndpoint:      o.baseUrl + "/oidc/userinfo",
 		TokenURL:              o.baseUrl + "/token",
 		ResponseTypesSupported: []string{
 			"id_token",
 			"code",
+		},
+		ScopesSupported: []string{
+			"openid",
+			"profile",
+			"email",
 		},
 		SubjectTypesSupported: []string{
 			"public",
@@ -182,7 +198,11 @@ func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
 		IdTokenSigningAlgValuesSupported: []string{
 			string(jose.RS256),
 		},
+		TokenEndpointAuthMethodsSupported: []string{
+			string(AuthMethodClientSecretPost),
+		},
 		EndSessionEndpoint: o.baseUrl + "/logout",
+		RevocationEndpoint: o.baseUrl + "/revoke",
 	}
 }
 
@@ -260,6 +280,19 @@ type TokenRequest struct {
 	Code         string
 }
 
+type RevocationRequest struct {
+	Token        string
+	ClientID     string
+	ClientSecret string
+}
+
+type UserinfoResponse struct {
+	Subject string   `json:"sub"`
+	Name    string   `json:"name,omitempty"`
+	Email   string   `json:"email,omitempty"`
+	Groups  []string `json:"groups,omitempty"`
+}
+
 func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 	if req.GrantType != "authorization_code" {
 		return errors.New("unsupported grant type")
@@ -274,7 +307,54 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return errors.New("bad client secret")
 	}
 
-	// TODO check redirect url?
+	if client.RedirectUri != req.RedirectUri {
+		return errors.New("invalid_redirect_uri")
+	}
 
 	return nil
+}
+
+func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
+	if req.Token == "" {
+		return errors.New("token is required")
+	}
+
+	client, ok := o.getClient(req.ClientID)
+	if !ok {
+		return errors.New("invalid client")
+	}
+
+	if client.ClientSecret != req.ClientSecret {
+		return errors.New("invalid client credentials")
+	}
+
+	return nil
+}
+
+func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
+	token, err := jose.ParseSigned(tokenString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse token: %w", err)
+	}
+
+	payload, err := token.Verify(o.keychain.GetAll()[0].Public().Key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify token: %w", err)
+	}
+
+	var claims IDTokenPayload
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal claims: %w", err)
+	}
+
+	if time.Now().Unix() > claims.Expiration {
+		return nil, errors.New("token expired")
+	}
+
+	return &UserinfoResponse{
+		Subject: claims.Subject,
+		Name:    claims.Name,
+		Email:   claims.Email,
+		Groups:  claims.Groups,
+	}, nil
 }

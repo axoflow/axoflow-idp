@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
@@ -53,9 +54,9 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	var user *user.UserInfo
 	var authReq oidc.AuthenticationRequest
 	switch req.Method {
-	case "GET":
+	case http.MethodGet:
 		authReq = authRequest(req.URL.Query())
-	case "POST":
+	case http.MethodPost:
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
@@ -130,7 +131,7 @@ func (r *Routes) OidcJwks(res http.ResponseWriter, _ *http.Request) {
 func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	var tokenRequest oidc.TokenRequest
 	switch req.Method {
-	case "POST":
+	case http.MethodPost:
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
@@ -144,15 +145,14 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			Code:         req.Form.Get("code"),
 		}
 	default:
-		res.Header().Add("allow", "POST")
+		res.Header().Add("allow", http.MethodPost)
 		http.Error(res, "unsupported method (must be POST)", http.StatusMethodNotAllowed)
 		return
 	}
 
 	fmt.Printf("%#v\n", tokenRequest)
 
-	err := r.oidc.ValidateTokenRequest(tokenRequest)
-	if err != nil {
+	if err := r.oidc.ValidateTokenRequest(tokenRequest); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -186,5 +186,72 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	res.Header().Set("Content-Type", "application/json")
 	if _, err := res.Write(body_json); err != nil {
 		slog.Error("failed to write token response", "error", err)
+	}
+}
+
+func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		res.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := req.ParseForm(); err != nil {
+		http.Error(res, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	revocationRequest := oidc.RevocationRequest{
+		Token:        req.Form.Get("token"),
+		ClientID:     req.Form.Get("client_id"),
+		ClientSecret: req.Form.Get("client_secret"),
+	}
+
+	if err := r.oidc.ValidateRevocationRequest(revocationRequest); err != nil {
+		slog.Error("failed to validate revocation request", "error", err)
+		// Per RFC 7009, we should return 200 OK even if the token is invalid
+		res.WriteHeader(http.StatusOK)
+		return
+	}
+
+	r.tokenStore.Revoke(revocationRequest.Token)
+
+	res.WriteHeader(http.StatusOK)
+}
+
+func (r *Routes) OidcUserinfo(res http.ResponseWriter, req *http.Request) {
+	authHeader := req.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(res, "missing authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		http.Error(res, "invalid authorization header format", http.StatusUnauthorized)
+		return
+	}
+
+	token := parts[1]
+
+	if r.tokenStore.IsRevoked(token) {
+		http.Error(res, "token has been revoked", http.StatusUnauthorized)
+		return
+	}
+
+	userinfo, err := r.oidc.GetUserinfoFromToken(token)
+	if err != nil {
+		http.Error(res, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	userinfoJSON, err := json.Marshal(userinfo)
+	if err != nil {
+		http.Error(res, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	res.Header().Set("Content-Type", "application/json")
+	if _, err := res.Write(userinfoJSON); err != nil {
+		slog.Error("failed to write userinfo response", "error", err)
 	}
 }

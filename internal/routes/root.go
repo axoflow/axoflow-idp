@@ -44,13 +44,13 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 	}
 
 	switch req.Method {
-	case "GET":
+	case http.MethodGet:
 		if err := r.template.ExecuteTemplate(res, "login.html", nil); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return
 
-	case "POST":
+	case http.MethodPost:
 		if user := r.login(res, req); user != nil {
 			http.Redirect(res, req, "/", http.StatusFound)
 		}
@@ -93,7 +93,7 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 }
 
 func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
-	if req.Method != "POST" {
+	if req.Method != http.MethodPost {
 		res.WriteHeader(http.StatusMethodNotAllowed)
 		if err := r.template.ExecuteTemplate(res, "logout_failed.html", nil); err != nil {
 			slog.Error("failed to render logout_failed template", "error", err)
