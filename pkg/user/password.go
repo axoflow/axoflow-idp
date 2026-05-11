@@ -49,7 +49,14 @@ func verifyPassword(user UserInfo, password string) bool {
 	case strings.HasPrefix(user.Password, "$2"):
 		return bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) == nil
 	default:
-		return false
+		// Backward compat: Password was []byte, serialized by encoding/json as standard base64.
+		// Salt was user.ID.String() with the current argon2id parameters.
+		raw, err := base64.StdEncoding.DecodeString(user.Password)
+		if err != nil {
+			return false
+		}
+		expected := argon2.IDKey([]byte(password), []byte(user.ID.String()), argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+		return subtle.ConstantTimeCompare(raw, expected) == 1
 	}
 }
 
