@@ -70,7 +70,7 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 	case http.MethodPost:
 		if user := r.login(res, req); user != nil {
-			http.Redirect(res, req, "/", http.StatusFound)
+			http.Redirect(res, req, "/?flash=login", http.StatusFound)
 		}
 		return
 
