@@ -147,7 +147,7 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 		Name:   "session",
 	})
 
-	http.Redirect(res, req, "/", http.StatusFound)
+	http.Redirect(res, req, "/?flash=logout", http.StatusFound)
 }
 
 func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
