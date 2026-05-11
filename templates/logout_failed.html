@@ -1,14 +1,24 @@
-<html>
-    <head>
-        <title>Logout - Go OIDC IdP Example</title>
-    </head>
-    <body>
-        <h1><a href="/">Go OIDC IdP Example</a></h1>
-        <hr />
-        <div>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Logout Failed</title>
+    {{template "layout-head" .}}
+</head>
+<body>
+<div class="layout">
+    {{template "layout-logo" .}}
+
+    <div class="layout-right">
+        <div class="login-container">
+            <h1>Logout Failed</h1>
+            <div class="error">Something went wrong. Please try again.</div>
             <form action="/logout" method="post">
-                <input type="submit" value="Logout" />
+                <button type="submit">Logout</button>
             </form>
+            <div class="account"><a href="/">Back to Home</a></div>
         </div>
-    </body>
+    </div>
+</div>
+</body>
 </html>
