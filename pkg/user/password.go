@@ -14,15 +14,68 @@
 
 package user
 
-import "golang.org/x/crypto/argon2"
+import (
+	"crypto/subtle"
+	"encoding/base64"
+	"fmt"
+	"strings"
 
-const (
-	time    = 2
-	memory  = 15 * 1024
-	threads = 1
-	keyLen  = 32
+	"golang.org/x/crypto/argon2"
 )
 
-func hash(salt []byte, password string) []byte {
-	return argon2.IDKey([]byte(password), salt, time, memory, threads, keyLen)
+const (
+	argon2Time    = 2
+	argon2Memory  = 15 * 1024
+	argon2Threads = 1
+	argon2KeyLen  = 32
+)
+
+// hash returns an argon2id PHC string: $argon2id$v=<v>$m=<m>,t=<t>,p=<p>$<salt>$<hash>
+func hash(salt []byte, password string) string {
+	h := argon2.IDKey([]byte(password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, argon2Memory, argon2Time, argon2Threads,
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(h))
+}
+
+// verifyPassword verifies a plaintext password against a stored PHC hash string.
+func verifyPassword(user UserInfo, password string) bool {
+	if strings.HasPrefix(user.Password, "$argon2id$") {
+		return verifyArgon2id(user.Password, password)
+	}
+	return false
+}
+
+func verifyArgon2id(encoded, password string) bool {
+	// $argon2id$v=<v>$m=<m>,t=<t>,p=<p>$<salt>$<hash>
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[1] != "argon2id" {
+		return false
+	}
+
+	var v int
+	if _, err := fmt.Sscanf(parts[2], "v=%d", &v); err != nil {
+		return false
+	}
+
+	var m uint32
+	var t uint32
+	var p uint8
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
+		return false
+	}
+
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		return false
+	}
+
+	expected, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil {
+		return false
+	}
+
+	actual := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(expected)))
+	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
