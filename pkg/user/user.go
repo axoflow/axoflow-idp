@@ -116,6 +116,12 @@ func (u *User) Register(username string, password string, groups []string, email
 		return errors.New("username already exists")
 	}
 
+	if email != "" && slices.IndexFunc(u.users, func(u UserInfo) bool {
+		return u.Email == email
+	}) != -1 {
+		return errors.New("email already registered")
+	}
+
 	id := ulid.Make()
 	u.users = append(u.users, UserInfo{
 		ID:       id,
