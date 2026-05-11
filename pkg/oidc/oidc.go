@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -132,6 +133,25 @@ func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jo
 	slog.Info("saved signing key", "path", signingKeyPath)
 
 	return &key, nil
+}
+
+type ClientInfo struct {
+	Name string
+	URL  string
+}
+
+func (o *Oidc) FirstClient() *ClientInfo {
+	if len(o.clients) == 0 {
+		return nil
+	}
+	u, err := url.Parse(o.clients[0].RedirectUri)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	return &ClientInfo{
+		Name: o.clients[0].Name,
+		URL:  u.Scheme + "://" + u.Host,
+	}
 }
 
 type AuthenticationRequest struct {
