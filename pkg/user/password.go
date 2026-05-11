@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -39,12 +40,17 @@ func hash(salt []byte, password string) string {
 		base64.RawStdEncoding.EncodeToString(h))
 }
 
-// verifyPassword verifies a plaintext password against a stored PHC hash string.
+// verifyPassword verifies a plaintext password against a stored hash string.
+// Supports argon2id PHC strings ($argon2id$...) and bcrypt MCF strings ($2a$/$2b$/$2y$...).
 func verifyPassword(user UserInfo, password string) bool {
-	if strings.HasPrefix(user.Password, "$argon2id$") {
+	switch {
+	case strings.HasPrefix(user.Password, "$argon2id$"):
 		return verifyArgon2id(user.Password, password)
+	case strings.HasPrefix(user.Password, "$2"):
+		return bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) == nil
+	default:
+		return false
 	}
-	return false
 }
 
 func verifyArgon2id(encoded, password string) bool {
