@@ -23,12 +23,30 @@ import (
 
 func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 	info := struct {
-		Username string
-		Message  string
-	}{}
-	user, _ := r.getUserFromSession(req)
-	if user != nil {
-		info.Username = user.Username
+		Username         string
+		Message          string
+		Success          string
+		IsAdmin          bool
+		SiteName         string
+		SiteURL          string
+		SelfRegistration bool
+	}{
+		SelfRegistration: r.user.SelfRegistration,
+	}
+	u, _ := r.getUserFromSession(req)
+	if u != nil {
+		info.Username = u.Username
+		info.IsAdmin = r.user.IsAdmin(u)
+	}
+	if client := r.oidc.FirstClient(); client != nil {
+		info.SiteName = client.Name
+		info.SiteURL = client.URL
+	}
+	switch req.URL.Query().Get("flash") {
+	case "login":
+		info.Success = "Welcome back, " + info.Username + "!"
+	case "logout":
+		info.Success = "You have been logged out successfully."
 	}
 
 	if err := r.template.ExecuteTemplate(res, "index.html", info); err != nil {
@@ -45,7 +63,7 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		if err := r.template.ExecuteTemplate(res, "login.html", nil); err != nil {
+		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("")); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return
@@ -58,10 +76,23 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 	default:
 		res.WriteHeader(http.StatusMethodNotAllowed)
-		if err := r.template.ExecuteTemplate(res, "login.html", nil); err != nil {
+		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("")); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return
+	}
+}
+
+func (r *Routes) loginTemplateData(message string) struct {
+	Message          string
+	SelfRegistration bool
+} {
+	return struct {
+		Message          string
+		SelfRegistration bool
+	}{
+		Message:          message,
+		SelfRegistration: r.user.SelfRegistration,
 	}
 }
 
@@ -76,7 +107,7 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	user, ok := r.user.Authenticate(username, password)
 	if !ok {
 		res.WriteHeader(http.StatusUnauthorized)
-		if err := r.template.ExecuteTemplate(res, "login.html", struct{ Message string }{Message: "Invalid username or password"}); err != nil {
+		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return nil
@@ -147,6 +178,13 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		email := req.Form.Get("email")
 		password := req.Form.Get("password")
 		passwordConfirm := req.Form.Get("password_confirm")
+		if email == "" {
+			res.WriteHeader(http.StatusBadRequest)
+			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{"Email is required"}); err != nil {
+				slog.Error("failed to render register template", "error", err)
+			}
+			return
+		}
 		if password != passwordConfirm {
 			res.WriteHeader(http.StatusBadRequest)
 			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{Message: "Passwords do not match"}); err != nil {
