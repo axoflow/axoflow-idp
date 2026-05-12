@@ -134,6 +134,21 @@ func (u *User) Register(username string, password string, groups []string, email
 	return nil
 }
 
+func (u *User) KnownGroups() []string {
+	seen := map[string]struct{}{}
+	for _, user := range u.users {
+		for _, g := range user.Groups {
+			seen[g] = struct{}{}
+		}
+	}
+	groups := make([]string, 0, len(seen))
+	for g := range seen {
+		groups = append(groups, g)
+	}
+	slices.Sort(groups)
+	return groups
+}
+
 func (u *User) ChangePassword(userID ulid.ULID, oldPassword, newPassword string) error {
 	if !u.PasswordChangeable {
 		return errors.New("password changes are disabled")

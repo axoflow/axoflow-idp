@@ -195,7 +195,65 @@
         }
 
         .modal-actions button {
-            min-width: 100px;
+            min-width: 120px;
+        }
+
+        .tag-input-wrapper {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            padding: 6px 8px;
+            border: 1px solid #bfc2c8;
+            border-radius: 4px;
+            background: white;
+            min-height: 42px;
+            cursor: text;
+            box-sizing: border-box;
+        }
+
+        .tag-input-wrapper:focus-within {
+            border-color: #ff6500;
+        }
+
+        .tag-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            background: #e7e8ef;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .tag-chip-remove {
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0 0 0 2px;
+            cursor: pointer;
+            font-size: 15px;
+            line-height: 1;
+            color: #888;
+            font-family: inherit;
+        }
+
+        .tag-chip-remove:hover {
+            color: #ec0b43;
+            background: none;
+        }
+
+        .tag-input-text {
+            border: none;
+            outline: none;
+            padding: 3px 4px;
+            font-family: 'Montserrat', sans-serif;
+            font-size: 14px;
+            flex: 1;
+            min-width: 140px;
+            background: transparent;
         }
 
         @media (max-width: 600px) {
@@ -309,8 +367,14 @@
                 <input type="text" id="groups_username" readonly style="background-color: #f3f4f7;" />
             </div>
             <div class="form-group">
-                <label for="groups_input">Groups (comma-separated):</label>
-                <input type="text" id="groups_input" placeholder="e.g., users, admins, developers" />
+                <label>Groups:</label>
+                <div class="tag-input-wrapper" id="modal-groups-wrapper">
+                    <input type="text" class="tag-input-text" list="groups-datalist"
+                           placeholder="Type a group name and press Enter" autocomplete="off" />
+                </div>
+                <datalist id="groups-datalist">
+                    {{ range .KnownGroups }}<option value="{{ . }}">{{ end }}
+                </datalist>
             </div>
             <div class="modal-actions">
                 <button type="button" class="secondary" onclick="closeUpdateGroupsModal()">Cancel</button>
@@ -321,18 +385,56 @@
 </div>
 
 <script>
+    function tagInput(wrapperId) {
+        const wrapper = document.getElementById(wrapperId);
+        const textEl = wrapper.querySelector('.tag-input-text');
+
+        function allChips() { return [...wrapper.querySelectorAll('.tag-chip')]; }
+        function values() { return allChips().map(c => c.dataset.value); }
+
+        function addChip(val) {
+            val = val.trim().replace(/,+$/, '').trim();
+            if (!val || values().includes(val)) return;
+            const chip = document.createElement('span');
+            chip.className = 'tag-chip';
+            chip.dataset.value = val;
+            chip.appendChild(document.createTextNode(val));
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'tag-chip-remove';
+            btn.textContent = '×';
+            btn.addEventListener('click', () => chip.remove());
+            chip.appendChild(btn);
+            wrapper.insertBefore(chip, textEl);
+        }
+
+        function commit() { addChip(textEl.value); textEl.value = ''; }
+
+        function setGroups(groups) { allChips().forEach(c => c.remove()); groups.forEach(addChip); }
+
+        textEl.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(); }
+            else if (e.key === 'Tab' && this.value.trim()) { e.preventDefault(); commit(); }
+            else if (e.key === 'Backspace' && !this.value) {
+                const c = allChips(); if (c.length) c[c.length - 1].remove();
+            }
+        });
+        textEl.addEventListener('blur', commit);
+        wrapper.addEventListener('click', () => textEl.focus());
+
+        return { values, setGroups, commit };
+    }
+
+    const modalGroups = tagInput('modal-groups-wrapper');
+
     function openResetModalFromData(button) {
-        const userId = button.getAttribute('data-user-id');
-        const username = button.getAttribute('data-username');
-        openResetModal(userId, username);
+        openResetModal(button.getAttribute('data-user-id'), button.getAttribute('data-username'));
     }
 
     function openUpdateGroupsModalFromData(button) {
-        const userId = button.getAttribute('data-user-id');
-        const username = button.getAttribute('data-username');
         const groupsStr = button.getAttribute('data-groups');
         const groups = groupsStr ? groupsStr.split(',').map(g => g.trim()).filter(g => g) : [];
-        openUpdateGroupsModal(userId, username, groups);
+        openUpdateGroupsModal(button.getAttribute('data-user-id'), button.getAttribute('data-username'), groups);
     }
 
     function openResetModal(userId, username) {
@@ -350,9 +452,9 @@
     function openUpdateGroupsModal(userId, username, groups) {
         document.getElementById('groups_user_id').value = userId;
         document.getElementById('groups_username').value = username;
-        document.getElementById('groups_input').value = Array.isArray(groups) ? groups.join(', ') : '';
+        modalGroups.setGroups(groups);
         document.getElementById('updateGroupsModal').classList.add('active');
-        document.getElementById('groups_input').focus();
+        document.getElementById('modal-groups-wrapper').querySelector('.tag-input-text').focus();
     }
 
     function closeUpdateGroupsModal() {
@@ -361,52 +463,34 @@
 
     document.getElementById('updateGroupsForm').addEventListener('submit', function(e) {
         e.preventDefault();
+        modalGroups.commit();
         const form = e.target;
-        const groupsInput = document.getElementById('groups_input').value;
-
-        const groups = groupsInput
-            .split(',')
-            .map(g => g.trim())
-            .filter(g => g.length > 0);
-
-        form.querySelectorAll('input[name="groups"]').forEach(input => input.remove());
-        groups.forEach(group => {
+        form.querySelectorAll('input[name="groups"]').forEach(i => i.remove());
+        modalGroups.values().forEach(g => {
             const input = document.createElement('input');
             input.type = 'hidden';
             input.name = 'groups';
-            input.value = group;
+            input.value = g;
             form.appendChild(input);
         });
-
         form.submit();
     });
 
     document.querySelectorAll('.delete-form').forEach(form => {
         form.addEventListener('submit', function(e) {
             const username = this.getAttribute('data-username');
-            if (!confirm('Delete user ' + username + '?')) {
-                e.preventDefault();
-            }
+            if (!confirm('Delete user ' + username + '?')) e.preventDefault();
         });
     });
 
     document.getElementById('resetPasswordModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeResetModal();
-        }
+        if (e.target === this) closeResetModal();
     });
-
     document.getElementById('updateGroupsModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeUpdateGroupsModal();
-        }
+        if (e.target === this) closeUpdateGroupsModal();
     });
-
     document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            closeResetModal();
-            closeUpdateGroupsModal();
-        }
+        if (e.key === 'Escape') { closeResetModal(); closeUpdateGroupsModal(); }
     });
 </script>
 </body>

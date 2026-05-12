@@ -12,23 +12,62 @@
             max-width: none;
         }
 
-        .checkbox-group {
+        .tag-input-wrapper {
             display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .checkbox-label {
-            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
             align-items: center;
-            gap: 8px;
-            font-weight: 500;
+            padding: 6px 8px;
+            border: 1px solid #bfc2c8;
+            border-radius: 4px;
+            background: white;
+            min-height: 42px;
+            cursor: text;
+            box-sizing: border-box;
         }
 
-        input[type="checkbox"] {
-            width: 20px;
-            height: 20px;
+        .tag-input-wrapper:focus-within {
+            border-color: #ff6500;
+        }
+
+        .tag-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            background: #e7e8ef;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .tag-chip-remove {
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0 0 0 2px;
             cursor: pointer;
+            font-size: 15px;
+            line-height: 1;
+            color: #888;
+            font-family: inherit;
+        }
+
+        .tag-chip-remove:hover {
+            color: #ec0b43;
+            background: none;
+        }
+
+        .tag-input-text {
+            border: none;
+            outline: none;
+            padding: 3px 4px;
+            font-family: 'Montserrat', sans-serif;
+            font-size: 14px;
+            flex: 1;
+            min-width: 140px;
+            background: transparent;
         }
 
         .nav {
@@ -85,16 +124,13 @@
 
             <label class="label">
                 Groups
-                <div class="checkbox-group">
-                    <label class="checkbox-label">
-                        <input type="checkbox" name="groups" value="user" checked />
-                        user
-                    </label>
-                    <label class="checkbox-label">
-                        <input type="checkbox" name="groups" value="admins" />
-                        admin
-                    </label>
+                <div class="tag-input-wrapper" id="reg-groups-wrapper">
+                    <input type="text" class="tag-input-text" list="groups-datalist"
+                           placeholder="Type a group name and press Enter" autocomplete="off" />
                 </div>
+                <datalist id="groups-datalist">
+                    {{ range .KnownGroups }}<option value="{{ . }}">{{ end }}
+                </datalist>
             </label>
 
             <button type="submit">Register User</button>
@@ -105,5 +141,59 @@
         </form>
     </div>
 </div>
+<script>
+    function tagInput(wrapperId) {
+        const wrapper = document.getElementById(wrapperId);
+        const textEl = wrapper.querySelector('.tag-input-text');
+
+        function allChips() { return [...wrapper.querySelectorAll('.tag-chip')]; }
+        function values() { return allChips().map(c => c.dataset.value); }
+
+        function addChip(val) {
+            val = val.trim().replace(/,+$/, '').trim();
+            if (!val || values().includes(val)) return;
+            const chip = document.createElement('span');
+            chip.className = 'tag-chip';
+            chip.dataset.value = val;
+            chip.appendChild(document.createTextNode(val));
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'tag-chip-remove';
+            btn.textContent = '×';
+            btn.addEventListener('click', () => chip.remove());
+            chip.appendChild(btn);
+            wrapper.insertBefore(chip, textEl);
+        }
+
+        function commit() { addChip(textEl.value); textEl.value = ''; }
+
+        textEl.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(); }
+            else if (e.key === 'Tab' && this.value.trim()) { e.preventDefault(); commit(); }
+            else if (e.key === 'Backspace' && !this.value) {
+                const c = allChips(); if (c.length) c[c.length - 1].remove();
+            }
+        });
+        textEl.addEventListener('blur', commit);
+        wrapper.addEventListener('click', () => textEl.focus());
+
+        return { values, addChip, commit };
+    }
+
+    const regGroups = tagInput('reg-groups-wrapper');
+    regGroups.addChip('user');
+
+    document.querySelector('.register-container').addEventListener('submit', function() {
+        regGroups.commit();
+        this.querySelectorAll('input[name="groups"]').forEach(i => i.remove());
+        regGroups.values().forEach(g => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'groups';
+            input.value = g;
+            this.appendChild(input);
+        });
+    });
+</script>
 </body>
 </html>
