@@ -104,10 +104,12 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 			if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
 				Username    string
 				Message     string
+				CSRFToken   string
 				KnownGroups []string
 			}{
 				Username:    admin.Username,
 				Message:     err.Error(),
+				CSRFToken:   r.csrfToken(sessionCookie.Value),
 				KnownGroups: r.user.KnownGroups(),
 			}); err != nil {
 				slog.Error("failed to render admin register template", "error", err)
@@ -120,10 +122,12 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 			if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
 				Username    string
 				Message     string
+				CSRFToken   string
 				KnownGroups []string
 			}{
 				Username:    admin.Username,
 				Message:     err.Error(),
+				CSRFToken:   r.csrfToken(sessionCookie.Value),
 				KnownGroups: r.user.KnownGroups(),
 			}); err != nil {
 				slog.Error("failed to render admin register template", "error", err)
