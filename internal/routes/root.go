@@ -119,10 +119,13 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 
 	sessionId := r.session.Create(user.ID)
 	http.SetCookie(res, &http.Cookie{
-		Name:   "session",
-		Value:  sessionId,
-		MaxAge: 60 * 60 * 24 * 7,
-		Path:   "/",
+		Name:     "session",
+		Value:    sessionId,
+		MaxAge:   60 * 60 * 24 * 7,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.secureCookies,
+		SameSite: http.SameSiteLaxMode,
 	})
 	return &user
 }
