@@ -152,15 +152,6 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if err := req.ParseForm(); err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if !r.validateCSRF(req, session.Value) {
-		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
-		return
-	}
-
 	r.session.Delete(session.Value)
 	http.SetCookie(res, &http.Cookie{
 		MaxAge: -1,

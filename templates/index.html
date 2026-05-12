@@ -36,7 +36,6 @@
             {{ end }}
 
             <form action="/logout" method="post">
-                <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}" />
                 <button type="submit">Logout</button>
             </form>
             {{ else }}
