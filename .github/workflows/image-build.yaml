@@ -145,3 +145,58 @@ jobs:
           name: "[${{ github.job }}] Trivy scan results"
           path: trivy-results.sarif
           retention-days: 5
+
+      - name: Summarize Trivy results
+        if: always()
+        run: |
+          sarif="trivy-results.sarif"
+          out="$GITHUB_STEP_SUMMARY"
+
+          echo "## Trivy vulnerability scan" >> "$out"
+          echo "" >> "$out"
+
+          if [ ! -f "$sarif" ]; then
+            echo ":warning: Results not available." >> "$out"
+            exit 0
+          fi
+
+          total=$(jq '.runs[0].results | length' "$sarif")
+
+          if [ "$total" -eq 0 ]; then
+            echo ":white_check_mark: No vulnerabilities found." >> "$out"
+            exit 0
+          fi
+
+          critical=$(jq '[.runs[0].results[] | select(.message.text | test("Severity: CRITICAL"))] | length' "$sarif")
+          high=$(jq '[.runs[0].results[] | select(.message.text | test("Severity: HIGH"))] | length' "$sarif")
+          medium=$(jq '[.runs[0].results[] | select(.message.text | test("Severity: MEDIUM"))] | length' "$sarif")
+          low=$(jq '[.runs[0].results[] | select(.message.text | test("Severity: LOW"))] | length' "$sarif")
+
+          {
+            echo "| CRITICAL | HIGH | MEDIUM | LOW | Total |"
+            echo "| :---: | :---: | :---: | :---: | :---: |"
+            echo "| $critical | $high | $medium | $low | $total |"
+            echo ""
+            echo "| CVE | Severity | Package | Installed | Fixed |"
+            echo "| --- | --- | --- | --- | --- |"
+            jq -r '
+              .runs[0].results |
+              map({
+                cve: .ruleId,
+                severity: (.message.text | capture("Severity: (?P<s>[^\n]+)") | .s),
+                package: (.message.text | capture("Package: (?P<p>[^\n]+)") | .p),
+                installed: (.message.text | capture("Installed Version: (?P<v>[^\n]+)") | .v),
+                fixed: (.message.text | capture("Fixed Version: (?P<f>[^\n]+)") | .f),
+                sort_key: (
+                  .message.text |
+                  if test("Severity: CRITICAL") then 0
+                  elif test("Severity: HIGH") then 1
+                  elif test("Severity: MEDIUM") then 2
+                  else 3 end
+                )
+              }) |
+              sort_by(.sort_key) |
+              .[] |
+              "| \(.cve) | \(.severity) | \(.package) | \(.installed) | \(.fixed) |"
+            ' "$sarif"
+          } >> "$out"
