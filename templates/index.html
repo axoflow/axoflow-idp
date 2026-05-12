@@ -14,8 +14,17 @@
             <h1>Accounts</h1>
 
             {{ if .Username }}
-            <div class="account">
-                Logged in: {{ .Username }}
+            <div class="user-profile">
+                <div class="user-profile-label">Logged in</div>
+                <div class="user-profile-name">{{ .Username }}</div>
+                {{ if .Email }}
+                <div class="user-profile-detail">{{ .Email }}</div>
+                {{ end }}
+                {{ if .Groups }}
+                <div class="user-profile-detail">
+                    {{ range .Groups }}<span class="badge">{{ . }}</span>{{ end }}
+                </div>
+                {{ end }}
             </div>
 
             {{ if .IsAdmin }}

@@ -24,6 +24,8 @@ import (
 func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 	info := struct {
 		Username         string
+		Email            string
+		Groups           []string
 		Message          string
 		Success          string
 		IsAdmin          bool
@@ -36,6 +38,8 @@ func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 	u, _ := r.getUserFromSession(req)
 	if u != nil {
 		info.Username = u.Username
+		info.Email = u.Email
+		info.Groups = u.Groups
 		info.IsAdmin = r.user.IsAdmin(u)
 	}
 	if client := r.oidc.FirstClient(); client != nil {
