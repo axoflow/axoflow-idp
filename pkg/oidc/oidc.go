@@ -116,6 +116,7 @@ func New(cfg Config) (*Oidc, error) {
 }
 
 func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jose.JSONWebKey, error) {
+	slog.Info("generating new signing key")
 	key, err := keychain.Create(SigningKeyKid)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create key in keychain: %w", err)
@@ -125,7 +126,7 @@ func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jo
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal key: %w", err)
 	}
-	slog.Info("generated new signing key", "key", string(keyJSON))
+	slog.Info("generated new signing key", "kid", key.KeyID)
 
 	if err := os.WriteFile(signingKeyPath, keyJSON, 0600); err != nil {
 		return nil, fmt.Errorf("failed to save signing key to %s: %w", signingKeyPath, err)
