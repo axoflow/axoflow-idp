@@ -46,7 +46,7 @@ func (u *User) AdminList(adminID ulid.ULID) ([]UserInfo, error) {
 	users := make([]UserInfo, len(u.users))
 	copy(users, u.users)
 	for i := range users {
-		users[i].Password = nil
+		users[i].Password = ""
 	}
 
 	return users, nil

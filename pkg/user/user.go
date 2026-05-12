@@ -15,7 +15,6 @@
 package user
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,7 +41,7 @@ type Config struct {
 type UserInfo struct {
 	ID       ulid.ULID
 	Username string
-	Password []byte
+	Password string
 	Groups   []string
 	Email    string
 }
@@ -141,7 +140,7 @@ func (u *User) ChangePassword(userID ulid.ULID, oldPassword, newPassword string)
 
 	i, _ := u.getIndex(userID)
 
-	if subtle.ConstantTimeCompare(hash([]byte(user.ID.String()), oldPassword), user.Password) != 1 {
+	if !verifyPassword(user, oldPassword) {
 		return errors.New("invalid old password")
 	}
 	u.users[i].Password = hash([]byte(user.ID.String()), newPassword)
@@ -158,7 +157,7 @@ func (u *User) Authenticate(username, password string) (UserInfo, bool) {
 
 	user := u.users[i]
 
-	return user, subtle.ConstantTimeCompare(hash([]byte(user.ID.String()), password), user.Password) == 1
+	return user, verifyPassword(user, password)
 }
 
 func (u *User) SaveUsers() error {
