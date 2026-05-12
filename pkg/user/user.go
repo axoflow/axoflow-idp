@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"maps"
 	"slices"
 	"sync"
 
@@ -149,12 +150,7 @@ func (u *User) KnownGroups() []string {
 			seen[g] = struct{}{}
 		}
 	}
-	groups := make([]string, 0, len(seen))
-	for g := range seen {
-		groups = append(groups, g)
-	}
-	slices.Sort(groups)
-	return groups
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func (u *User) ChangePassword(userID ulid.ULID, oldPassword, newPassword string) error {

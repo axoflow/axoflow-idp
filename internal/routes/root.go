@@ -17,6 +17,7 @@ package routes
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -124,7 +125,7 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	http.SetCookie(res, &http.Cookie{
 		Name:     "session",
 		Value:    sessionId,
-		MaxAge:   60 * 60 * 24 * 7,
+		MaxAge:   int((7 * 24 * time.Hour).Seconds()),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   r.secureCookies,
