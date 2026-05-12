@@ -129,8 +129,11 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 
 func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
+		slog.Warn("logout attempted with wrong method", "method", req.Method)
 		res.WriteHeader(http.StatusMethodNotAllowed)
-		if err := r.template.ExecuteTemplate(res, "logout_failed.html", nil); err != nil {
+		if err := r.template.ExecuteTemplate(res, "logout_failed.html", struct{ Message string }{
+			"Logout requires a form submission — use the Logout button to sign out.",
+		}); err != nil {
 			slog.Error("failed to render logout_failed template", "error", err)
 		}
 		return
@@ -138,10 +141,8 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 
 	session, err := req.Cookie("session")
 	if err != nil {
-		res.WriteHeader(http.StatusBadRequest)
-		if err := r.template.ExecuteTemplate(res, "logout_failed.html", nil); err != nil {
-			slog.Error("failed to render logout_failed template", "error", err)
-		}
+		slog.Warn("logout attempted without session cookie")
+		http.Redirect(res, req, "/?flash=logout", http.StatusFound)
 		return
 	}
 
