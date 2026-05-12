@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"sync"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -48,6 +49,7 @@ type UserInfo struct {
 
 type User struct {
 	Config
+	mu    sync.Mutex
 	users []UserInfo
 }
 
@@ -110,6 +112,13 @@ func (u *User) Get(id ulid.ULID) (UserInfo, bool) {
 }
 
 func (u *User) Register(username string, password string, groups []string, email string) error {
+	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
+	id := ulid.Make()
+	hashedPassword := hash([]byte(id.String()), password)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
 	if slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
 	}) != -1 {
@@ -122,12 +131,11 @@ func (u *User) Register(username string, password string, groups []string, email
 		return errors.New("email already registered")
 	}
 
-	id := ulid.Make()
 	u.users = append(u.users, UserInfo{
 		ID:       id,
 		Username: username,
 		Email:    email,
-		Password: hash([]byte(id.String()), password),
+		Password: hashedPassword,
 		Groups:   groups,
 	})
 
