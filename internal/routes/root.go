@@ -17,18 +17,44 @@ package routes
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 	info := struct {
-		Username string
-		Message  string
-	}{}
-	user, _ := r.getUserFromSession(req)
-	if user != nil {
-		info.Username = user.Username
+		Username         string
+		Email            string
+		Groups           []string
+		Message          string
+		Success          string
+		IsAdmin          bool
+		SiteName         string
+		SiteURL          string
+		SelfRegistration bool
+		CSRFToken        string
+	}{
+		SelfRegistration: r.user.SelfRegistration,
+	}
+	sessionCookie, _ := req.Cookie("session")
+	u, _ := r.getUserFromSession(req)
+	if u != nil {
+		info.Username = u.Username
+		info.Email = u.Email
+		info.Groups = u.Groups
+		info.IsAdmin = r.user.IsAdmin(u)
+		info.CSRFToken = r.csrfToken(sessionCookie.Value)
+	}
+	if client := r.oidc.FirstClient(); client != nil {
+		info.SiteName = client.Name
+		info.SiteURL = client.URL
+	}
+	switch req.URL.Query().Get("flash") {
+	case "login":
+		info.Success = "Welcome back, " + info.Username + "!"
+	case "logout":
+		info.Success = "You have been logged out successfully."
 	}
 
 	if err := r.template.ExecuteTemplate(res, "index.html", info); err != nil {
@@ -45,23 +71,36 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		if err := r.template.ExecuteTemplate(res, "login.html", nil); err != nil {
+		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("")); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return
 
 	case http.MethodPost:
 		if user := r.login(res, req); user != nil {
-			http.Redirect(res, req, "/", http.StatusFound)
+			http.Redirect(res, req, "/?flash=login", http.StatusFound)
 		}
 		return
 
 	default:
 		res.WriteHeader(http.StatusMethodNotAllowed)
-		if err := r.template.ExecuteTemplate(res, "login.html", nil); err != nil {
+		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("")); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return
+	}
+}
+
+func (r *Routes) loginTemplateData(message string) struct {
+	Message          string
+	SelfRegistration bool
+} {
+	return struct {
+		Message          string
+		SelfRegistration bool
+	}{
+		Message:          message,
+		SelfRegistration: r.user.SelfRegistration,
 	}
 }
 
@@ -76,7 +115,7 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	user, ok := r.user.Authenticate(username, password)
 	if !ok {
 		res.WriteHeader(http.StatusUnauthorized)
-		if err := r.template.ExecuteTemplate(res, "login.html", struct{ Message string }{Message: "Invalid username or password"}); err != nil {
+		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return nil
@@ -84,18 +123,24 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 
 	sessionId := r.session.Create(user.ID)
 	http.SetCookie(res, &http.Cookie{
-		Name:   "session",
-		Value:  sessionId,
-		MaxAge: 60 * 60 * 24 * 7,
-		Path:   "/",
+		Name:     "session",
+		Value:    sessionId,
+		MaxAge:   int((7 * 24 * time.Hour).Seconds()),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.secureCookies,
+		SameSite: http.SameSiteLaxMode,
 	})
 	return &user
 }
 
 func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
+		slog.Warn("logout attempted with wrong method", "method", req.Method)
 		res.WriteHeader(http.StatusMethodNotAllowed)
-		if err := r.template.ExecuteTemplate(res, "logout_failed.html", nil); err != nil {
+		if err := r.template.ExecuteTemplate(res, "logout_failed.html", struct{ Message string }{
+			"Are you sure you want to sign out? Click the button below to confirm.",
+		}); err != nil {
 			slog.Error("failed to render logout_failed template", "error", err)
 		}
 		return
@@ -103,10 +148,8 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 
 	session, err := req.Cookie("session")
 	if err != nil {
-		res.WriteHeader(http.StatusBadRequest)
-		if err := r.template.ExecuteTemplate(res, "logout_failed.html", nil); err != nil {
-			slog.Error("failed to render logout_failed template", "error", err)
-		}
+		slog.Warn("logout attempted without session cookie")
+		http.Redirect(res, req, "/?flash=logout", http.StatusFound)
 		return
 	}
 
@@ -116,7 +159,7 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 		Name:   "session",
 	})
 
-	http.Redirect(res, req, "/", http.StatusFound)
+	http.Redirect(res, req, "/?flash=logout", http.StatusFound)
 }
 
 func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
@@ -147,6 +190,13 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		email := req.Form.Get("email")
 		password := req.Form.Get("password")
 		passwordConfirm := req.Form.Get("password_confirm")
+		if email == "" {
+			res.WriteHeader(http.StatusBadRequest)
+			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{"Email is required"}); err != nil {
+				slog.Error("failed to render register template", "error", err)
+			}
+			return
+		}
 		if password != passwordConfirm {
 			res.WriteHeader(http.StatusBadRequest)
 			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{Message: "Passwords do not match"}); err != nil {

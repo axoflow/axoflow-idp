@@ -1,15 +1,21 @@
-<html>
-    <head>
-        <title>Register - Go OIDC IdP Example</title>
-    </head>
-    <body>
-        <h1><a href="/">Go OIDC IdP Example</a></h1>
-        <hr />
-        <div>
-            <p>Registration successful!</p>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Registration Successful</title>
+    {{template "layout-head" .}}
+</head>
+<body>
+<div class="layout">
+    {{template "layout-logo" .}}
+
+    <div class="layout-right">
+        <div class="login-container">
+            <h1>Welcome!</h1>
+            <div class="account">Your account has been created successfully.</div>
+            <a class="button" href="/login">Continue to Login</a>
         </div>
-        <div>
-            <p><a href="/login">Login</a></p>
-        </div>
-    </body>
+    </div>
+</div>
+</body>
 </html>

@@ -40,12 +40,17 @@ func (r *Routes) AdminPanel(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	sessionCookie, _ := req.Cookie("session")
 	if err := r.template.ExecuteTemplate(res, "admin.html", struct {
-		Username string
-		Users    any
+		Username    string
+		Users       any
+		CSRFToken   string
+		KnownGroups []string
 	}{
-		Username: admin.Username,
-		Users:    users,
+		Username:    admin.Username,
+		Users:       users,
+		CSRFToken:   r.csrfToken(sessionCookie.Value),
+		KnownGroups: r.user.KnownGroups(),
 	}); err != nil {
 		slog.Error("failed to render admin template", "error", err)
 	}
@@ -63,12 +68,19 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	sessionCookie, _ := req.Cookie("session")
 	switch req.Method {
 	case http.MethodGet:
 		if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
-			Username string
-			Message  string
-		}{Username: admin.Username}); err != nil {
+			Username    string
+			Message     string
+			CSRFToken   string
+			KnownGroups []string
+		}{
+			Username:    admin.Username,
+			CSRFToken:   r.csrfToken(sessionCookie.Value),
+			KnownGroups: r.user.KnownGroups(),
+		}); err != nil {
 			slog.Error("failed to render admin register template", "error", err)
 		}
 		return
@@ -76,6 +88,10 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 	case http.MethodPost:
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !r.validateCSRF(req, sessionCookie.Value) {
+			http.Error(res, "Invalid CSRF token", http.StatusForbidden)
 			return
 		}
 		username := req.Form.Get("username")
@@ -86,11 +102,15 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		if err := r.user.AdminRegister(admin.ID, username, password, groups, email); err != nil {
 			res.WriteHeader(http.StatusBadRequest)
 			if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
-				Username string
-				Message  string
+				Username    string
+				Message     string
+				CSRFToken   string
+				KnownGroups []string
 			}{
-				Username: admin.Username,
-				Message:  err.Error(),
+				Username:    admin.Username,
+				Message:     err.Error(),
+				CSRFToken:   r.csrfToken(sessionCookie.Value),
+				KnownGroups: r.user.KnownGroups(),
 			}); err != nil {
 				slog.Error("failed to render admin register template", "error", err)
 			}
@@ -100,11 +120,15 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		if err := r.user.SaveUsers(); err != nil {
 			res.WriteHeader(http.StatusInternalServerError)
 			if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
-				Username string
-				Message  string
+				Username    string
+				Message     string
+				CSRFToken   string
+				KnownGroups []string
 			}{
-				Username: admin.Username,
-				Message:  err.Error(),
+				Username:    admin.Username,
+				Message:     err.Error(),
+				CSRFToken:   r.csrfToken(sessionCookie.Value),
+				KnownGroups: r.user.KnownGroups(),
 			}); err != nil {
 				slog.Error("failed to render admin register template", "error", err)
 			}
@@ -139,8 +163,13 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	sessionCookie, _ := req.Cookie("session")
 	if err := req.ParseForm(); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !r.validateCSRF(req, sessionCookie.Value) {
+		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
 		return
 	}
 	userId, err := ulid.Parse(req.Form.Get("user_id"))
@@ -181,8 +210,13 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	sessionCookie, _ := req.Cookie("session")
 	if err := req.ParseForm(); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !r.validateCSRF(req, sessionCookie.Value) {
+		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
 		return
 	}
 	userId, err := ulid.Parse(req.Form.Get("user_id"))
@@ -229,8 +263,13 @@ func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Reques
 		return
 	}
 
+	sessionCookie, _ := req.Cookie("session")
 	if err := req.ParseForm(); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !r.validateCSRF(req, sessionCookie.Value) {
+		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
 		return
 	}
 	userId, err := ulid.Parse(req.Form.Get("user_id"))

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -115,6 +116,7 @@ func New(cfg Config) (*Oidc, error) {
 }
 
 func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jose.JSONWebKey, error) {
+	slog.Info("generating new signing key")
 	key, err := keychain.Create(SigningKeyKid)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create key in keychain: %w", err)
@@ -124,7 +126,7 @@ func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jo
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal key: %w", err)
 	}
-	slog.Info("generated new signing key", "key", string(keyJSON))
+	slog.Info("generated new signing key", "kid", key.KeyID)
 
 	if err := os.WriteFile(signingKeyPath, keyJSON, 0600); err != nil {
 		return nil, fmt.Errorf("failed to save signing key to %s: %w", signingKeyPath, err)
@@ -132,6 +134,25 @@ func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jo
 	slog.Info("saved signing key", "path", signingKeyPath)
 
 	return &key, nil
+}
+
+type ClientInfo struct {
+	Name string
+	URL  string
+}
+
+func (o *Oidc) FirstClient() *ClientInfo {
+	if len(o.clients) == 0 {
+		return nil
+	}
+	u, err := url.Parse(o.clients[0].RedirectUri)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	return &ClientInfo{
+		Name: o.clients[0].Name,
+		URL:  u.Scheme + "://" + u.Host,
+	}
 }
 
 type AuthenticationRequest struct {

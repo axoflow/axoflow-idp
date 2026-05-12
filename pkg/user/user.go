@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"maps"
 	"slices"
+	"sync"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -48,6 +50,7 @@ type UserInfo struct {
 
 type User struct {
 	Config
+	mu    sync.Mutex
 	users []UserInfo
 }
 
@@ -110,22 +113,44 @@ func (u *User) Get(id ulid.ULID) (UserInfo, bool) {
 }
 
 func (u *User) Register(username string, password string, groups []string, email string) error {
+	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
+	id := ulid.Make()
+	hashedPassword := hash([]byte(id.String()), password)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
 	if slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
 	}) != -1 {
 		return errors.New("username already exists")
 	}
 
-	id := ulid.Make()
+	if email != "" && slices.IndexFunc(u.users, func(u UserInfo) bool {
+		return u.Email == email
+	}) != -1 {
+		return errors.New("email already registered")
+	}
+
 	u.users = append(u.users, UserInfo{
 		ID:       id,
 		Username: username,
 		Email:    email,
-		Password: hash([]byte(id.String()), password),
+		Password: hashedPassword,
 		Groups:   groups,
 	})
 
 	return nil
+}
+
+func (u *User) KnownGroups() []string {
+	seen := map[string]struct{}{}
+	for _, user := range u.users {
+		for _, g := range user.Groups {
+			seen[g] = struct{}{}
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func (u *User) ChangePassword(userID ulid.ULID, oldPassword, newPassword string) error {

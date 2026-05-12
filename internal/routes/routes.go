@@ -27,30 +27,35 @@ import (
 )
 
 type Config struct {
-	Oidc       *oidc.Oidc
-	Session    *session.Session
-	User       *user.User
-	CodeStore  *codestore.CodeStore
-	TokenStore *tokenstore.TokenStore
+	Oidc           *oidc.Oidc
+	Session        *session.Session
+	User           *user.User
+	CodeStore      *codestore.CodeStore
+	TokenStore     *tokenstore.TokenStore
+	SecureCookies  bool
 }
 
 type Routes struct {
-	oidc       *oidc.Oidc
-	session    *session.Session
-	template   *template.Template
-	user       *user.User
-	store      *codestore.CodeStore
-	tokenStore *tokenstore.TokenStore
+	oidc          *oidc.Oidc
+	session       *session.Session
+	template      *template.Template
+	user          *user.User
+	store         *codestore.CodeStore
+	tokenStore    *tokenstore.TokenStore
+	secureCookies bool
+	csrfKey       []byte
 }
 
 func New(config Config) *Routes {
 	return &Routes{
-		oidc:       config.Oidc,
-		session:    config.Session,
-		template:   template.Must(template.ParseGlob("templates/*.html")),
-		user:       config.User,
-		store:      config.CodeStore,
-		tokenStore: config.TokenStore,
+		oidc:          config.Oidc,
+		session:       config.Session,
+		template:      template.Must(template.ParseGlob("templates/*.html")),
+		user:          config.User,
+		store:         config.CodeStore,
+		tokenStore:    config.TokenStore,
+		secureCookies: config.SecureCookies,
+		csrfKey:       generateCSRFKey(),
 	}
 }
 

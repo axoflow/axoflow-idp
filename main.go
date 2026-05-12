@@ -144,11 +144,12 @@ func main() {
 	}
 
 	r := routes.New(routes.Config{
-		Oidc:       o,
-		Session:    session.New(),
-		User:       u,
-		CodeStore:  codestore.New(),
-		TokenStore: tokenstore.New(*cfg.Token),
+		Oidc:          o,
+		Session:       session.New(),
+		User:          u,
+		CodeStore:     codestore.New(),
+		TokenStore:    tokenstore.New(*cfg.Token),
+		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
 	})
 	http.HandleFunc("/", func(res http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/" {
