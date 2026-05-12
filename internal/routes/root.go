@@ -32,15 +32,18 @@ func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 		SiteName         string
 		SiteURL          string
 		SelfRegistration bool
+		CSRFToken        string
 	}{
 		SelfRegistration: r.user.SelfRegistration,
 	}
+	sessionCookie, _ := req.Cookie("session")
 	u, _ := r.getUserFromSession(req)
 	if u != nil {
 		info.Username = u.Username
 		info.Email = u.Email
 		info.Groups = u.Groups
 		info.IsAdmin = r.user.IsAdmin(u)
+		info.CSRFToken = r.csrfToken(sessionCookie.Value)
 	}
 	if client := r.oidc.FirstClient(); client != nil {
 		info.SiteName = client.Name
@@ -146,6 +149,15 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		slog.Warn("logout attempted without session cookie")
 		http.Redirect(res, req, "/?flash=logout", http.StatusFound)
+		return
+	}
+
+	if err := req.ParseForm(); err != nil {
+		http.Error(res, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !r.validateCSRF(req, session.Value) {
+		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
 		return
 	}
 

@@ -51,6 +51,7 @@
 
     <div class="layout-right">
         <form class="register-container" action="/admin/register" method="post">
+            <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}" />
             <div class="nav">
                 <a href="/admin">← Back to Admin Panel</a>
             </div>

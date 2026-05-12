@@ -43,6 +43,7 @@ type Routes struct {
 	store         *codestore.CodeStore
 	tokenStore    *tokenstore.TokenStore
 	secureCookies bool
+	csrfKey       []byte
 }
 
 func New(config Config) *Routes {
@@ -54,6 +55,7 @@ func New(config Config) *Routes {
 		store:         config.CodeStore,
 		tokenStore:    config.TokenStore,
 		secureCookies: config.SecureCookies,
+		csrfKey:       generateCSRFKey(),
 	}
 }
 
