@@ -138,7 +138,7 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 		slog.Warn("logout attempted with wrong method", "method", req.Method)
 		res.WriteHeader(http.StatusMethodNotAllowed)
 		if err := r.template.ExecuteTemplate(res, "logout_failed.html", struct{ Message string }{
-			"Logout requires a form submission — use the Logout button to sign out.",
+			"Are you sure you want to sign out? Click the button below to confirm.",
 		}); err != nil {
 			slog.Error("failed to render logout_failed template", "error", err)
 		}
