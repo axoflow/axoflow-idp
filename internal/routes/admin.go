@@ -18,8 +18,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-
-	"github.com/oklog/ulid/v2"
 )
 
 func (r *Routes) AdminPanel(res http.ResponseWriter, req *http.Request) {
@@ -172,8 +170,8 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	userId, err := ulid.Parse(req.Form.Get("user_id"))
-	if err != nil {
+	userId := req.Form.Get("user_id")
+	if userId == "" {
 		http.Error(res, "Invalid user ID", http.StatusBadRequest)
 		return
 	}
@@ -188,7 +186,7 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	slog.Info("admin deleted user", "admin", admin.Username, "deleted_user_id", userId.String())
+	slog.Info("admin deleted user", "admin", admin.Username, "deleted_user_id", userId)
 
 	http.Redirect(res, req, "/admin", http.StatusSeeOther)
 }
@@ -219,8 +217,8 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	userId, err := ulid.Parse(req.Form.Get("user_id"))
-	if err != nil {
+	userId := req.Form.Get("user_id")
+	if userId == "" {
 		http.Error(res, "Invalid user ID", http.StatusBadRequest)
 		return
 	}
@@ -241,7 +239,7 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	slog.Info("admin reset user password", "admin", admin.Username, "target_user_id", userId.String())
+	slog.Info("admin reset user password", "admin", admin.Username, "target_user_id", userId)
 
 	http.Redirect(res, req, "/admin", http.StatusSeeOther)
 }
@@ -272,8 +270,8 @@ func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Reques
 		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	userId, err := ulid.Parse(req.Form.Get("user_id"))
-	if err != nil {
+	userId := req.Form.Get("user_id")
+	if userId == "" {
 		http.Error(res, "Invalid user ID", http.StatusBadRequest)
 		return
 	}
@@ -289,7 +287,7 @@ func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	slog.Info("admin updated user groups", "admin", admin.Username, "target_user_id", userId.String(), "groups", groups)
+	slog.Info("admin updated user groups", "admin", admin.Username, "target_user_id", userId, "groups", groups)
 
 	http.Redirect(res, req, "/admin", http.StatusSeeOther)
 }

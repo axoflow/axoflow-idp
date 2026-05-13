@@ -78,8 +78,8 @@ func TestVerifyBcrypt(t *testing.T) {
 }
 
 func TestVerifyLegacyBase64(t *testing.T) {
-	id := ulid.Make()
-	h := argon2.IDKey([]byte("legacypass"), []byte(id.String()), argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+	id := ulid.Make().String()
+	h := argon2.IDKey([]byte("legacypass"), []byte(id), argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
 	u := UserInfo{
 		ID:       id,
 		Password: base64.StdEncoding.EncodeToString(h),

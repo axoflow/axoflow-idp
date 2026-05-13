@@ -272,7 +272,7 @@ func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
 func (o *Oidc) GenerateIDToken(user user.UserInfo, clientID string, nonce string) (string, error) {
 	payload, err := json.Marshal(IDTokenPayload{
 		Issuer:     o.baseUrl,
-		Subject:    user.ID.String(),
+		Subject:    user.ID,
 		Audience:   clientID,
 		Expiration: time.Now().Add(time.Hour * 24).Unix(),
 		IssuedAt:   time.Now().Unix(),
