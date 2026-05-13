@@ -73,7 +73,7 @@
 
         button, a.button {
             margin: 0;
-            padding: 0;
+            padding: 0 24px;
             border: 0;
             outline: 0;
             line-height: 50px;
@@ -85,6 +85,19 @@
             cursor: pointer;
             text-align: center;
             text-decoration: none;
+            font-family: inherit;
+        }
+
+        button.secondary, a.button.secondary {
+            background: #e7e8ef;
+            color: #0f1425;
+        }
+
+        button.secondary:focus,
+        button.secondary:hover,
+        a.button.secondary:focus,
+        a.button.secondary:hover {
+            background: #d2d4de;
         }
 
         button:focus,

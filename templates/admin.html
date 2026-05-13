@@ -13,7 +13,7 @@
         }
 
         .layout-right {
-            padding: 40px 140px;
+            padding: 40px 60px;
             align-items: flex-start;
             overflow-y: auto;
         }
@@ -27,7 +27,7 @@
 
         .admin-container {
             width: 100%;
-            max-width: 800px;
+            max-width: 1200px;
             display: flex;
             flex-direction: column;
             gap: 28px;
@@ -115,6 +115,12 @@
             color: #ec0b43;
         }
 
+        .badge-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
         .badge {
             display: inline-block;
             padding: 4px 8px;
@@ -122,7 +128,7 @@
             border-radius: 4px;
             font-size: 12px;
             font-weight: 600;
-            margin-right: 4px;
+            margin: 0;
         }
 
         .badge.admin {
@@ -279,7 +285,7 @@
                 Logged in as: {{ .Username }}
             </div>
 
-            <a class="button" href="/admin/register" style="width: 200px;">Register New User</a>
+            <a class="button" href="/admin/register" style="align-self: flex-start;">Register New User</a>
 
             <h2>Users</h2>
 
@@ -298,9 +304,11 @@
                         <td>{{ .Username }}</td>
                         <td>{{ .Email }}</td>
                         <td>
-                            {{ range .Groups }}
-                            <span class="badge{{ if eq . "admins" }} admin{{ end }}">{{ . }}</span>
-                            {{ end }}
+                            <div class="badge-group">
+                                {{ range .Groups }}
+                                <span class="badge{{ if eq . "admins" }} admin{{ end }}">{{ . }}</span>
+                                {{ end }}
+                            </div>
                         </td>
                         <td>
                             <div class="actions">
