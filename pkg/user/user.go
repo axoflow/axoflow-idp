@@ -238,17 +238,22 @@ func (u *User) loadUsersFromFile() error {
 	}
 
 	var errs []error
-	seen := map[string]struct{}{}
+	seenIDs := map[string]struct{}{}
+	seenUsernames := map[string]struct{}{}
 	for _, user := range u.users {
 		if user.ID == "" {
 			errs = append(errs, fmt.Errorf("user %q has no id", user.Username))
-			continue
-		}
-		if _, dup := seen[user.ID]; dup {
+		} else if _, dup := seenIDs[user.ID]; dup {
 			errs = append(errs, fmt.Errorf("duplicate user id %q", user.ID))
-			continue
+		} else {
+			seenIDs[user.ID] = struct{}{}
 		}
-		seen[user.ID] = struct{}{}
+
+		if _, dup := seenUsernames[user.Username]; dup {
+			errs = append(errs, fmt.Errorf("duplicate username %q", user.Username))
+		} else {
+			seenUsernames[user.Username] = struct{}{}
+		}
 	}
 
 	return errors.Join(errs...)

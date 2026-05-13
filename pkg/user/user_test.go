@@ -72,11 +72,27 @@ func TestLoadUsersFromFile_DuplicateID(t *testing.T) {
 	}
 }
 
+func TestLoadUsersFromFile_DuplicateUsername(t *testing.T) {
+	path := writeUsersFile(t, `[
+		{"ID":"id1","Username":"alice"},
+		{"ID":"id2","Username":"alice"}
+	]`)
+
+	_, err := New(Config{FilePath: path})
+	if err == nil {
+		t.Fatal("expected error for duplicate username, got nil")
+	}
+	if !strings.Contains(err.Error(), `duplicate username "alice"`) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadUsersFromFile_MultipleErrorsJoined(t *testing.T) {
 	path := writeUsersFile(t, `[
 		{"ID":"alice","Username":"alice"},
 		{"ID":"","Username":"bob"},
 		{"ID":"alice","Username":"carol"},
+		{"ID":"id4","Username":"alice"},
 		{"ID":"","Username":"dave"}
 	]`)
 
@@ -90,6 +106,7 @@ func TestLoadUsersFromFile_MultipleErrorsJoined(t *testing.T) {
 		`user "bob" has no id`,
 		`user "dave" has no id`,
 		`duplicate user id "alice"`,
+		`duplicate username "alice"`,
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("expected error to contain %q, got: %v", want, msg)
