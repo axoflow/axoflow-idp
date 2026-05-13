@@ -143,7 +143,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	r := routes.New(routes.Config{
+	r, err := routes.New(routes.Config{
 		Oidc:          o,
 		Session:       session.New(),
 		User:          u,
@@ -151,6 +151,10 @@ func main() {
 		TokenStore:    tokenstore.New(*cfg.Token),
 		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
 	})
+	if err != nil {
+		slog.Error("failed to create routes", "error", err)
+		os.Exit(1)
+	}
 	http.HandleFunc("/", func(res http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/" {
 			http.NotFound(res, req)
