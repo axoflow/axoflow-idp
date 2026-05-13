@@ -18,8 +18,6 @@ import (
 	"errors"
 
 	"slices"
-
-	"github.com/oklog/ulid/v2"
 )
 
 func (u *User) IsAdmin(userInfo *UserInfo) bool {
@@ -30,7 +28,7 @@ func (u *User) IsAdmin(userInfo *UserInfo) bool {
 	return slices.Contains(userInfo.Groups, u.UserAdminGroup)
 }
 
-func (u *User) AdminRegister(adminID ulid.ULID, username string, password string, groups []string, email string) error {
+func (u *User) AdminRegister(adminID string, username string, password string, groups []string, email string) error {
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
@@ -38,7 +36,7 @@ func (u *User) AdminRegister(adminID ulid.ULID, username string, password string
 	return u.Register(username, password, groups, email)
 }
 
-func (u *User) AdminList(adminID ulid.ULID) ([]UserInfo, error) {
+func (u *User) AdminList(adminID string) ([]UserInfo, error) {
 	if !u.getAndVerifyAdmin(adminID) {
 		return nil, errors.New("user is not an admin")
 	}
@@ -52,7 +50,7 @@ func (u *User) AdminList(adminID ulid.ULID) ([]UserInfo, error) {
 	return users, nil
 }
 
-func (u *User) AdminDelete(adminID ulid.ULID, targetID ulid.ULID) error {
+func (u *User) AdminDelete(adminID string, targetID string) error {
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
@@ -70,7 +68,7 @@ func (u *User) AdminDelete(adminID ulid.ULID, targetID ulid.ULID) error {
 	return nil
 }
 
-func (u *User) AdminResetPassword(adminID ulid.ULID, targetID ulid.ULID, newPassword string) error {
+func (u *User) AdminResetPassword(adminID string, targetID string, newPassword string) error {
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
@@ -80,11 +78,11 @@ func (u *User) AdminResetPassword(adminID ulid.ULID, targetID ulid.ULID, newPass
 		return errors.New("target user not found")
 	}
 
-	u.users[i].Password = hash([]byte(targetID.String()), newPassword)
+	u.users[i].Password = hash([]byte(targetID), newPassword)
 	return nil
 }
 
-func (u *User) AdminUpdateUserGroups(adminID ulid.ULID, targetID ulid.ULID, groups []string) error {
+func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []string) error {
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
@@ -98,7 +96,7 @@ func (u *User) AdminUpdateUserGroups(adminID ulid.ULID, targetID ulid.ULID, grou
 	return nil
 }
 
-func (u *User) getAndVerifyAdmin(adminID ulid.ULID) bool {
+func (u *User) getAndVerifyAdmin(adminID string) bool {
 	admin, ok := u.Get(adminID)
 	if !ok {
 		return false

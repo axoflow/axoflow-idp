@@ -41,7 +41,7 @@ type Config struct {
 }
 
 type UserInfo struct {
-	ID       ulid.ULID
+	ID       string
 	Username string
 	Password string
 	Groups   []string
@@ -56,8 +56,8 @@ type User struct {
 
 func ensureUserID(users []UserInfo) []UserInfo {
 	for i, u := range users {
-		if u.ID.IsZero() {
-			users[i].ID = ulid.Make()
+		if u.ID == "" {
+			users[i].ID = ulid.Make().String()
 		}
 	}
 
@@ -92,7 +92,10 @@ func New(config Config) (*User, error) {
 	return &u, nil
 }
 
-func (u *User) getIndex(id ulid.ULID) (int, bool) {
+func (u *User) getIndex(id string) (int, bool) {
+	if id == "" {
+		return -1, false
+	}
 	i := slices.IndexFunc(u.users, func(ui UserInfo) bool {
 		return ui.ID == id
 	})
@@ -103,7 +106,7 @@ func (u *User) getIndex(id ulid.ULID) (int, bool) {
 	return i, true
 }
 
-func (u *User) Get(id ulid.ULID) (UserInfo, bool) {
+func (u *User) Get(id string) (UserInfo, bool) {
 	i, ok := u.getIndex(id)
 	if !ok {
 		return UserInfo{}, false
@@ -114,8 +117,8 @@ func (u *User) Get(id ulid.ULID) (UserInfo, bool) {
 
 func (u *User) Register(username string, password string, groups []string, email string) error {
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
-	id := ulid.Make()
-	hashedPassword := hash([]byte(id.String()), password)
+	id := ulid.Make().String()
+	hashedPassword := hash([]byte(id), password)
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -153,7 +156,7 @@ func (u *User) KnownGroups() []string {
 	return slices.Sorted(maps.Keys(seen))
 }
 
-func (u *User) ChangePassword(userID ulid.ULID, oldPassword, newPassword string) error {
+func (u *User) ChangePassword(userID string, oldPassword, newPassword string) error {
 	if !u.PasswordChangeable {
 		return errors.New("password changes are disabled")
 	}
@@ -168,7 +171,7 @@ func (u *User) ChangePassword(userID ulid.ULID, oldPassword, newPassword string)
 	if !verifyPassword(user, oldPassword) {
 		return errors.New("invalid old password")
 	}
-	u.users[i].Password = hash([]byte(user.ID.String()), newPassword)
+	u.users[i].Password = hash([]byte(user.ID), newPassword)
 	return nil
 }
 
@@ -234,5 +237,24 @@ func (u *User) loadUsersFromFile() error {
 		return err
 	}
 
-	return nil
+	var errs []error
+	seenIDs := map[string]struct{}{}
+	seenUsernames := map[string]struct{}{}
+	for _, user := range u.users {
+		if user.ID == "" {
+			errs = append(errs, fmt.Errorf("user %q has no id", user.Username))
+		} else if _, dup := seenIDs[user.ID]; dup {
+			errs = append(errs, fmt.Errorf("duplicate user id %q", user.ID))
+		} else {
+			seenIDs[user.ID] = struct{}{}
+		}
+
+		if _, dup := seenUsernames[user.Username]; dup {
+			errs = append(errs, fmt.Errorf("duplicate username %q", user.Username))
+		} else {
+			seenUsernames[user.Username] = struct{}{}
+		}
+	}
+
+	return errors.Join(errs...)
 }

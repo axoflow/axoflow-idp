@@ -51,11 +51,16 @@ func verifyPassword(user UserInfo, password string) bool {
 	default:
 		// Backward compat: Password was []byte, serialized by encoding/json as standard base64.
 		// Salt was user.ID.String() with the current argon2id parameters.
+		//
+		// Renaming the ID of a user with a legacy hash breaks verification — the hash
+		// was derived with the original ID as salt, so a new ID produces a different
+		// expected value. Upgrade such users to PHC argon2id or bcrypt (both embed
+		// their own salt) before changing their ID.
 		raw, err := base64.StdEncoding.DecodeString(user.Password)
 		if err != nil {
 			return false
 		}
-		expected := argon2.IDKey([]byte(password), []byte(user.ID.String()), argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+		expected := argon2.IDKey([]byte(password), []byte(user.ID), argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
 		return subtle.ConstantTimeCompare(raw, expected) == 1
 	}
 }

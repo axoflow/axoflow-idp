@@ -22,7 +22,7 @@ import (
 
 type session struct {
 	ID     ulid.ULID
-	userID ulid.ULID
+	userID string
 }
 
 type Session struct {
@@ -35,7 +35,7 @@ func New() *Session {
 	}
 }
 
-func (s *Session) Create(userId ulid.ULID) string {
+func (s *Session) Create(userId string) string {
 	ses := session{
 		ID:     ulid.Make(),
 		userID: userId,
@@ -45,10 +45,10 @@ func (s *Session) Create(userId ulid.ULID) string {
 	return ses.ID.String()
 }
 
-func (s *Session) Get(sessionId string) (ulid.ULID, error) {
+func (s *Session) Get(sessionId string) (string, error) {
 	session, ok := s.sessions[sessionId]
 	if !ok {
-		return ulid.ULID{}, errors.New("session not found")
+		return "", errors.New("session not found")
 	}
 
 	return session.userID, nil
