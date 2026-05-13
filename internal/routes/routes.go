@@ -16,8 +16,11 @@ package routes
 
 import (
 	"errors"
+	"fmt"
 	"html/template"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/internal/session"
@@ -46,17 +49,45 @@ type Routes struct {
 	csrfKey       []byte
 }
 
-func New(config Config) *Routes {
+func New(config Config) (*Routes, error) {
+	dir, err := findTemplatesDir()
+	if err != nil {
+		return nil, err
+	}
+	tpl, err := template.ParseGlob(filepath.Join(dir, "*.html"))
+	if err != nil {
+		return nil, fmt.Errorf("parse templates in %s: %w", dir, err)
+	}
 	return &Routes{
 		oidc:          config.Oidc,
 		session:       config.Session,
-		template:      template.Must(template.ParseGlob("templates/*.html")),
+		template:      tpl,
 		user:          config.User,
 		store:         config.CodeStore,
 		tokenStore:    config.TokenStore,
 		secureCookies: config.SecureCookies,
 		csrfKey:       generateCSRFKey(),
+	}, nil
+}
+
+// findTemplatesDir locates the HTML templates directory. It checks, in order:
+// the TEMPLATES_DIR environment variable, ./templates in the current working
+// directory, and a templates/ directory next to the running executable.
+func findTemplatesDir() (string, error) {
+	candidates := make([]string, 0, 3)
+	if env := os.Getenv("TEMPLATES_DIR"); env != "" {
+		candidates = append(candidates, env)
 	}
+	candidates = append(candidates, "templates")
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "templates"))
+	}
+	for _, dir := range candidates {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir, nil
+		}
+	}
+	return "", fmt.Errorf("templates directory not found in any of: %v", candidates)
 }
 
 func (r *Routes) getUserFromSession(req *http.Request) (*user.UserInfo, error) {
