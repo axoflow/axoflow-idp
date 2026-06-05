@@ -360,7 +360,11 @@
                         <td>
                             <div class="badge-group">
                                 {{ range .Groups }}
-                                <span class="badge{{ if eq . "admins" }} admin{{ end }}">{{ . }}</span>
+                                {{ if and $.AdminGroup (eq . $.AdminGroup) }}
+                                <span class="badge admin" title="Member of the administrator group &quot;{{ $.AdminGroup }}&quot; — can manage all users and reset passwords">{{ . }}</span>
+                                {{ else }}
+                                <span class="badge">{{ . }}</span>
+                                {{ end }}
                                 {{ end }}
                             </div>
                         </td>

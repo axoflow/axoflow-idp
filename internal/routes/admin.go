@@ -53,6 +53,7 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 		Users         any
 		CSRFToken     string
 		KnownGroups   []string
+		AdminGroup    string
 		ResetLink     string
 		ResetLinkUser string
 	}{
@@ -60,6 +61,7 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 		Users:         users,
 		CSRFToken:     r.csrfToken(sessionCookie.Value),
 		KnownGroups:   r.user.KnownGroups(),
+		AdminGroup:    r.user.UserAdminGroup,
 		ResetLink:     resetLink,
 		ResetLinkUser: resetLinkUser,
 	}); err != nil {

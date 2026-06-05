@@ -240,6 +240,28 @@ func TestAdminCreateResetLink_Success(t *testing.T) {
 	}
 }
 
+func TestAdminPanel_HighlightsAdminGroup(t *testing.T) {
+	r := newTestRoutes(t, true)
+	cookie, _ := r.authed("admin1")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+
+	r.AdminPanel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="badge admin"`) {
+		t.Error("admin-group membership should be highlighted")
+	}
+	if !strings.Contains(body, "Member of the administrator group") {
+		t.Error("admin badge should carry an explanatory tooltip")
+	}
+}
+
 func TestAdminRegister_WithResetLink(t *testing.T) {
 	r := newTestRoutes(t, true)
 	cookie, csrf := r.authed("admin1")
