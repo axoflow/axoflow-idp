@@ -36,6 +36,17 @@ func (u *User) AdminRegister(adminID string, username string, password string, g
 	return u.Register(username, password, groups, email)
 }
 
+// AdminRegisterLocked registers a user with no usable password (see
+// RegisterLocked) on behalf of an admin, returning the new user's ID so the
+// caller can issue a password-reset link for them.
+func (u *User) AdminRegisterLocked(adminID string, username string, groups []string, email string) (string, error) {
+	if !u.getAndVerifyAdmin(adminID) {
+		return "", errors.New("user is not an admin")
+	}
+
+	return u.RegisterLocked(username, groups, email)
+}
+
 func (u *User) AdminList(adminID string) ([]UserInfo, error) {
 	if !u.getAndVerifyAdmin(adminID) {
 		return nil, errors.New("user is not an admin")

@@ -29,6 +29,12 @@ import (
 
 const (
 	RoleUser = "user"
+
+	// LockedPasswordHash is stored as a user's password to mark the account as
+	// having no usable password. It is neither an argon2id nor a bcrypt string
+	// and is invalid base64, so verifyPassword rejects every input: the user
+	// must set a password (e.g. via a reset link) before they can log in.
+	LockedPasswordHash = "!"
 )
 
 type Config struct {
@@ -121,21 +127,34 @@ func (u *User) Get(id string) (UserInfo, bool) {
 func (u *User) Register(username string, password string, groups []string, email string) error {
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	hashedPassword := hash([]byte(id), password)
+	_, err := u.register(id, username, hash([]byte(id), password), groups, email)
+	return err
+}
 
+// RegisterLocked creates a user whose password cannot be matched (see
+// LockedPasswordHash), so the account is unusable until a password is set, e.g.
+// via a reset link. It returns the new user's ID.
+func (u *User) RegisterLocked(username string, groups []string, email string) (string, error) {
+	id := ulid.Make().String()
+	return u.register(id, username, LockedPasswordHash, groups, email)
+}
+
+// register appends a user with an already-computed password hash, returning the
+// user's ID on success.
+func (u *User) register(id, username, hashedPassword string, groups []string, email string) (string, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
 	if slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
 	}) != -1 {
-		return errors.New("username already exists")
+		return "", errors.New("username already exists")
 	}
 
 	if email != "" && slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Email == email
 	}) != -1 {
-		return errors.New("email already registered")
+		return "", errors.New("email already registered")
 	}
 
 	u.users = append(u.users, UserInfo{
@@ -146,7 +165,7 @@ func (u *User) Register(username string, password string, groups []string, email
 		Groups:   groups,
 	})
 
-	return nil
+	return id, nil
 }
 
 func (u *User) KnownGroups() []string {

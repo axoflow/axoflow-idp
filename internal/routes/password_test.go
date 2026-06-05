@@ -240,6 +240,48 @@ func TestAdminCreateResetLink_Success(t *testing.T) {
 	}
 }
 
+func TestAdminRegister_WithResetLink(t *testing.T) {
+	r := newTestRoutes(t, true)
+	cookie, csrf := r.authed("admin1")
+
+	form := url.Values{
+		"auth_method": {"reset_link"},
+		"username":    {"newuser"},
+		"email":       {"new@example.com"},
+		"groups":      {"user"},
+		"csrf_token":  {csrf},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/register", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+
+	r.AdminRegister(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	m := linkRe.FindStringSubmatch(rec.Body.String())
+	if m == nil {
+		t.Fatal("response should contain a /set-password link")
+	}
+	// The new user exists but cannot log in until they use the link.
+	if _, ok := r.user.Authenticate("newuser", ""); ok {
+		t.Error("locked user should not authenticate with empty password")
+	}
+
+	userID, ok := r.resetTokens.Consume(m[1])
+	if !ok {
+		t.Fatal("minted token should be valid")
+	}
+	if err := r.user.SetPassword(userID, "chosen"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if _, ok := r.user.Authenticate("newuser", "chosen"); !ok {
+		t.Error("user should authenticate after setting a password via the link")
+	}
+}
+
 // --- SetPassword (flow C) ---
 
 func TestSetPassword_GetWithoutTokenIsInvalid(t *testing.T) {

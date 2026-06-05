@@ -82,18 +82,7 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 	sessionCookie, _ := req.Cookie("session")
 	switch req.Method {
 	case http.MethodGet:
-		if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
-			Username    string
-			Message     string
-			CSRFToken   string
-			KnownGroups []string
-		}{
-			Username:    admin.Username,
-			CSRFToken:   r.csrfToken(sessionCookie.Value),
-			KnownGroups: r.user.KnownGroups(),
-		}); err != nil {
-			slog.Error("failed to render admin register template", "error", err)
-		}
+		r.renderAdminRegister(res, sessionCookie.Value, admin.Username, "")
 		return
 
 	case http.MethodPost:
@@ -110,39 +99,22 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		password := req.Form.Get("password")
 		groups := req.Form["groups"]
 
+		// The admin can either set an initial password or have the new user set
+		// their own via a one-time reset link (no password chosen by the admin).
+		if req.Form.Get("auth_method") == "reset_link" {
+			r.adminRegisterWithResetLink(res, req, admin, sessionCookie.Value, username, email, groups)
+			return
+		}
+
 		if err := r.user.AdminRegister(admin.ID, username, password, groups, email); err != nil {
 			res.WriteHeader(http.StatusBadRequest)
-			if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
-				Username    string
-				Message     string
-				CSRFToken   string
-				KnownGroups []string
-			}{
-				Username:    admin.Username,
-				Message:     err.Error(),
-				CSRFToken:   r.csrfToken(sessionCookie.Value),
-				KnownGroups: r.user.KnownGroups(),
-			}); err != nil {
-				slog.Error("failed to render admin register template", "error", err)
-			}
+			r.renderAdminRegister(res, sessionCookie.Value, admin.Username, err.Error())
 			return
 		}
 
 		if err := r.user.SaveUsers(); err != nil {
 			res.WriteHeader(http.StatusInternalServerError)
-			if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
-				Username    string
-				Message     string
-				CSRFToken   string
-				KnownGroups []string
-			}{
-				Username:    admin.Username,
-				Message:     err.Error(),
-				CSRFToken:   r.csrfToken(sessionCookie.Value),
-				KnownGroups: r.user.KnownGroups(),
-			}); err != nil {
-				slog.Error("failed to render admin register template", "error", err)
-			}
+			r.renderAdminRegister(res, sessionCookie.Value, admin.Username, err.Error())
 			return
 		}
 
@@ -155,6 +127,55 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		res.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+}
+
+func (r *Routes) renderAdminRegister(res http.ResponseWriter, sessionID, adminUsername, message string) {
+	if err := r.template.ExecuteTemplate(res, "admin_register.html", struct {
+		Username    string
+		Message     string
+		CSRFToken   string
+		KnownGroups []string
+	}{
+		Username:    adminUsername,
+		Message:     message,
+		CSRFToken:   r.csrfToken(sessionID),
+		KnownGroups: r.user.KnownGroups(),
+	}); err != nil {
+		slog.Error("failed to render admin register template", "error", err)
+	}
+}
+
+// adminRegisterWithResetLink creates a user with no usable password and shows a
+// one-time reset link for them, so the new user chooses their own password and
+// the admin never sees it.
+func (r *Routes) adminRegisterWithResetLink(res http.ResponseWriter, req *http.Request, admin *user.UserInfo, sessionID, username, email string, groups []string) {
+	if !r.user.PasswordChangeable {
+		res.WriteHeader(http.StatusForbidden)
+		r.renderAdminRegister(res, sessionID, admin.Username, "Password changes are disabled; cannot create a reset link")
+		return
+	}
+
+	newID, err := r.user.AdminRegisterLocked(admin.ID, username, groups, email)
+	if err != nil {
+		res.WriteHeader(http.StatusBadRequest)
+		r.renderAdminRegister(res, sessionID, admin.Username, err.Error())
+		return
+	}
+
+	if err := r.user.SaveUsers(); err != nil {
+		res.WriteHeader(http.StatusInternalServerError)
+		r.renderAdminRegister(res, sessionID, admin.Username, err.Error())
+		return
+	}
+
+	token, err := r.resetTokens.Create(newID)
+	if err != nil {
+		http.Error(res, "Could not create reset link", http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("admin registered new user with reset link", "admin", admin.Username, "new_user", username)
+	r.renderAdminPanel(res, req, admin, r.resetLinkURL(token), username)
 }
 
 func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
