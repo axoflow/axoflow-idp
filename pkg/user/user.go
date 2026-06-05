@@ -19,8 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"maps"
+	"os"
 	"slices"
 	"sync"
 
@@ -50,7 +50,7 @@ type UserInfo struct {
 
 type User struct {
 	Config
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	users []UserInfo
 }
 
@@ -107,6 +107,9 @@ func (u *User) getIndex(id string) (int, bool) {
 }
 
 func (u *User) Get(id string) (UserInfo, bool) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
 	i, ok := u.getIndex(id)
 	if !ok {
 		return UserInfo{}, false
@@ -147,6 +150,9 @@ func (u *User) Register(username string, password string, groups []string, email
 }
 
 func (u *User) KnownGroups() []string {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
 	seen := map[string]struct{}{}
 	for _, user := range u.users {
 		for _, g := range user.Groups {
@@ -166,25 +172,35 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) er
 		return errors.New("user not found")
 	}
 
-	i, _ := u.getIndex(userID)
-
+	// verifyPassword and hash run argon2id (~100ms each); keep them out of the lock.
 	if !verifyPassword(user, oldPassword) {
 		return errors.New("invalid old password")
 	}
-	u.users[i].Password = hash([]byte(user.ID), newPassword)
+	newHash := hash([]byte(user.ID), newPassword)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	i, ok := u.getIndex(userID)
+	if !ok {
+		return errors.New("user not found")
+	}
+	u.users[i].Password = newHash
 	return nil
 }
 
 func (u *User) Authenticate(username, password string) (UserInfo, bool) {
+	u.mu.RLock()
 	i := slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
 	})
 	if i == -1 {
+		u.mu.RUnlock()
 		return UserInfo{}, false
 	}
-
 	user := u.users[i]
+	u.mu.RUnlock()
 
+	// verifyPassword runs argon2id/bcrypt (~100ms); keep it out of the lock.
 	return user, verifyPassword(user, password)
 }
 
@@ -193,7 +209,9 @@ func (u *User) SaveUsers() error {
 		return nil
 	}
 
+	u.mu.RLock()
 	data, err := json.Marshal(u.users)
+	u.mu.RUnlock()
 	if err != nil {
 		return err
 	}

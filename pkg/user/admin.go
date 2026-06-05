@@ -41,6 +41,9 @@ func (u *User) AdminList(adminID string) ([]UserInfo, error) {
 		return nil, errors.New("user is not an admin")
 	}
 
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
 	users := make([]UserInfo, len(u.users))
 	copy(users, u.users)
 	for i := range users {
@@ -59,6 +62,9 @@ func (u *User) AdminDelete(adminID string, targetID string) error {
 		return errors.New("are you trying to delete yourself?")
 	}
 
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
 	i, ok := u.getIndex(targetID)
 	if !ok {
 		return errors.New("target user not found")
@@ -73,12 +79,18 @@ func (u *User) AdminResetPassword(adminID string, targetID string, newPassword s
 		return errors.New("user is not an admin")
 	}
 
+	// hash runs argon2id (~100ms); keep it out of the lock.
+	newHash := hash([]byte(targetID), newPassword)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
 	i, ok := u.getIndex(targetID)
 	if !ok {
 		return errors.New("target user not found")
 	}
 
-	u.users[i].Password = hash([]byte(targetID), newPassword)
+	u.users[i].Password = newHash
 	return nil
 }
 
@@ -86,6 +98,9 @@ func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []s
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	i, ok := u.getIndex(targetID)
 	if !ok {
