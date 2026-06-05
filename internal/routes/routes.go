@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/session"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
@@ -30,12 +31,14 @@ import (
 )
 
 type Config struct {
-	Oidc           *oidc.Oidc
-	Session        *session.Session
-	User           *user.User
-	CodeStore      *codestore.CodeStore
-	TokenStore     *tokenstore.TokenStore
-	SecureCookies  bool
+	Oidc          *oidc.Oidc
+	Session       *session.Session
+	User          *user.User
+	CodeStore     *codestore.CodeStore
+	TokenStore    *tokenstore.TokenStore
+	ResetTokens   *resettoken.Store
+	BaseURL       string
+	SecureCookies bool
 }
 
 type Routes struct {
@@ -45,6 +48,8 @@ type Routes struct {
 	user          *user.User
 	store         *codestore.CodeStore
 	tokenStore    *tokenstore.TokenStore
+	resetTokens   *resettoken.Store
+	baseURL       string
 	secureCookies bool
 	csrfKey       []byte
 }
@@ -65,6 +70,8 @@ func New(config Config) (*Routes, error) {
 		user:          config.User,
 		store:         config.CodeStore,
 		tokenStore:    config.TokenStore,
+		resetTokens:   config.ResetTokens,
+		baseURL:       config.BaseURL,
 		secureCookies: config.SecureCookies,
 		csrfKey:       generateCSRFKey(),
 	}, nil

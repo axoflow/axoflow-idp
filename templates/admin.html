@@ -115,6 +115,47 @@
             color: #ec0b43;
         }
 
+        .reset-link-form {
+            margin: 0;
+            padding: 0;
+            display: contents;
+        }
+
+        .reset-link-box {
+            background: #fff7ed;
+            border: 1px solid #ff6500;
+            border-radius: 8px;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .reset-link-title {
+            font-size: 13px;
+            color: #0f1425;
+        }
+
+        .reset-link-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .reset-link-row input {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #bfc2c8;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: 'Montserrat', sans-serif;
+            background: white;
+        }
+
+        .reset-link-row button {
+            min-width: 90px;
+        }
+
         .badge-group {
             display: flex;
             flex-wrap: wrap;
@@ -289,6 +330,19 @@
 
             <h2>Users</h2>
 
+            {{ if .ResetLink }}
+            <div class="reset-link-box">
+                <div class="reset-link-title">
+                    One-time password-reset link for <strong>{{ .ResetLinkUser }}</strong>
+                    — valid for 1 hour, single use. Share it over a trusted channel.
+                </div>
+                <div class="reset-link-row">
+                    <input type="text" id="reset-link-value" readonly value="{{ .ResetLink }}" onclick="this.select();" />
+                    <button type="button" onclick="copyResetLink()">Copy</button>
+                </div>
+            </div>
+            {{ end }}
+
             <table class="user-table">
                 <thead>
                     <tr>
@@ -323,6 +377,11 @@
                                     data-user-id="{{ .ID }}"
                                     data-username="{{ .Username }}"
                                     onclick="openResetModalFromData(this); return false;">Reset Password</a>
+                                <form action="/admin/users/reset-link" method="post" class="reset-link-form">
+                                    <input type="hidden" name="user_id" value="{{ .ID }}" />
+                                    <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}" />
+                                    <button type="submit" class="action-link">Reset Link</button>
+                                </form>
                                 <form action="/admin/users/delete" method="post" class="delete-form" data-username="{{ .Username }}">
                                     <input type="hidden" name="user_id" value="{{ .ID }}" />
                                     <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}" />
@@ -500,6 +559,13 @@
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') { closeResetModal(); closeUpdateGroupsModal(); }
     });
+
+    function copyResetLink() {
+        const el = document.getElementById('reset-link-value');
+        if (!el) return;
+        el.select();
+        navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy'));
+    }
 </script>
 </body>
 </html>

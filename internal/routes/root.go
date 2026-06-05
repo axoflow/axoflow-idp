@@ -24,18 +24,20 @@ import (
 
 func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 	info := struct {
-		Username         string
-		Email            string
-		Groups           []string
-		Message          string
-		Success          string
-		IsAdmin          bool
-		SiteName         string
-		SiteURL          string
-		SelfRegistration bool
-		CSRFToken        string
+		Username           string
+		Email              string
+		Groups             []string
+		Message            string
+		Success            string
+		IsAdmin            bool
+		SiteName           string
+		SiteURL            string
+		SelfRegistration   bool
+		PasswordChangeable bool
+		CSRFToken          string
 	}{
-		SelfRegistration: r.user.SelfRegistration,
+		SelfRegistration:   r.user.SelfRegistration,
+		PasswordChangeable: r.user.PasswordChangeable,
 	}
 	sessionCookie, _ := req.Cookie("session")
 	u, _ := r.getUserFromSession(req)
@@ -55,6 +57,8 @@ func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 		info.Success = "Welcome back, " + info.Username + "!"
 	case "logout":
 		info.Success = "You have been logged out successfully."
+	case "password":
+		info.Success = "Your password has been changed. Other sessions were signed out."
 	}
 
 	if err := r.template.ExecuteTemplate(res, "index.html", info); err != nil {
@@ -71,7 +75,11 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("")); err != nil {
+		data := r.loginTemplateData("")
+		if req.URL.Query().Get("flash") == "password_reset" {
+			data.Success = "Your password has been set. You can now sign in."
+		}
+		if err := r.template.ExecuteTemplate(res, "login.html", data); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return
@@ -93,10 +101,12 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 func (r *Routes) loginTemplateData(message string) struct {
 	Message          string
+	Success          string
 	SelfRegistration bool
 } {
 	return struct {
 		Message          string
+		Success          string
 		SelfRegistration bool
 	}{
 		Message:          message,
@@ -121,7 +131,12 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 		return nil
 	}
 
-	sessionId := r.session.Create(user.ID)
+	r.setSessionCookie(res, r.session.Create(user.ID))
+	return &user
+}
+
+// setSessionCookie writes the session cookie with the standard attributes.
+func (r *Routes) setSessionCookie(res http.ResponseWriter, sessionId string) {
 	http.SetCookie(res, &http.Cookie{
 		Name:     "session",
 		Value:    sessionId,
@@ -131,7 +146,6 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 		Secure:   r.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
-	return &user
 }
 
 func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {

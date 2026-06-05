@@ -67,3 +67,15 @@ func (s *Session) Delete(sessionId string) {
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionId)
 }
+
+// DeleteUserSessions removes every session belonging to userID. It is used to
+// log a user out of all devices after their password changes or is reset.
+func (s *Session) DeleteUserSessions(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, ses := range s.sessions {
+		if ses.userID == userID {
+			delete(s.sessions, id)
+		}
+	}
+}

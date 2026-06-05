@@ -35,6 +35,10 @@
             <a class="button" href="{{ .SiteURL }}">Go to {{ if .SiteName }}{{ .SiteName }}{{ else }}App{{ end }}</a>
             {{ end }}
 
+            {{ if .PasswordChangeable }}
+            <a class="button" href="/password">Change Password</a>
+            {{ end }}
+
             <form action="/logout" method="post">
                 <button type="submit">Logout</button>
             </form>

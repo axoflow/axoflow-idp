@@ -41,6 +41,26 @@ func TestCreateGetDelete(t *testing.T) {
 	}
 }
 
+func TestDeleteUserSessions(t *testing.T) {
+	s := New()
+
+	a1 := s.Create("alice")
+	a2 := s.Create("alice")
+	b1 := s.Create("bob")
+
+	s.DeleteUserSessions("alice")
+
+	if _, err := s.Get(a1); err == nil {
+		t.Error("alice session a1 should be gone")
+	}
+	if _, err := s.Get(a2); err == nil {
+		t.Error("alice session a2 should be gone")
+	}
+	if _, err := s.Get(b1); err != nil {
+		t.Error("bob session should be unaffected")
+	}
+}
+
 // TestConcurrentAccess hammers the store from many goroutines so the race
 // detector (go test -race) catches unsynchronized map access, which in Go
 // panics with "concurrent map read and map write" at runtime.

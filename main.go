@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/routes"
 	"github.com/axoflow/axoflow-idp/internal/session"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
@@ -33,6 +34,10 @@ import (
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
+
+// passwordResetLinkTTL is how long an admin-generated password-reset link
+// stays valid. Kept short to limit the window of a leaked link.
+const passwordResetLinkTTL = time.Hour
 
 type config struct {
 	BaseUrl    string             `json:"baseUrl"`
@@ -149,6 +154,8 @@ func main() {
 		User:          u,
 		CodeStore:     codestore.New(),
 		TokenStore:    tokenstore.New(*cfg.Token),
+		ResetTokens:   resettoken.New(passwordResetLinkTTL),
+		BaseURL:       cfg.BaseUrl,
 		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
 	})
 	if err != nil {
@@ -176,6 +183,13 @@ func main() {
 		http.HandleFunc("/register", r.Register)
 	}
 
+	if u.PasswordChangeable {
+		http.HandleFunc("/password", r.ChangePassword)
+		http.HandleFunc("/set-password", r.SetPassword)
+	} else {
+		slog.Warn("password changes are disabled; self-service password routes are off")
+	}
+
 	if u.UserAdminGroup != "" {
 		http.HandleFunc("/admin", r.AdminPanel)
 		http.HandleFunc("/admin/register", r.AdminRegister)
@@ -183,6 +197,9 @@ func main() {
 		http.HandleFunc("/admin/users/reset-password", r.AdminResetPassword)
 		http.HandleFunc("/admin/users/update-groups", r.AdminUpdateUserGroups)
 		http.HandleFunc("/admin/users/api", r.AdminUsersAPI)
+		if u.PasswordChangeable {
+			http.HandleFunc("/admin/users/reset-link", r.AdminCreateResetLink)
+		}
 	} else {
 		slog.Warn("user admin group is not set; admin routes are disabled")
 	}

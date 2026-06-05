@@ -188,6 +188,33 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) er
 	return nil
 }
 
+// SetPassword sets a user's password without requiring the current one. It is
+// used by admin-initiated reset flows (e.g. the password-reset link), where the
+// caller has already been authorized out of band. Like ChangePassword it is
+// gated on PasswordChangeable.
+func (u *User) SetPassword(userID, newPassword string) error {
+	if !u.PasswordChangeable {
+		return errors.New("password changes are disabled")
+	}
+
+	user, ok := u.Get(userID)
+	if !ok {
+		return errors.New("user not found")
+	}
+
+	// hash runs argon2id (~100ms); keep it out of the lock.
+	newHash := hash([]byte(user.ID), newPassword)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	i, ok := u.getIndex(userID)
+	if !ok {
+		return errors.New("user not found")
+	}
+	u.users[i].Password = newHash
+	return nil
+}
+
 func (u *User) Authenticate(username, password string) (UserInfo, bool) {
 	u.mu.RLock()
 	i := slices.IndexFunc(u.users, func(u UserInfo) bool {

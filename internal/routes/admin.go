@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 func (r *Routes) AdminPanel(res http.ResponseWriter, req *http.Request) {
@@ -32,6 +34,13 @@ func (r *Routes) AdminPanel(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	r.renderAdminPanel(res, req, admin, "", "")
+}
+
+// renderAdminPanel renders the admin panel. resetLink, when non-empty, surfaces
+// a freshly minted password-reset link for resetLinkUser so the admin can copy
+// it (the link is the secret, so it is shown once and never logged).
+func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, admin *user.UserInfo, resetLink, resetLinkUser string) {
 	users, err := r.user.AdminList(admin.ID)
 	if err != nil {
 		http.Error(res, err.Error(), http.StatusInternalServerError)
@@ -40,15 +49,19 @@ func (r *Routes) AdminPanel(res http.ResponseWriter, req *http.Request) {
 
 	sessionCookie, _ := req.Cookie("session")
 	if err := r.template.ExecuteTemplate(res, "admin.html", struct {
-		Username    string
-		Users       any
-		CSRFToken   string
-		KnownGroups []string
+		Username      string
+		Users         any
+		CSRFToken     string
+		KnownGroups   []string
+		ResetLink     string
+		ResetLinkUser string
 	}{
-		Username:    admin.Username,
-		Users:       users,
-		CSRFToken:   r.csrfToken(sessionCookie.Value),
-		KnownGroups: r.user.KnownGroups(),
+		Username:      admin.Username,
+		Users:         users,
+		CSRFToken:     r.csrfToken(sessionCookie.Value),
+		KnownGroups:   r.user.KnownGroups(),
+		ResetLink:     resetLink,
+		ResetLinkUser: resetLinkUser,
 	}); err != nil {
 		slog.Error("failed to render admin template", "error", err)
 	}

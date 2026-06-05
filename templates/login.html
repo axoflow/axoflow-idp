@@ -33,6 +33,9 @@
                 </div>
             </label>
 
+            {{ if .Success }}
+            <div class="success">{{ .Success }}</div>
+            {{ end }}
             {{ if .Message }}
             <div class="error" id="error">{{ .Message }}</div>
             {{ end }}
