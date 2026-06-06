@@ -33,6 +33,21 @@ and a `signingKey` (`generateIfMissing: true` for local dev). `config.json`,
 `users.json`, and `signing-key.json` are gitignored local/dev artifacts — never
 commit real secrets or users.
 
+### Local Kubernetes (Axoflow devs)
+
+Axoflow's dev environment runs in minikube (namespace `axoflow-local`). To try a
+local build there without pushing to a registry, build the image inside
+minikube's Docker daemon and point the `axoidp` deployment at it:
+
+```sh
+eval $(minikube docker-env)   # build into minikube's Docker, not the host's
+just image                    # → ghcr.io/axoflow/axoflow-idp
+kubectl -n axoflow-local set image deployment/axoidp '*=ghcr.io/axoflow/axoflow-idp:latest'
+```
+
+Use a locally-built tag with `imagePullPolicy: IfNotPresent` (or `Never`) so the
+cluster uses the in-daemon image instead of pulling from the registry.
+
 ## Project layout
 
 ```
