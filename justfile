@@ -26,6 +26,10 @@ test:
 test-race:
     go test -race ./...
 
+# Run the end-to-end suite: builds the server and drives the real HTTP flows.
+test-e2e:
+    python3 scripts/e2e.py
+
 # Build the container image (matches the name published by CI).
 image:
     docker build -t {{IMAGE}} .
