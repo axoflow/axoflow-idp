@@ -27,7 +27,7 @@ func TestLockedPasswordHashNeverVerifies(t *testing.T) {
 
 func TestRegisterLocked(t *testing.T) {
 	path := writeUsersFile(t, `[]`)
-	u, err := New(Config{FilePath: path, PasswordChangeable: true})
+	u, err := New(Config{FilePath: path})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

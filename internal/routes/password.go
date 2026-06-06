@@ -31,11 +31,6 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if !r.user.PasswordChangeable {
-		http.Error(res, "Password changes are disabled", http.StatusForbidden)
-		return
-	}
-
 	sessionCookie, _ := req.Cookie("session")
 
 	switch req.Method {
@@ -130,11 +125,6 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 		return
 	}
 
-	if !r.user.PasswordChangeable {
-		http.Error(res, "Password changes are disabled", http.StatusForbidden)
-		return
-	}
-
 	userID := req.Form.Get("user_id")
 	if userID == "" {
 		http.Error(res, "Invalid user ID", http.StatusBadRequest)
@@ -205,10 +195,6 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 		if newPassword == "" {
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderSetPasswordForm(res, token, "New password is required")
-			return
-		}
-		if !r.user.PasswordChangeable {
-			r.renderSetPasswordInvalid(res)
 			return
 		}
 

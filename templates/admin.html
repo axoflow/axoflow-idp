@@ -326,7 +326,9 @@
                 Logged in as: {{ .Username }}
             </div>
 
+            {{ if not .Static }}
             <a class="button" href="/admin/register" style="align-self: flex-start;">Register New User</a>
+            {{ end }}
 
             <h2>Users</h2>
 
@@ -349,7 +351,7 @@
                         <th>Username</th>
                         <th>Email</th>
                         <th>Groups</th>
-                        <th>Actions</th>
+                        {{ if not .Static }}<th>Actions</th>{{ end }}
                     </tr>
                 </thead>
                 <tbody>
@@ -368,6 +370,7 @@
                                 {{ end }}
                             </div>
                         </td>
+                        {{ if not $.Static }}
                         <td>
                             <div class="actions">
                                 <a class="action-link"
@@ -393,6 +396,7 @@
                                 </form>
                             </div>
                         </td>
+                        {{ end }}
                     </tr>
                     {{ end }}
                 </tbody>

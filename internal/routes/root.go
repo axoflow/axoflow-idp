@@ -24,20 +24,20 @@ import (
 
 func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 	info := struct {
-		Username           string
-		Email              string
-		Groups             []string
-		Message            string
-		Success            string
-		IsAdmin            bool
-		SiteName           string
-		SiteURL            string
-		SelfRegistration   bool
-		PasswordChangeable bool
-		CSRFToken          string
+		Username         string
+		Email            string
+		Groups           []string
+		Message          string
+		Success          string
+		IsAdmin          bool
+		SiteName         string
+		SiteURL          string
+		SelfRegistration bool
+		Static           bool
+		CSRFToken        string
 	}{
-		SelfRegistration:   r.user.SelfRegistration,
-		PasswordChangeable: r.user.PasswordChangeable,
+		SelfRegistration: r.user.SelfRegistration,
+		Static:           r.user.Static,
 	}
 	sessionCookie, _ := req.Cookie("session")
 	u, _ := r.getUserFromSession(req)

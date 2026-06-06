@@ -15,23 +15,24 @@
 package user
 
 import (
-	"strings"
+	"errors"
 	"testing"
 )
 
-func newTestUser(t *testing.T, passwordChangeable bool) *User {
+func newTestUser(t *testing.T, static bool) *User {
 	t.Helper()
 	path := writeUsersFile(t, `[{"ID":"alice","Username":"alice"}]`)
-	u, err := New(Config{FilePath: path, PasswordChangeable: passwordChangeable})
+	u, err := New(Config{FilePath: path, Static: static})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// Seed directly (bypasses the read-only guard) so static stores can be set up.
 	u.users[0].Password = hash([]byte("alice"), "original")
 	return u
 }
 
 func TestSetPassword(t *testing.T) {
-	u := newTestUser(t, true)
+	u := newTestUser(t, false)
 
 	if err := u.SetPassword("alice", "brand-new"); err != nil {
 		t.Fatalf("SetPassword: %v", err)
@@ -45,27 +46,23 @@ func TestSetPassword(t *testing.T) {
 	}
 }
 
-func TestSetPasswordDisabled(t *testing.T) {
-	u := newTestUser(t, false)
+func TestSetPasswordStatic(t *testing.T) {
+	u := newTestUser(t, true)
 
-	err := u.SetPassword("alice", "brand-new")
-	if err == nil {
-		t.Fatal("SetPassword should fail when passwordChangeable is false")
-	}
-	if !strings.Contains(err.Error(), "disabled") {
-		t.Errorf("unexpected error: %v", err)
+	if err := u.SetPassword("alice", "brand-new"); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("SetPassword in static mode = %v, want ErrReadOnly", err)
 	}
 }
 
 func TestSetPasswordUnknownUser(t *testing.T) {
-	u := newTestUser(t, true)
+	u := newTestUser(t, false)
 	if err := u.SetPassword("nobody", "x"); err == nil {
 		t.Error("SetPassword should fail for unknown user")
 	}
 }
 
 func TestChangePassword(t *testing.T) {
-	u := newTestUser(t, true)
+	u := newTestUser(t, false)
 
 	if err := u.ChangePassword("alice", "wrong", "new"); err == nil {
 		t.Error("ChangePassword with wrong old password should fail")

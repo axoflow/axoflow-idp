@@ -23,7 +23,7 @@ import (
 // catches unsynchronized access to the users slice.
 func TestConcurrentAccess(t *testing.T) {
 	path := writeUsersFile(t, `[{"ID":"alice","Username":"alice"}]`)
-	u, err := New(Config{FilePath: path, PasswordChangeable: true, UserAdminGroup: "admins"})
+	u, err := New(Config{FilePath: path, UserAdminGroup: "admins"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

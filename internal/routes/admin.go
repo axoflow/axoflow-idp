@@ -54,6 +54,7 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 		CSRFToken     string
 		KnownGroups   []string
 		AdminGroup    string
+		Static        bool
 		ResetLink     string
 		ResetLinkUser string
 	}{
@@ -62,6 +63,7 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 		CSRFToken:     r.csrfToken(sessionCookie.Value),
 		KnownGroups:   r.user.KnownGroups(),
 		AdminGroup:    r.user.UserAdminGroup,
+		Static:        r.user.Static,
 		ResetLink:     resetLink,
 		ResetLinkUser: resetLinkUser,
 	}); err != nil {
@@ -151,12 +153,6 @@ func (r *Routes) renderAdminRegister(res http.ResponseWriter, sessionID, adminUs
 // one-time reset link for them, so the new user chooses their own password and
 // the admin never sees it.
 func (r *Routes) adminRegisterWithResetLink(res http.ResponseWriter, req *http.Request, admin *user.UserInfo, sessionID, username, email string, groups []string) {
-	if !r.user.PasswordChangeable {
-		res.WriteHeader(http.StatusForbidden)
-		r.renderAdminRegister(res, sessionID, admin.Username, "Password changes are disabled; cannot create a reset link")
-		return
-	}
-
 	newID, err := r.user.AdminRegisterLocked(admin.ID, username, groups, email)
 	if err != nil {
 		res.WriteHeader(http.StatusBadRequest)

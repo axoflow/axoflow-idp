@@ -65,6 +65,9 @@ func (u *User) AdminList(adminID string) ([]UserInfo, error) {
 }
 
 func (u *User) AdminDelete(adminID string, targetID string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
@@ -86,6 +89,9 @@ func (u *User) AdminDelete(adminID string, targetID string) error {
 }
 
 func (u *User) AdminResetPassword(adminID string, targetID string, newPassword string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
@@ -106,6 +112,9 @@ func (u *User) AdminResetPassword(adminID string, targetID string, newPassword s
 }
 
 func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}

@@ -178,26 +178,31 @@ func main() {
 	http.HandleFunc("/token", r.OidcToken)
 	http.HandleFunc("/revoke", r.OidcRevoke)
 
-	if u.SelfRegistration {
+	// In static mode the user database is read-only, so no route that mutates
+	// it is registered (registration, password changes/resets, group updates,
+	// deletion). Only read endpoints remain.
+	if u.Static {
+		slog.Info("user database is static (read-only); user-mutating routes are disabled")
+	}
+
+	if u.SelfRegistration && !u.Static {
 		slog.Info("self-registration is enabled")
 		http.HandleFunc("/register", r.Register)
 	}
 
-	if u.PasswordChangeable {
+	if !u.Static {
 		http.HandleFunc("/password", r.ChangePassword)
 		http.HandleFunc("/set-password", r.SetPassword)
-	} else {
-		slog.Warn("password changes are disabled; self-service password routes are off")
 	}
 
 	if u.UserAdminGroup != "" {
 		http.HandleFunc("/admin", r.AdminPanel)
-		http.HandleFunc("/admin/register", r.AdminRegister)
-		http.HandleFunc("/admin/users/delete", r.AdminDeleteUser)
-		http.HandleFunc("/admin/users/reset-password", r.AdminResetPassword)
-		http.HandleFunc("/admin/users/update-groups", r.AdminUpdateUserGroups)
 		http.HandleFunc("/admin/users/api", r.AdminUsersAPI)
-		if u.PasswordChangeable {
+		if !u.Static {
+			http.HandleFunc("/admin/register", r.AdminRegister)
+			http.HandleFunc("/admin/users/delete", r.AdminDeleteUser)
+			http.HandleFunc("/admin/users/reset-password", r.AdminResetPassword)
+			http.HandleFunc("/admin/users/update-groups", r.AdminUpdateUserGroups)
 			http.HandleFunc("/admin/users/reset-link", r.AdminCreateResetLink)
 		}
 	} else {

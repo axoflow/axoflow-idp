@@ -38,13 +38,22 @@ const (
 )
 
 type Config struct {
-	SelfRegistration   bool       `json:"selfRegistration"`
-	UserAdminGroup     string     `json:"userAdminGroup"`
-	Defaults           []UserInfo `json:"users"`
-	FilePath           string     `json:"filePath"`
-	CreateIfMissing    bool       `json:"createIfMissing"`
-	PasswordChangeable bool       `json:"passwordChangeable"`
+	SelfRegistration bool       `json:"selfRegistration"`
+	UserAdminGroup   string     `json:"userAdminGroup"`
+	Defaults         []UserInfo `json:"users"`
+	FilePath         string     `json:"filePath"`
+	CreateIfMissing  bool       `json:"createIfMissing"`
+	// Static makes the user database read-only: every mutating operation
+	// (registration, password change/reset, group update, deletion) is
+	// rejected with ErrReadOnly. This lets the database be served from an
+	// immutable source such as a Kubernetes Secret instead of a writable
+	// volume.
+	Static bool `json:"static"`
 }
+
+// ErrReadOnly is returned by every mutating operation when the user database is
+// configured as static (read-only).
+var ErrReadOnly = errors.New("user database is read-only")
 
 type UserInfo struct {
 	ID       string
@@ -76,7 +85,7 @@ func New(config Config) (*User, error) {
 		users:  []UserInfo{},
 	}
 
-	if config.FilePath != "" && config.CreateIfMissing {
+	if !config.Static && config.FilePath != "" && config.CreateIfMissing {
 		_, err := os.Stat(config.FilePath)
 		if err != nil {
 			if u.Defaults != nil {
@@ -142,6 +151,10 @@ func (u *User) RegisterLocked(username string, groups []string, email string) (s
 // register appends a user with an already-computed password hash, returning the
 // user's ID on success.
 func (u *User) register(id, username, hashedPassword string, groups []string, email string) (string, error) {
+	if u.Static {
+		return "", ErrReadOnly
+	}
+
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
@@ -182,8 +195,8 @@ func (u *User) KnownGroups() []string {
 }
 
 func (u *User) ChangePassword(userID string, oldPassword, newPassword string) error {
-	if !u.PasswordChangeable {
-		return errors.New("password changes are disabled")
+	if u.Static {
+		return ErrReadOnly
 	}
 
 	user, ok := u.Get(userID)
@@ -209,11 +222,10 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) er
 
 // SetPassword sets a user's password without requiring the current one. It is
 // used by admin-initiated reset flows (e.g. the password-reset link), where the
-// caller has already been authorized out of band. Like ChangePassword it is
-// gated on PasswordChangeable.
+// caller has already been authorized out of band.
 func (u *User) SetPassword(userID, newPassword string) error {
-	if !u.PasswordChangeable {
-		return errors.New("password changes are disabled")
+	if u.Static {
+		return ErrReadOnly
 	}
 
 	user, ok := u.Get(userID)
@@ -251,6 +263,9 @@ func (u *User) Authenticate(username, password string) (UserInfo, bool) {
 }
 
 func (u *User) SaveUsers() error {
+	if u.Static {
+		return ErrReadOnly
+	}
 	if u.FilePath == "" {
 		return nil
 	}

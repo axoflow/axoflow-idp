@@ -35,7 +35,7 @@
             <a class="button" href="{{ .SiteURL }}">Go to {{ if .SiteName }}{{ .SiteName }}{{ else }}App{{ end }}</a>
             {{ end }}
 
-            {{ if .PasswordChangeable }}
+            {{ if not .Static }}
             <a class="button" href="/password">Change Password</a>
             {{ end }}
 
