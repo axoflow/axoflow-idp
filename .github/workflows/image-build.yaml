@@ -130,7 +130,7 @@ jobs:
           tar -xf image.tar -C image
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2,mirror.gcr.io/aquasec/trivy-db:2
           TRIVY_JAVA_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-java-db:1,ghcr.io/aquasecurity/trivy-java-db:1,mirror.gcr.io/aquasec/trivy-java-db:1
@@ -183,10 +183,10 @@ jobs:
               .runs[0].results |
               map({
                 cve: .ruleId,
-                severity: (.message.text | capture("Severity: (?P<s>[^\n]+)") | .s),
-                package: (.message.text | capture("Package: (?P<p>[^\n]+)") | .p),
-                installed: (.message.text | capture("Installed Version: (?P<v>[^\n]+)") | .v),
-                fixed: (.message.text | capture("Fixed Version: (?P<f>[^\n]+)") | .f),
+                severity: (.message.text | capture("Severity: (?<s>[^\n]+)") | .s),
+                package: (.message.text | capture("Package: (?<p>[^\n]+)") | .p),
+                installed: (.message.text | capture("Installed Version: (?<v>[^\n]+)") | .v),
+                fixed: (.message.text | capture("Fixed Version: (?<f>[^\n]+)") | .f),
                 sort_key: (
                   .message.text |
                   if test("Severity: CRITICAL") then 0

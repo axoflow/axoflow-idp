@@ -2,6 +2,7 @@ set shell := ["sh", "-c"]
 set export
 
 BIN := "bin"
+IMAGE := "ghcr.io/axoflow/axoflow-idp"
 GOLANGCI_LINT := BIN / "golangci-lint"
 LICENSEI := BIN / "licensei"
 EDITORCONFIG_CHECKER := BIN / "editorconfig-checker"
@@ -20,6 +21,23 @@ verify: editor-config lint-go license-check test
 
 test:
     go test -v ./...
+
+# Run all unit/integration tests with the race detector.
+test-race:
+    go test -race ./...
+
+# Build the container image (matches the name published by CI).
+image:
+    docker build -t {{IMAGE}} .
+
+# Build into minikube's Docker (tag :dev) and deploy to axoflow-local (local dev).
+minikube-deploy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(minikube docker-env)"
+    docker build -t {{IMAGE}}:dev .
+    kubectl -n axoflow-local set image deployment/axoidp '*={{IMAGE}}:dev'
+    kubectl -n axoflow-local rollout status deployment/axoidp --timeout=120s
 
 lint-go: (_install-golangci-lint GOLANGCI_LINT_VERSION GOVERSION)
     {{GOLANGCI_LINT}}_{{GOLANGCI_LINT_VERSION}}_{{GOVERSION}} run --timeout 5m
