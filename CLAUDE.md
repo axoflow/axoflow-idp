@@ -19,9 +19,19 @@ just lint-go      # golangci-lint
 just image        # build the container image
 ```
 
-Go version is pinned in `.go-version`. Run the server with `CONFIG=config.json
-go run .` (templates are loaded from `./templates`, overridable via
-`TEMPLATES_DIR`); it listens on `:8080`.
+Go version is pinned in `.go-version`.
+
+## Running
+
+```sh
+CONFIG=config.json go run .   # serves on :8080
+```
+
+Templates load from `./templates` (override with `TEMPLATES_DIR`). A minimal
+`config.json` needs `baseUrl`, at least one `client` (`id` + `redirectUri`),
+and a `signingKey` (`generateIfMissing: true` for local dev). `config.json`,
+`users.json`, and `signing-key.json` are gitignored local/dev artifacts — never
+commit real secrets or users.
 
 ## Project layout
 
@@ -38,6 +48,20 @@ pkg/keychain/            # signing-key storage
 templates/               # html/template pages
 scripts/e2e.py           # stdlib-only end-to-end tests
 ```
+
+## Endpoints
+
+- **OIDC**: `/.well-known/openid-configuration`, `/oidc/auth`, `/token`, `/oidc/jwks`, `/oidc/userinfo`, `/revoke`
+- **Auth / session**: `/` (profile), `/login`, `/logout`, `/register` (if self-registration is enabled)
+- **Self-service**: `/password` (change), `/set-password?token=…` (admin-issued reset link)
+- **Admin** (`userAdminGroup` members): `/admin`, `/admin/users/api`, plus writes `/admin/register` and `/admin/users/{delete,reset-password,update-groups,reset-link}`
+
+## Request flow
+
+Login verifies the password and sets a `session` cookie (in-memory `session`
+store). OIDC auth issues an authorization code (`codestore`); `/token` exchanges
+it for a JWT signed with the key from `keychain`; `/revoke` records revocations
+in `tokenstore`.
 
 ## Conventions
 
