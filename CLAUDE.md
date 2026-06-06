@@ -35,18 +35,16 @@ commit real secrets or users.
 
 ### Local Kubernetes (Axoflow devs)
 
-Axoflow's dev environment runs in minikube (namespace `axoflow-local`). To try a
-local build there without pushing to a registry, build the image inside
-minikube's Docker daemon and point the `axoidp` deployment at it:
+Axoflow's dev environment runs in minikube (namespace `axoflow-local`). To test
+a local build in-cluster without pushing to a registry:
 
 ```sh
-eval $(minikube docker-env)   # build into minikube's Docker, not the host's
-just image                    # → ghcr.io/axoflow/axoflow-idp
-kubectl -n axoflow-local set image deployment/axoidp '*=ghcr.io/axoflow/axoflow-idp:latest'
+just minikube-deploy
 ```
 
-Use a locally-built tag with `imagePullPolicy: IfNotPresent` (or `Never`) so the
-cluster uses the in-daemon image instead of pulling from the registry.
+It builds the image into minikube's Docker (tagged `:dev`) and points the
+`axoidp` deployment at it. The deployment uses `imagePullPolicy: IfNotPresent`,
+so it runs the in-daemon image instead of pulling from the registry.
 
 ## Project layout
 
