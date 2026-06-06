@@ -27,9 +27,11 @@ jobs:
         uses: extractions/setup-just@v3
 
       - name: Test
+        if: github.event_name == 'pull_request'
         run: just test
 
       - name: Race tests
+        if: github.event_name != 'pull_request'
         run: just test-race
 
   e2e:
