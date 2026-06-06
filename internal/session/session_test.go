@@ -64,7 +64,7 @@ func TestDeleteUserSessions(t *testing.T) {
 // TestConcurrentAccess hammers the store from many goroutines so the race
 // detector (go test -race) catches unsynchronized map access, which in Go
 // panics with "concurrent map read and map write" at runtime.
-func TestConcurrentAccess(t *testing.T) {
+func TestConcurrentAccess(_ *testing.T) {
 	s := New()
 
 	const workers = 50

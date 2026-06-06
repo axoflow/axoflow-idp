@@ -132,7 +132,7 @@ func TestTokensAreUnique(t *testing.T) {
 	}
 }
 
-func TestConcurrentAccess(t *testing.T) {
+func TestConcurrentAccess(_ *testing.T) {
 	s := New(time.Hour)
 	const workers = 50
 	var wg sync.WaitGroup
