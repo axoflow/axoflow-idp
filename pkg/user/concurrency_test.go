@@ -15,6 +15,8 @@
 package user
 
 import (
+	"encoding/json"
+	"os"
 	"sync"
 	"testing"
 )
@@ -42,4 +44,47 @@ func TestConcurrentAccess(t *testing.T) {
 		go func() { defer wg.Done(); _ = u.AdminResetPassword("alice", "alice", "next") }()
 	}
 	wg.Wait()
+}
+
+// TestConcurrentSaveUsers ensures that many concurrent SaveUsers calls never
+// corrupt the file: the temp file must not be shared between racing writers.
+// Without serialization, concurrent writers interleave bytes in the shared
+// temp file and one rename can move a partially written file into place.
+func TestConcurrentSaveUsers(t *testing.T) {
+	path := writeUsersFile(t, `[{"ID":"alice","Username":"alice"},{"ID":"bob","Username":"bob"}]`)
+	u, err := New(Config{FilePath: path})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const workers = 30
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	errs := make([]error, workers)
+	for i := 0; i < workers; i++ {
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = u.SaveUsers()
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("SaveUsers #%d returned error: %v", i, err)
+		}
+	}
+
+	// The persisted file must be valid, complete JSON every time.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read users file: %v", err)
+	}
+	var got []UserInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("users file is corrupt after concurrent saves: %v\ncontent: %s", err, data)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d users, want 2", len(got))
+	}
 }

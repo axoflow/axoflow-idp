@@ -65,8 +65,9 @@ type UserInfo struct {
 
 type User struct {
 	Config
-	mu    sync.RWMutex
-	users []UserInfo
+	mu     sync.RWMutex // guards users
+	saveMu sync.Mutex   // serializes SaveUsers so concurrent saves never share the temp file
+	users  []UserInfo
 }
 
 func ensureUserID(users []UserInfo) []UserInfo {
@@ -269,6 +270,11 @@ func (u *User) SaveUsers() error {
 	if u.FilePath == "" {
 		return nil
 	}
+
+	// Serialize saves: the temp file path is shared, so two concurrent saves
+	// must not write it at the same time. Held across marshal+write+rename.
+	u.saveMu.Lock()
+	defer u.saveMu.Unlock()
 
 	u.mu.RLock()
 	data, err := json.Marshal(u.users)
