@@ -17,7 +17,10 @@ GOVERSION := `go env GOVERSION`
 default:
     @just --list
 
-verify: editor-config lint-go license-check test
+# Pre-push gate: the fast CI checks (lint, license, tests). editor-config is
+# intentionally excluded (CI does not run it); test-e2e is left out for speed —
+# run it separately for significant changes.
+verify: lint-go license-check test
 
 test:
     go test -v ./...
