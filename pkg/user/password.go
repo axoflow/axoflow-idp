@@ -29,7 +29,25 @@ const (
 	argon2Memory  = 15 * 1024
 	argon2Threads = 1
 	argon2KeyLen  = 32
+
+	// minPasswordLength is the minimum length enforced on every password-setting
+	// path (Register, ChangePassword, SetPassword, AdminResetPassword).
+	minPasswordLength = 8
 )
+
+// validatePassword enforces the minimum password policy applied on every write
+// path, so a direct POST cannot bypass the client-side minlength hint. It
+// requires at least minPasswordLength non-whitespace characters: trimming
+// before the length check rejects whitespace-only or whitespace-padded values,
+// which are almost always an accidental, trivially weak entry. It wraps
+// ErrWeakPassword so callers can surface a friendly, retryable message at the
+// route layer.
+func validatePassword(p string) error {
+	if len(strings.TrimSpace(p)) < minPasswordLength {
+		return fmt.Errorf("%w: must be at least %d characters and not whitespace-only", ErrWeakPassword, minPasswordLength)
+	}
+	return nil
+}
 
 // hash returns an argon2id PHC string: $argon2id$v=<v>$m=<m>,t=<t>,p=<p>$<salt>$<hash>
 func hash(salt []byte, password string) string {

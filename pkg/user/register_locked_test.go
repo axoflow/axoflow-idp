@@ -48,10 +48,10 @@ func TestRegisterLocked(t *testing.T) {
 		t.Error("locked account should not authenticate")
 	}
 
-	if err := u.SetPassword(id, "chosen"); err != nil {
+	if err := u.SetPassword(id, "chosenpw1"); err != nil {
 		t.Fatalf("SetPassword: %v", err)
 	}
-	if _, ok := u.Authenticate("carol", "chosen"); !ok {
+	if _, ok := u.Authenticate("carol", "chosenpw1"); !ok {
 		t.Error("account should authenticate after a password is set")
 	}
 }

@@ -95,16 +95,27 @@ func (u *User) AdminResetPassword(adminID string, targetID string, newPassword s
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
+
+	// Fetch first so a reset against a missing target fails fast instead of
+	// wasting the ~100ms hash, and salt with the stored ID (mirrors
+	// ChangePassword/SetPassword) rather than the caller-supplied parameter.
+	user, ok := u.Get(targetID)
+	if !ok {
+		return errors.New("target user not found")
+	}
 
 	// hash runs argon2id (~100ms); keep it out of the lock.
-	newHash := hash([]byte(targetID), newPassword)
+	newHash := hash([]byte(user.ID), newPassword)
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
 	i, ok := u.getIndex(targetID)
 	if !ok {
-		return errors.New("target user not found")
+		return errors.New("target user not found") // concurrent deletion
 	}
 
 	u.users[i].Password = newHash

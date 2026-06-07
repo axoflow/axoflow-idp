@@ -15,6 +15,7 @@
 package routes
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -54,12 +55,31 @@ type Routes struct {
 	csrfKey       []byte
 }
 
+// templateFuncs are the helpers available to every HTML template.
+var templateFuncs = template.FuncMap{
+	// toJSON renders a value as a JSON literal, e.g. to pass a user's groups to
+	// client-side JS through a data- attribute as a real array.
+	"toJSON": func(v any) (string, error) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	},
+}
+
+// parseTemplates loads every *.html template in dir with templateFuncs
+// registered. Both the server and the tests go through it.
+func parseTemplates(dir string) (*template.Template, error) {
+	return template.New("").Funcs(templateFuncs).ParseGlob(filepath.Join(dir, "*.html"))
+}
+
 func New(config Config) (*Routes, error) {
 	dir, err := findTemplatesDir()
 	if err != nil {
 		return nil, err
 	}
-	tpl, err := template.ParseGlob(filepath.Join(dir, "*.html"))
+	tpl, err := parseTemplates(dir)
 	if err != nil {
 		return nil, fmt.Errorf("parse templates in %s: %w", dir, err)
 	}

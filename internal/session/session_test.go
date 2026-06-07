@@ -76,6 +76,7 @@ func TestConcurrentAccess(_ *testing.T) {
 			for j := 0; j < 100; j++ {
 				id := s.Create("user")
 				_, _ = s.Get(id)
+				s.DeleteUserSessions("user")
 				s.Delete(id)
 			}
 		}()

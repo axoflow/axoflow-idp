@@ -15,10 +15,13 @@
 package routes
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 // ChangePassword lets a logged-in user change their own password after
@@ -63,6 +66,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.SaveUsers(); err != nil {
+			slog.Error("failed to save users after password change", "user_id", u.ID, "error", err)
 			res.WriteHeader(http.StatusInternalServerError)
 			r.renderChangePassword(res, sessionCookie.Value, "Could not save your new password, please try again")
 			return
@@ -143,6 +147,7 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 
 	token, err := r.resetTokens.Create(userID)
 	if err != nil {
+		slog.Error("failed to generate password reset token", "target_user_id", userID, "error", err)
 		http.Error(res, "Could not create reset link", http.StatusInternalServerError)
 		return
 	}
@@ -207,19 +212,33 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.SetPassword(userID, newPassword); err != nil {
+			// A weak password is a client-side mistake: keep the token usable and
+			// re-render the form with the reason, like the empty-password branch.
+			if errors.Is(err, user.ErrWeakPassword) {
+				res.WriteHeader(http.StatusBadRequest)
+				r.renderSetPasswordForm(res, token, err.Error())
+				return
+			}
 			slog.Warn("set password via reset link failed", "target_user_id", userID, "error", err)
 			r.renderSetPasswordInvalid(res)
 			return
 		}
 
 		if err := r.user.SaveUsers(); err != nil {
+			slog.Error("failed to save users after set-password via reset link", "target_user_id", userID, "error", err)
 			res.WriteHeader(http.StatusInternalServerError)
 			r.renderSetPasswordForm(res, token, "Could not save your new password, please try again")
 			return
 		}
 
-		// Only now burn the token, and sign out any existing sessions.
-		r.resetTokens.Consume(token)
+		// Only now burn the token, and sign out any existing sessions. The token
+		// was already saved durably above, so a retryable link is no longer
+		// needed. If Consume reports the token already gone, a concurrent
+		// request for the same link won the race (e.g. a double submit): the
+		// password is set either way, so log the anomaly rather than fail.
+		if _, ok := r.resetTokens.Consume(token); !ok {
+			slog.Warn("reset token already consumed by a concurrent request", "target_user_id", userID)
+		}
 		r.session.DeleteUserSessions(userID)
 
 		slog.Info("password set via reset link", "target_user_id", userID)

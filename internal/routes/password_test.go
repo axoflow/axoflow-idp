@@ -15,7 +15,6 @@
 package routes
 
 import (
-	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -45,7 +44,7 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 	if err != nil {
 		t.Fatalf("seed user store: %v", err)
 	}
-	for id, pw := range map[string]string{"admin1": "adminpass", "bob": "bobpass"} {
+	for id, pw := range map[string]string{"admin1": "adminpass", "bob": "bobpass1"} {
 		if err := seed.SetPassword(id, pw); err != nil {
 			t.Fatalf("seed password: %v", err)
 		}
@@ -59,7 +58,7 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 		t.Fatalf("user store: %v", err)
 	}
 
-	tpl, err := template.ParseGlob(filepath.Join("..", "..", "templates", "*.html"))
+	tpl, err := parseTemplates(filepath.Join("..", "..", "templates"))
 	if err != nil {
 		t.Fatalf("parse templates: %v", err)
 	}
@@ -111,7 +110,7 @@ func TestChangePassword_WrongCurrentPassword(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
-	if _, ok := r.user.Authenticate("bob", "bobpass"); !ok {
+	if _, ok := r.user.Authenticate("bob", "bobpass1"); !ok {
 		t.Error("password must be unchanged after a failed attempt")
 	}
 }
@@ -120,7 +119,7 @@ func TestChangePassword_BadCSRF(t *testing.T) {
 	r := newTestRoutes(t, false)
 	cookie, _ := r.authed("bob")
 
-	form := url.Values{"current_password": {"bobpass"}, "new_password": {"newsecret"}, "csrf_token": {"bad"}}
+	form := url.Values{"current_password": {"bobpass1"}, "new_password": {"newsecret"}, "csrf_token": {"bad"}}
 	req := httptest.NewRequest(http.MethodPost, "/password", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
@@ -139,7 +138,7 @@ func TestChangePassword_Success(t *testing.T) {
 	// A second device/session that must be invalidated.
 	otherSession := r.session.Create("bob")
 
-	form := url.Values{"current_password": {"bobpass"}, "new_password": {"newsecret"}, "csrf_token": {csrf}}
+	form := url.Values{"current_password": {"bobpass1"}, "new_password": {"newsecret"}, "csrf_token": {csrf}}
 	req := httptest.NewRequest(http.MethodPost, "/password", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
@@ -165,7 +164,7 @@ func TestChangePassword_StaticRejected(t *testing.T) {
 	r := newTestRoutes(t, true) // static / read-only user DB
 	cookie, csrf := r.authed("bob")
 
-	form := url.Values{"current_password": {"bobpass"}, "new_password": {"newsecret"}, "csrf_token": {csrf}}
+	form := url.Values{"current_password": {"bobpass1"}, "new_password": {"newsecret"}, "csrf_token": {csrf}}
 	req := httptest.NewRequest(http.MethodPost, "/password", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
@@ -179,8 +178,28 @@ func TestChangePassword_StaticRejected(t *testing.T) {
 	if _, ok := r.user.Authenticate("bob", "newsecret"); ok {
 		t.Error("password must not change in static mode")
 	}
-	if _, ok := r.user.Authenticate("bob", "bobpass"); !ok {
+	if _, ok := r.user.Authenticate("bob", "bobpass1"); !ok {
 		t.Error("original password must still work in static mode")
+	}
+}
+
+func TestChangePassword_EmptyNewPassword(t *testing.T) {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("bob")
+
+	form := url.Values{"current_password": {"bobpass1"}, "new_password": {""}, "csrf_token": {csrf}}
+	req := httptest.NewRequest(http.MethodPost, "/password", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+
+	r.ChangePassword(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if _, ok := r.user.Authenticate("bob", "bobpass1"); !ok {
+		t.Error("password must be unchanged")
 	}
 }
 
@@ -248,6 +267,40 @@ func TestAdminCreateResetLink_Success(t *testing.T) {
 	}
 }
 
+func TestAdminCreateResetLink_BadCSRF(t *testing.T) {
+	r := newTestRoutes(t, false)
+	cookie, _ := r.authed("admin1")
+
+	form := url.Values{"user_id": {"bob"}, "csrf_token": {"bad"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/reset-link", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+
+	r.AdminCreateResetLink(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestAdminCreateResetLink_UnknownUser(t *testing.T) {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("admin1")
+
+	form := url.Values{"user_id": {"does-not-exist"}, "csrf_token": {csrf}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/reset-link", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+
+	r.AdminCreateResetLink(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestAdminPanel_HighlightsAdminGroup(t *testing.T) {
 	r := newTestRoutes(t, false)
 	cookie, _ := r.authed("admin1")
@@ -304,10 +357,10 @@ func TestAdminRegister_WithResetLink(t *testing.T) {
 	if !ok {
 		t.Fatal("minted token should be valid")
 	}
-	if err := r.user.SetPassword(userID, "chosen"); err != nil {
+	if err := r.user.SetPassword(userID, "chosenpw1"); err != nil {
 		t.Fatalf("SetPassword: %v", err)
 	}
-	if _, ok := r.user.Authenticate("newuser", "chosen"); !ok {
+	if _, ok := r.user.Authenticate("newuser", "chosenpw1"); !ok {
 		t.Error("user should authenticate after setting a password via the link")
 	}
 }
@@ -321,6 +374,9 @@ func TestSetPassword_GetWithoutTokenIsInvalid(t *testing.T) {
 
 	r.SetPassword(rec, req)
 
+	if v := rec.Header().Get("Referrer-Policy"); v != "no-referrer" {
+		t.Errorf("Referrer-Policy = %q, want \"no-referrer\"", v)
+	}
 	if !strings.Contains(rec.Body.String(), "invalid or has expired") {
 		t.Error("expected invalid-link message")
 	}
@@ -340,6 +396,9 @@ func TestSetPassword_Success(t *testing.T) {
 
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
+	}
+	if v := rec.Header().Get("Referrer-Policy"); v != "no-referrer" {
+		t.Errorf("Referrer-Policy = %q, want \"no-referrer\"", v)
 	}
 	if loc := rec.Header().Get("Location"); loc != "/login?flash=password_reset" {
 		t.Errorf("redirect = %q", loc)
@@ -386,5 +445,32 @@ func TestSetPassword_EmptyPasswordDoesNotConsumeToken(t *testing.T) {
 	// Token must still be usable.
 	if _, ok := r.resetTokens.Consume(tok); !ok {
 		t.Error("token should not be consumed on an empty-password submission")
+	}
+}
+
+func TestSetPassword_ValidTokenDeletedUser(t *testing.T) {
+	r := newTestRoutes(t, false)
+	tok, _ := r.resetTokens.Create("bob")
+	if err := r.user.AdminDelete("admin1", "bob"); err != nil {
+		t.Fatalf("AdminDelete: %v", err)
+	}
+	if err := r.user.SaveUsers(); err != nil {
+		t.Fatalf("SaveUsers: %v", err)
+	}
+
+	form := url.Values{"token": {tok}, "new_password": {"freshpass"}}
+	req := httptest.NewRequest(http.MethodPost, "/set-password", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	r.SetPassword(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	// SetPassword failed (user gone) before the token was consumed, so the link
+	// stays valid for a retry.
+	if _, ok := r.resetTokens.Peek(tok); !ok {
+		t.Error("token should remain valid after a failed SetPassword")
 	}
 }

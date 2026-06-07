@@ -21,6 +21,7 @@ package resettoken
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -120,7 +121,7 @@ func (s *Store) Peek(token string) (string, bool) {
 func randomToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return "", err
+		return "", fmt.Errorf("generate random token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }

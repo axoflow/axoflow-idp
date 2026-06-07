@@ -55,6 +55,18 @@ type Config struct {
 // configured as static (read-only).
 var ErrReadOnly = errors.New("user database is read-only")
 
+// ErrWeakPassword is wrapped by validatePassword when a password does not meet
+// the minimum policy. Routes match it with errors.Is to show a friendly,
+// retryable message instead of treating it as an opaque failure.
+var ErrWeakPassword = errors.New("password does not meet the minimum requirements")
+
+// dummyPasswordHash is a valid argon2id hash verified on the username-not-found
+// path of Authenticate so that path spends the same ~100ms as a real password
+// check, denying an attacker a timing oracle for enumerating valid usernames.
+// LockedPasswordHash ("!") would not work here: it fails base64 decoding before
+// argon2 runs, so it returns early and does not equalize the timing.
+var dummyPasswordHash = hash([]byte("timing-equalization-salt"), "timing-equalization-password")
+
 type UserInfo struct {
 	ID       string
 	Username string
@@ -135,6 +147,13 @@ func (u *User) Get(id string) (UserInfo, bool) {
 }
 
 func (u *User) Register(username string, password string, groups []string, email string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
+	if err := validatePassword(password); err != nil {
+		return err
+	}
+
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
 	_, err := u.register(id, username, hash([]byte(id), password), groups, email)
@@ -199,6 +218,9 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) er
 	if u.Static {
 		return ErrReadOnly
 	}
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
 
 	user, ok := u.Get(userID)
 	if !ok {
@@ -228,6 +250,9 @@ func (u *User) SetPassword(userID, newPassword string) error {
 	if u.Static {
 		return ErrReadOnly
 	}
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
 
 	user, ok := u.Get(userID)
 	if !ok {
@@ -254,6 +279,9 @@ func (u *User) Authenticate(username, password string) (UserInfo, bool) {
 	})
 	if i == -1 {
 		u.mu.RUnlock()
+		// Run a verify against a dummy hash so the not-found path takes the same
+		// ~100ms as a real check, closing the username-enumeration timing oracle.
+		_ = verifyPassword(UserInfo{Password: dummyPasswordHash}, password)
 		return UserInfo{}, false
 	}
 	user := u.users[i]
@@ -285,7 +313,7 @@ func (u *User) SaveUsers() error {
 
 	file, err := os.Create(u.FilePath + "~")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temp user file: %w", err)
 	}
 
 	_, err = file.Write(data)
@@ -294,15 +322,15 @@ func (u *User) SaveUsers() error {
 			slog.Error("failed to close user file after write error", "error", err)
 		}
 
-		return err
+		return fmt.Errorf("write user data: %w", err)
 	}
 
 	if err := file.Close(); err != nil {
-		return err
+		return fmt.Errorf("close temp user file: %w", err)
 	}
 
 	if err := os.Rename(u.FilePath+"~", u.FilePath); err != nil {
-		return err
+		return fmt.Errorf("rename temp user file: %w", err)
 	}
 
 	return nil

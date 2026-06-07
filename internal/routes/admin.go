@@ -43,7 +43,8 @@ func (r *Routes) AdminPanel(res http.ResponseWriter, req *http.Request) {
 func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, admin *user.UserInfo, resetLink, resetLinkUser string) {
 	users, err := r.user.AdminList(admin.ID)
 	if err != nil {
-		http.Error(res, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to list users for admin panel", "admin", admin.Username, "error", err)
+		http.Error(res, "Failed to load user list", http.StatusInternalServerError)
 		return
 	}
 
@@ -117,8 +118,9 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.SaveUsers(); err != nil {
+			slog.Error("failed to save users", "operation", "register", "admin", admin.Username, "new_user", username, "error", err)
 			res.WriteHeader(http.StatusInternalServerError)
-			r.renderAdminRegister(res, sessionCookie.Value, admin.Username, err.Error())
+			r.renderAdminRegister(res, sessionCookie.Value, admin.Username, "Failed to save changes")
 			return
 		}
 
@@ -161,13 +163,15 @@ func (r *Routes) adminRegisterWithResetLink(res http.ResponseWriter, req *http.R
 	}
 
 	if err := r.user.SaveUsers(); err != nil {
+		slog.Error("failed to save users", "operation", "register_locked", "admin", admin.Username, "new_user", username, "error", err)
 		res.WriteHeader(http.StatusInternalServerError)
-		r.renderAdminRegister(res, sessionID, admin.Username, err.Error())
+		r.renderAdminRegister(res, sessionID, admin.Username, "Failed to save changes")
 		return
 	}
 
 	token, err := r.resetTokens.Create(newID)
 	if err != nil {
+		slog.Error("failed to generate password reset token", "target_user_id", newID, "error", err)
 		http.Error(res, "Could not create reset link", http.StatusInternalServerError)
 		return
 	}
@@ -214,7 +218,8 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := r.user.SaveUsers(); err != nil {
-		http.Error(res, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to save users", "operation", "delete", "admin", admin.Username, "target_user_id", userId, "error", err)
+		http.Error(res, "Failed to save changes", http.StatusInternalServerError)
 		return
 	}
 
@@ -267,9 +272,14 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 	}
 
 	if err := r.user.SaveUsers(); err != nil {
-		http.Error(res, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to save users", "operation", "reset_password", "admin", admin.Username, "target_user_id", userId, "error", err)
+		http.Error(res, "Failed to save changes", http.StatusInternalServerError)
 		return
 	}
+
+	// Invalidate the target's existing sessions so an admin reset actually locks
+	// out a compromised/departed user (mirrors the reset-link flow).
+	r.session.DeleteUserSessions(userId)
 
 	slog.Info("admin reset user password", "admin", admin.Username, "target_user_id", userId)
 
@@ -315,7 +325,8 @@ func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Reques
 	}
 
 	if err := r.user.SaveUsers(); err != nil {
-		http.Error(res, err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to save users", "operation", "update_groups", "admin", admin.Username, "target_user_id", userId, "error", err)
+		http.Error(res, "Failed to save changes", http.StatusInternalServerError)
 		return
 	}
 

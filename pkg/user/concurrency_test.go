@@ -35,13 +35,14 @@ func TestConcurrentAccess(t *testing.T) {
 
 	const workers = 20
 	var wg sync.WaitGroup
-	wg.Add(workers * 4)
+	wg.Add(workers * 5)
 
 	for i := 0; i < workers; i++ {
 		go func() { defer wg.Done(); _, _ = u.Get("alice") }()
 		go func() { defer wg.Done(); _, _ = u.Authenticate("alice", "start") }()
 		go func() { defer wg.Done(); _ = u.AdminUpdateUserGroups("alice", "alice", []string{"admins", "user"}) }()
-		go func() { defer wg.Done(); _ = u.AdminResetPassword("alice", "alice", "next") }()
+		go func() { defer wg.Done(); _ = u.AdminResetPassword("alice", "alice", "nextpass1") }()
+		go func() { defer wg.Done(); _ = u.SetPassword("alice", "concurrentpw") }()
 	}
 	wg.Wait()
 }

@@ -34,7 +34,7 @@ func newStaticStore(t *testing.T) *User {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := seed.SetPassword("bob", "bobpass"); err != nil {
+	if err := seed.SetPassword("bob", "bobpass1"); err != nil {
 		t.Fatalf("seed password: %v", err)
 	}
 	if err := seed.SaveUsers(); err != nil {
@@ -78,7 +78,7 @@ func TestStaticRejectsAllMutations(t *testing.T) {
 	}
 
 	// And the data is genuinely unchanged.
-	if _, ok := u.Authenticate("bob", "bobpass"); !ok {
+	if _, ok := u.Authenticate("bob", "bobpass1"); !ok {
 		t.Error("bob's password must be intact in static mode")
 	}
 }
@@ -89,7 +89,7 @@ func TestStaticReadsWork(t *testing.T) {
 	if _, ok := u.Get("bob"); !ok {
 		t.Error("Get should work in static mode")
 	}
-	if _, ok := u.Authenticate("bob", "bobpass"); !ok {
+	if _, ok := u.Authenticate("bob", "bobpass1"); !ok {
 		t.Error("Authenticate should work in static mode")
 	}
 	if _, err := u.AdminList("admin1"); err != nil {

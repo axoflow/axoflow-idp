@@ -64,13 +64,40 @@ func TestSetPasswordUnknownUser(t *testing.T) {
 func TestChangePassword(t *testing.T) {
 	u := newTestUser(t, false)
 
-	if err := u.ChangePassword("alice", "wrong", "new"); err == nil {
+	if err := u.ChangePassword("alice", "wrong", "newpass12"); err == nil {
 		t.Error("ChangePassword with wrong old password should fail")
 	}
-	if err := u.ChangePassword("alice", "original", "new"); err != nil {
+	if err := u.ChangePassword("alice", "original", "newpass12"); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}
-	if _, ok := u.Authenticate("alice", "new"); !ok {
+	if _, ok := u.Authenticate("alice", "newpass12"); !ok {
 		t.Error("changed password should authenticate")
+	}
+}
+
+func TestValidatePassword(t *testing.T) {
+	tests := []struct {
+		name     string
+		password string
+		wantErr  bool
+	}{
+		{"empty", "", true},
+		{"too short", "short", true},
+		{"whitespace only", "        ", true},
+		{"padded but too few real chars", "  abc   ", true},
+		{"exactly minimum", "12345678", false},
+		{"comfortably long", "a-good-long-password", false},
+		{"internal spaces allowed", "pass word ok", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePassword(tt.password)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validatePassword(%q) error = %v, wantErr %v", tt.password, err, tt.wantErr)
+			}
+			if err != nil && !errors.Is(err, ErrWeakPassword) {
+				t.Errorf("validatePassword(%q) error should wrap ErrWeakPassword, got %v", tt.password, err)
+			}
+		})
 	}
 }

@@ -377,7 +377,7 @@
                                     href="#"
                                     data-user-id="{{ .ID }}"
                                     data-username="{{ .Username }}"
-                                    data-groups="{{ range $i, $g := .Groups }}{{ if $i }},{{ end }}{{ $g }}{{ end }}"
+                                    data-groups="{{ toJSON .Groups }}"
                                     onclick="openUpdateGroupsModalFromData(this); return false;">Update Groups</a>
                                 <a class="action-link"
                                     href="#"
@@ -419,7 +419,7 @@
             </div>
             <div class="form-group">
                 <label for="new_password">New Password:</label>
-                <input type="password" id="new_password" name="new_password" required minlength="6" placeholder="Enter new password" />
+                <input type="password" id="new_password" name="new_password" required minlength="8" placeholder="Enter new password" />
             </div>
             <div class="modal-actions">
                 <button type="button" class="secondary" onclick="closeResetModal()">Cancel</button>
@@ -507,8 +507,7 @@
     }
 
     function openUpdateGroupsModalFromData(button) {
-        const groupsStr = button.getAttribute('data-groups');
-        const groups = groupsStr ? groupsStr.split(',').map(g => g.trim()).filter(g => g) : [];
+        const groups = JSON.parse(button.getAttribute('data-groups') || '[]') || [];
         openUpdateGroupsModal(button.getAttribute('data-user-id'), button.getAttribute('data-username'), groups);
     }
 

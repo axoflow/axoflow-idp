@@ -244,7 +244,7 @@ class ChangePasswordTest(ServerCase):
         bob = Client()
         bob.login("bob", "bobpass")
         code, _, _ = bob.post("/password", {
-            "current_password": "WRONG", "new_password": "x",
+            "current_password": "WRONG", "new_password": "newpass12",
             "csrf_token": bob.csrf("/password")})
         self.assertEqual(code, 400)
         self.assertEqual(Client().login("bob", "bobpass")[0], 302,
@@ -305,6 +305,8 @@ class AdminResetLinkTest(ServerCase):
                                    {"token": token, "new_password": "bobpass3"})
         self.assertEqual((code, hdrs.get("Location")),
                          (303, "/login?flash=password_reset"))
+        self.assertEqual(hdrs.get("Referrer-Policy"), "no-referrer",
+                         "token must stay out of the Referer on the POST too")
         self.assertEqual(Client().login("bob", "bobpass3")[0], 302)
 
         # single-use: replay must fail and must not change the password
