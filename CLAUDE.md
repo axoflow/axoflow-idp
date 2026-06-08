@@ -79,6 +79,9 @@ in `tokenstore`.
 ## Conventions
 
 - `gofmt` + `goimports`, always. Lint with `just lint-go`.
+- Run `just verify` before pushing — the fast CI gates (lint, license, tests).
+  Also run `just test-e2e` for significant Go changes (it's a CI gate too, just
+  too slow for every push).
 - Every source file carries the Apache-2.0 license header; `just license-check`
   enforces it (CI fails without it) — copy the header from any existing file
   when adding one.

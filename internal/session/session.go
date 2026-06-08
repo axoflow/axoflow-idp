@@ -16,6 +16,7 @@ package session
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -26,6 +27,7 @@ type session struct {
 }
 
 type Session struct {
+	mu       sync.RWMutex
 	sessions map[string]session
 }
 
@@ -40,12 +42,18 @@ func (s *Session) Create(userId string) string {
 		ID:     ulid.Make(),
 		userID: userId,
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sessions[ses.ID.String()] = ses
 
 	return ses.ID.String()
 }
 
 func (s *Session) Get(sessionId string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	session, ok := s.sessions[sessionId]
 	if !ok {
 		return "", errors.New("session not found")
@@ -55,5 +63,19 @@ func (s *Session) Get(sessionId string) (string, error) {
 }
 
 func (s *Session) Delete(sessionId string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.sessions, sessionId)
+}
+
+// DeleteUserSessions removes every session belonging to userID. It is used to
+// log a user out of all devices after their password changes or is reset.
+func (s *Session) DeleteUserSessions(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, ses := range s.sessions {
+		if ses.userID == userID {
+			delete(s.sessions, id)
+		}
+	}
 }

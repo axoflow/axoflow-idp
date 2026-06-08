@@ -36,10 +36,24 @@ func (u *User) AdminRegister(adminID string, username string, password string, g
 	return u.Register(username, password, groups, email)
 }
 
+// AdminRegisterLocked registers a user with no usable password (see
+// RegisterLocked) on behalf of an admin, returning the new user's ID so the
+// caller can issue a password-reset link for them.
+func (u *User) AdminRegisterLocked(adminID string, username string, groups []string, email string) (string, error) {
+	if !u.getAndVerifyAdmin(adminID) {
+		return "", errors.New("user is not an admin")
+	}
+
+	return u.RegisterLocked(username, groups, email)
+}
+
 func (u *User) AdminList(adminID string) ([]UserInfo, error) {
 	if !u.getAndVerifyAdmin(adminID) {
 		return nil, errors.New("user is not an admin")
 	}
+
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 
 	users := make([]UserInfo, len(u.users))
 	copy(users, u.users)
@@ -51,6 +65,9 @@ func (u *User) AdminList(adminID string) ([]UserInfo, error) {
 }
 
 func (u *User) AdminDelete(adminID string, targetID string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
@@ -58,6 +75,9 @@ func (u *User) AdminDelete(adminID string, targetID string) error {
 	if adminID == targetID {
 		return errors.New("are you trying to delete yourself?")
 	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	i, ok := u.getIndex(targetID)
 	if !ok {
@@ -69,23 +89,49 @@ func (u *User) AdminDelete(adminID string, targetID string) error {
 }
 
 func (u *User) AdminResetPassword(adminID string, targetID string, newPassword string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
 
-	i, ok := u.getIndex(targetID)
+	// Fetch first so a reset against a missing target fails fast instead of
+	// wasting the ~100ms hash, and salt with the stored ID (mirrors
+	// ChangePassword/SetPassword) rather than the caller-supplied parameter.
+	user, ok := u.Get(targetID)
 	if !ok {
 		return errors.New("target user not found")
 	}
 
-	u.users[i].Password = hash([]byte(targetID), newPassword)
+	// hash runs argon2id (~100ms); keep it out of the lock.
+	newHash := hash([]byte(user.ID), newPassword)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	i, ok := u.getIndex(targetID)
+	if !ok {
+		return errors.New("target user not found") // concurrent deletion
+	}
+
+	u.users[i].Password = newHash
 	return nil
 }
 
 func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	i, ok := u.getIndex(targetID)
 	if !ok {

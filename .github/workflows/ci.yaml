@@ -27,10 +27,32 @@ jobs:
         uses: extractions/setup-just@v3
 
       - name: Test
+        if: github.event_name == 'pull_request'
         run: just test
 
       - name: Race tests
+        if: github.event_name != 'pull_request'
         run: just test-race
+
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: '.go-version'
+          cache-dependency-path: go.sum
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+
+      - name: E2E tests
+        run: just test-e2e
 
   lint:
     name: Lint

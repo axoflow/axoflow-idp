@@ -15,6 +15,7 @@
 package routes
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -23,6 +24,7 @@ import (
 	"path/filepath"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/session"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
@@ -30,12 +32,14 @@ import (
 )
 
 type Config struct {
-	Oidc           *oidc.Oidc
-	Session        *session.Session
-	User           *user.User
-	CodeStore      *codestore.CodeStore
-	TokenStore     *tokenstore.TokenStore
-	SecureCookies  bool
+	Oidc          *oidc.Oidc
+	Session       *session.Session
+	User          *user.User
+	CodeStore     *codestore.CodeStore
+	TokenStore    *tokenstore.TokenStore
+	ResetTokens   *resettoken.Store
+	BaseURL       string
+	SecureCookies bool
 }
 
 type Routes struct {
@@ -45,8 +49,29 @@ type Routes struct {
 	user          *user.User
 	store         *codestore.CodeStore
 	tokenStore    *tokenstore.TokenStore
+	resetTokens   *resettoken.Store
+	baseURL       string
 	secureCookies bool
 	csrfKey       []byte
+}
+
+// templateFuncs are the helpers available to every HTML template.
+var templateFuncs = template.FuncMap{
+	// toJSON renders a value as a JSON literal, e.g. to pass a user's groups to
+	// client-side JS through a data- attribute as a real array.
+	"toJSON": func(v any) (string, error) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	},
+}
+
+// parseTemplates loads every *.html template in dir with templateFuncs
+// registered. Both the server and the tests go through it.
+func parseTemplates(dir string) (*template.Template, error) {
+	return template.New("").Funcs(templateFuncs).ParseGlob(filepath.Join(dir, "*.html"))
 }
 
 func New(config Config) (*Routes, error) {
@@ -54,7 +79,7 @@ func New(config Config) (*Routes, error) {
 	if err != nil {
 		return nil, err
 	}
-	tpl, err := template.ParseGlob(filepath.Join(dir, "*.html"))
+	tpl, err := parseTemplates(dir)
 	if err != nil {
 		return nil, fmt.Errorf("parse templates in %s: %w", dir, err)
 	}
@@ -65,6 +90,8 @@ func New(config Config) (*Routes, error) {
 		user:          config.User,
 		store:         config.CodeStore,
 		tokenStore:    config.TokenStore,
+		resetTokens:   config.ResetTokens,
+		baseURL:       config.BaseURL,
 		secureCookies: config.SecureCookies,
 		csrfKey:       generateCSRFKey(),
 	}, nil

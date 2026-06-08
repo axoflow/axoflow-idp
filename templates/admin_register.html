@@ -82,6 +82,27 @@
             font-weight: 700;
             text-decoration: none;
         }
+
+        .auth-method {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            border: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .auth-method .radio {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .auth-method input[type="radio"] {
+            width: auto;
+        }
     </style>
 </head>
 <body>
@@ -115,7 +136,18 @@
                 </div>
             </label>
 
-            <label class="label">
+            <fieldset class="auth-method">
+                <label class="radio">
+                    <input type="radio" name="auth_method" value="password" checked onchange="onAuthMethodChange()" />
+                    Set a password now
+                </label>
+                <label class="radio">
+                    <input type="radio" name="auth_method" value="reset_link" onchange="onAuthMethodChange()" />
+                    Send a password reset link (user sets their own)
+                </label>
+            </fieldset>
+
+            <label class="label" id="password-field">
                 Password
                 <div class="input">
                     <input type="password" name="password" placeholder="Enter password" required />
@@ -182,6 +214,17 @@
 
     const regGroups = tagInput('reg-groups-wrapper');
     regGroups.addChip('user');
+
+    function onAuthMethodChange() {
+        const checked = document.querySelector('input[name="auth_method"]:checked');
+        const useLink = checked && checked.value === 'reset_link';
+        const field = document.getElementById('password-field');
+        const input = field.querySelector('input[name="password"]');
+        field.style.display = useLink ? 'none' : '';
+        input.required = !useLink;
+        if (useLink) input.value = '';
+    }
+    onAuthMethodChange();
 
     document.querySelector('.register-container').addEventListener('submit', function() {
         regGroups.commit();

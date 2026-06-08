@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/routes"
 	"github.com/axoflow/axoflow-idp/internal/session"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
@@ -33,6 +34,10 @@ import (
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
+
+// passwordResetLinkTTL is how long an admin-generated password-reset link
+// stays valid. Kept short to limit the window of a leaked link.
+const passwordResetLinkTTL = time.Hour
 
 type config struct {
 	BaseUrl    string             `json:"baseUrl"`
@@ -149,6 +154,8 @@ func main() {
 		User:          u,
 		CodeStore:     codestore.New(),
 		TokenStore:    tokenstore.New(*cfg.Token),
+		ResetTokens:   resettoken.New(passwordResetLinkTTL),
+		BaseURL:       cfg.BaseUrl,
 		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
 	})
 	if err != nil {
@@ -171,18 +178,33 @@ func main() {
 	http.HandleFunc("/token", r.OidcToken)
 	http.HandleFunc("/revoke", r.OidcRevoke)
 
-	if u.SelfRegistration {
+	// In static mode the user database is read-only, so no route that mutates
+	// it is registered (registration, password changes/resets, group updates,
+	// deletion). Only read endpoints remain.
+	if u.Static {
+		slog.Info("user database is static (read-only); user-mutating routes are disabled")
+	}
+
+	if u.SelfRegistration && !u.Static {
 		slog.Info("self-registration is enabled")
 		http.HandleFunc("/register", r.Register)
 	}
 
+	if !u.Static {
+		http.HandleFunc("/password", r.ChangePassword)
+		http.HandleFunc("/set-password", r.SetPassword)
+	}
+
 	if u.UserAdminGroup != "" {
 		http.HandleFunc("/admin", r.AdminPanel)
-		http.HandleFunc("/admin/register", r.AdminRegister)
-		http.HandleFunc("/admin/users/delete", r.AdminDeleteUser)
-		http.HandleFunc("/admin/users/reset-password", r.AdminResetPassword)
-		http.HandleFunc("/admin/users/update-groups", r.AdminUpdateUserGroups)
 		http.HandleFunc("/admin/users/api", r.AdminUsersAPI)
+		if !u.Static {
+			http.HandleFunc("/admin/register", r.AdminRegister)
+			http.HandleFunc("/admin/users/delete", r.AdminDeleteUser)
+			http.HandleFunc("/admin/users/reset-password", r.AdminResetPassword)
+			http.HandleFunc("/admin/users/update-groups", r.AdminUpdateUserGroups)
+			http.HandleFunc("/admin/users/reset-link", r.AdminCreateResetLink)
+		}
 	} else {
 		slog.Warn("user admin group is not set; admin routes are disabled")
 	}

@@ -115,6 +115,47 @@
             color: #ec0b43;
         }
 
+        .reset-link-form {
+            margin: 0;
+            padding: 0;
+            display: contents;
+        }
+
+        .reset-link-box {
+            background: #fff7ed;
+            border: 1px solid #ff6500;
+            border-radius: 8px;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .reset-link-title {
+            font-size: 13px;
+            color: #0f1425;
+        }
+
+        .reset-link-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .reset-link-row input {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #bfc2c8;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: 'Montserrat', sans-serif;
+            background: white;
+        }
+
+        .reset-link-row button {
+            min-width: 90px;
+        }
+
         .badge-group {
             display: flex;
             flex-wrap: wrap;
@@ -285,9 +326,24 @@
                 Logged in as: {{ .Username }}
             </div>
 
+            {{ if not .Static }}
             <a class="button" href="/admin/register" style="align-self: flex-start;">Register New User</a>
+            {{ end }}
 
             <h2>Users</h2>
+
+            {{ if .ResetLink }}
+            <div class="reset-link-box">
+                <div class="reset-link-title">
+                    One-time password-reset link for <strong>{{ .ResetLinkUser }}</strong>
+                    — valid for 1 hour, single use. Share it over a trusted channel.
+                </div>
+                <div class="reset-link-row">
+                    <input type="text" id="reset-link-value" readonly value="{{ .ResetLink }}" onclick="this.select();" />
+                    <button type="button" onclick="copyResetLink()">Copy</button>
+                </div>
+            </div>
+            {{ end }}
 
             <table class="user-table">
                 <thead>
@@ -295,7 +351,7 @@
                         <th>Username</th>
                         <th>Email</th>
                         <th>Groups</th>
-                        <th>Actions</th>
+                        {{ if not .Static }}<th>Actions</th>{{ end }}
                     </tr>
                 </thead>
                 <tbody>
@@ -306,30 +362,45 @@
                         <td>
                             <div class="badge-group">
                                 {{ range .Groups }}
-                                <span class="badge{{ if eq . "admins" }} admin{{ end }}">{{ . }}</span>
+                                {{ if and $.AdminGroup (eq . $.AdminGroup) }}
+                                <span class="badge admin" title="Member of the administrator group &quot;{{ $.AdminGroup }}&quot; — can manage all users and reset passwords">{{ . }}</span>
+                                {{ else }}
+                                <span class="badge">{{ . }}</span>
+                                {{ end }}
                                 {{ end }}
                             </div>
                         </td>
+                        {{ if not $.Static }}
                         <td>
                             <div class="actions">
                                 <a class="action-link"
                                     href="#"
                                     data-user-id="{{ .ID }}"
                                     data-username="{{ .Username }}"
-                                    data-groups="{{ range $i, $g := .Groups }}{{ if $i }},{{ end }}{{ $g }}{{ end }}"
+                                    data-groups="{{ toJSON .Groups }}"
                                     onclick="openUpdateGroupsModalFromData(this); return false;">Update Groups</a>
                                 <a class="action-link"
                                     href="#"
                                     data-user-id="{{ .ID }}"
                                     data-username="{{ .Username }}"
                                     onclick="openResetModalFromData(this); return false;">Reset Password</a>
+                                {{ if ne .ID $.AdminID }}
+                                <form action="/admin/users/reset-link" method="post" class="reset-link-form">
+                                    <input type="hidden" name="user_id" value="{{ .ID }}" />
+                                    <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}" />
+                                    <button type="submit" class="action-link">Reset Link</button>
+                                </form>
+                                {{ end }}
+                                {{ if ne .ID $.AdminID }}
                                 <form action="/admin/users/delete" method="post" class="delete-form" data-username="{{ .Username }}">
                                     <input type="hidden" name="user_id" value="{{ .ID }}" />
                                     <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}" />
                                     <button type="submit" class="action-link danger">Delete</button>
                                 </form>
+                                {{ end }}
                             </div>
                         </td>
+                        {{ end }}
                     </tr>
                     {{ end }}
                 </tbody>
@@ -352,7 +423,7 @@
             </div>
             <div class="form-group">
                 <label for="new_password">New Password:</label>
-                <input type="password" id="new_password" name="new_password" required minlength="6" placeholder="Enter new password" />
+                <input type="password" id="new_password" name="new_password" required minlength="8" placeholder="Enter new password" />
             </div>
             <div class="modal-actions">
                 <button type="button" class="secondary" onclick="closeResetModal()">Cancel</button>
@@ -440,8 +511,7 @@
     }
 
     function openUpdateGroupsModalFromData(button) {
-        const groupsStr = button.getAttribute('data-groups');
-        const groups = groupsStr ? groupsStr.split(',').map(g => g.trim()).filter(g => g) : [];
+        const groups = JSON.parse(button.getAttribute('data-groups') || '[]') || [];
         openUpdateGroupsModal(button.getAttribute('data-user-id'), button.getAttribute('data-username'), groups);
     }
 
@@ -500,6 +570,13 @@
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') { closeResetModal(); closeUpdateGroupsModal(); }
     });
+
+    function copyResetLink() {
+        const el = document.getElementById('reset-link-value');
+        if (!el) return;
+        el.select();
+        navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy'));
+    }
 </script>
 </body>
 </html>

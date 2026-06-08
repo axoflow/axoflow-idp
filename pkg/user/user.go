@@ -19,8 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"maps"
+	"os"
 	"slices"
 	"sync"
 
@@ -29,16 +29,43 @@ import (
 
 const (
 	RoleUser = "user"
+
+	// LockedPasswordHash is stored as a user's password to mark the account as
+	// having no usable password. It is neither an argon2id nor a bcrypt string
+	// and is invalid base64, so verifyPassword rejects every input: the user
+	// must set a password (e.g. via a reset link) before they can log in.
+	LockedPasswordHash = "!"
 )
 
 type Config struct {
-	SelfRegistration   bool       `json:"selfRegistration"`
-	UserAdminGroup     string     `json:"userAdminGroup"`
-	Defaults           []UserInfo `json:"users"`
-	FilePath           string     `json:"filePath"`
-	CreateIfMissing    bool       `json:"createIfMissing"`
-	PasswordChangeable bool       `json:"passwordChangeable"`
+	SelfRegistration bool       `json:"selfRegistration"`
+	UserAdminGroup   string     `json:"userAdminGroup"`
+	Defaults         []UserInfo `json:"users"`
+	FilePath         string     `json:"filePath"`
+	CreateIfMissing  bool       `json:"createIfMissing"`
+	// Static makes the user database read-only: every mutating operation
+	// (registration, password change/reset, group update, deletion) is
+	// rejected with ErrReadOnly. This lets the database be served from an
+	// immutable source such as a Kubernetes Secret instead of a writable
+	// volume.
+	Static bool `json:"static"`
 }
+
+// ErrReadOnly is returned by every mutating operation when the user database is
+// configured as static (read-only).
+var ErrReadOnly = errors.New("user database is read-only")
+
+// ErrWeakPassword is wrapped by validatePassword when a password does not meet
+// the minimum policy. Routes match it with errors.Is to show a friendly,
+// retryable message instead of treating it as an opaque failure.
+var ErrWeakPassword = errors.New("password does not meet the minimum requirements")
+
+// dummyPasswordHash is a valid argon2id hash verified on the username-not-found
+// path of Authenticate so that path spends the same ~100ms as a real password
+// check, denying an attacker a timing oracle for enumerating valid usernames.
+// LockedPasswordHash ("!") would not work here: it fails base64 decoding before
+// argon2 runs, so it returns early and does not equalize the timing.
+var dummyPasswordHash = hash([]byte("timing-equalization-salt"), "timing-equalization-password")
 
 type UserInfo struct {
 	ID       string
@@ -50,8 +77,9 @@ type UserInfo struct {
 
 type User struct {
 	Config
-	mu    sync.Mutex
-	users []UserInfo
+	mu     sync.RWMutex // guards users
+	saveMu sync.Mutex   // serializes SaveUsers so concurrent saves never share the temp file
+	users  []UserInfo
 }
 
 func ensureUserID(users []UserInfo) []UserInfo {
@@ -70,7 +98,7 @@ func New(config Config) (*User, error) {
 		users:  []UserInfo{},
 	}
 
-	if config.FilePath != "" && config.CreateIfMissing {
+	if !config.Static && config.FilePath != "" && config.CreateIfMissing {
 		_, err := os.Stat(config.FilePath)
 		if err != nil {
 			if u.Defaults != nil {
@@ -107,6 +135,9 @@ func (u *User) getIndex(id string) (int, bool) {
 }
 
 func (u *User) Get(id string) (UserInfo, bool) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
 	i, ok := u.getIndex(id)
 	if !ok {
 		return UserInfo{}, false
@@ -116,9 +147,33 @@ func (u *User) Get(id string) (UserInfo, bool) {
 }
 
 func (u *User) Register(username string, password string, groups []string, email string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
+	if err := validatePassword(password); err != nil {
+		return err
+	}
+
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	hashedPassword := hash([]byte(id), password)
+	_, err := u.register(id, username, hash([]byte(id), password), groups, email)
+	return err
+}
+
+// RegisterLocked creates a user whose password cannot be matched (see
+// LockedPasswordHash), so the account is unusable until a password is set, e.g.
+// via a reset link. It returns the new user's ID.
+func (u *User) RegisterLocked(username string, groups []string, email string) (string, error) {
+	id := ulid.Make().String()
+	return u.register(id, username, LockedPasswordHash, groups, email)
+}
+
+// register appends a user with an already-computed password hash, returning the
+// user's ID on success.
+func (u *User) register(id, username, hashedPassword string, groups []string, email string) (string, error) {
+	if u.Static {
+		return "", ErrReadOnly
+	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -126,13 +181,13 @@ func (u *User) Register(username string, password string, groups []string, email
 	if slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
 	}) != -1 {
-		return errors.New("username already exists")
+		return "", errors.New("username already exists")
 	}
 
 	if email != "" && slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Email == email
 	}) != -1 {
-		return errors.New("email already registered")
+		return "", errors.New("email already registered")
 	}
 
 	u.users = append(u.users, UserInfo{
@@ -143,10 +198,13 @@ func (u *User) Register(username string, password string, groups []string, email
 		Groups:   groups,
 	})
 
-	return nil
+	return id, nil
 }
 
 func (u *User) KnownGroups() []string {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
 	seen := map[string]struct{}{}
 	for _, user := range u.users {
 		for _, g := range user.Groups {
@@ -157,8 +215,11 @@ func (u *User) KnownGroups() []string {
 }
 
 func (u *User) ChangePassword(userID string, oldPassword, newPassword string) error {
-	if !u.PasswordChangeable {
-		return errors.New("password changes are disabled")
+	if u.Static {
+		return ErrReadOnly
+	}
+	if err := validatePassword(newPassword); err != nil {
+		return err
 	}
 
 	user, ok := u.Get(userID)
@@ -166,41 +227,93 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) er
 		return errors.New("user not found")
 	}
 
-	i, _ := u.getIndex(userID)
-
+	// verifyPassword and hash run argon2id (~100ms each); keep them out of the lock.
 	if !verifyPassword(user, oldPassword) {
 		return errors.New("invalid old password")
 	}
-	u.users[i].Password = hash([]byte(user.ID), newPassword)
+	newHash := hash([]byte(user.ID), newPassword)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	i, ok := u.getIndex(userID)
+	if !ok {
+		return errors.New("user not found")
+	}
+	u.users[i].Password = newHash
+	return nil
+}
+
+// SetPassword sets a user's password without requiring the current one. It is
+// used by admin-initiated reset flows (e.g. the password-reset link), where the
+// caller has already been authorized out of band.
+func (u *User) SetPassword(userID, newPassword string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
+
+	user, ok := u.Get(userID)
+	if !ok {
+		return errors.New("user not found")
+	}
+
+	// hash runs argon2id (~100ms); keep it out of the lock.
+	newHash := hash([]byte(user.ID), newPassword)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	i, ok := u.getIndex(userID)
+	if !ok {
+		return errors.New("user not found")
+	}
+	u.users[i].Password = newHash
 	return nil
 }
 
 func (u *User) Authenticate(username, password string) (UserInfo, bool) {
+	u.mu.RLock()
 	i := slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
 	})
 	if i == -1 {
+		u.mu.RUnlock()
+		// Run a verify against a dummy hash so the not-found path takes the same
+		// ~100ms as a real check, closing the username-enumeration timing oracle.
+		_ = verifyPassword(UserInfo{Password: dummyPasswordHash}, password)
 		return UserInfo{}, false
 	}
-
 	user := u.users[i]
+	u.mu.RUnlock()
 
+	// verifyPassword runs argon2id/bcrypt (~100ms); keep it out of the lock.
 	return user, verifyPassword(user, password)
 }
 
 func (u *User) SaveUsers() error {
+	if u.Static {
+		return ErrReadOnly
+	}
 	if u.FilePath == "" {
 		return nil
 	}
 
+	// Serialize saves: the temp file path is shared, so two concurrent saves
+	// must not write it at the same time. Held across marshal+write+rename.
+	u.saveMu.Lock()
+	defer u.saveMu.Unlock()
+
+	u.mu.RLock()
 	data, err := json.Marshal(u.users)
+	u.mu.RUnlock()
 	if err != nil {
 		return err
 	}
 
 	file, err := os.Create(u.FilePath + "~")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temp user file: %w", err)
 	}
 
 	_, err = file.Write(data)
@@ -209,15 +322,15 @@ func (u *User) SaveUsers() error {
 			slog.Error("failed to close user file after write error", "error", err)
 		}
 
-		return err
+		return fmt.Errorf("write user data: %w", err)
 	}
 
 	if err := file.Close(); err != nil {
-		return err
+		return fmt.Errorf("close temp user file: %w", err)
 	}
 
 	if err := os.Rename(u.FilePath+"~", u.FilePath); err != nil {
-		return err
+		return fmt.Errorf("rename temp user file: %w", err)
 	}
 
 	return nil
