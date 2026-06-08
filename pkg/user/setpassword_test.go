@@ -56,8 +56,12 @@ func TestSetPasswordStatic(t *testing.T) {
 
 func TestSetPasswordUnknownUser(t *testing.T) {
 	u := newTestUser(t, false)
-	if err := u.SetPassword("nobody", "x"); err == nil {
-		t.Error("SetPassword should fail for unknown user")
+	err := u.SetPassword("nobody", "validpassword1")
+	if err == nil {
+		t.Fatal("SetPassword should fail for unknown user")
+	}
+	if errors.Is(err, ErrWeakPassword) {
+		t.Fatalf("expected user-not-found error, got weak-password error: %v", err)
 	}
 }
 

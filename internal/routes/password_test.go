@@ -301,6 +301,31 @@ func TestAdminCreateResetLink_UnknownUser(t *testing.T) {
 	}
 }
 
+func TestAdminResetPassword_InvalidatesTargetSessions(t *testing.T) {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("admin1")
+	// bob has an active session that the admin reset must invalidate.
+	bobSession := r.session.Create("bob")
+
+	form := url.Values{"user_id": {"bob"}, "new_password": {"newpass12"}, "csrf_token": {csrf}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/reset-password", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+
+	r.AdminResetPassword(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
+	}
+	if _, ok := r.user.Authenticate("bob", "newpass12"); !ok {
+		t.Error("new password should authenticate after admin reset")
+	}
+	if _, err := r.session.Get(bobSession); err == nil {
+		t.Error("target user sessions should be invalidated after admin reset")
+	}
+}
+
 func TestAdminPanel_HighlightsAdminGroup(t *testing.T) {
 	r := newTestRoutes(t, false)
 	cookie, _ := r.authed("admin1")
@@ -445,6 +470,30 @@ func TestSetPassword_EmptyPasswordDoesNotConsumeToken(t *testing.T) {
 	// Token must still be usable.
 	if _, ok := r.resetTokens.Consume(tok); !ok {
 		t.Error("token should not be consumed on an empty-password submission")
+	}
+}
+
+func TestSetPassword_WeakPasswordDoesNotConsumeToken(t *testing.T) {
+	r := newTestRoutes(t, false)
+	tok, _ := r.resetTokens.Create("bob")
+
+	form := url.Values{"token": {tok}, "new_password": {"short"}}
+	req := httptest.NewRequest(http.MethodPost, "/set-password", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	r.SetPassword(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	// A weak (too-short) password is a client-side validation failure: the link
+	// must stay valid for a retry.
+	if _, ok := r.resetTokens.Peek(tok); !ok {
+		t.Error("weak password must not consume the reset token")
+	}
+	if _, ok := r.user.Authenticate("bob", "short"); ok {
+		t.Error("weak password must not be set on the account")
 	}
 }
 
