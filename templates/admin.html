@@ -384,16 +384,20 @@
                                     data-user-id="{{ .ID }}"
                                     data-username="{{ .Username }}"
                                     onclick="openResetModalFromData(this); return false;">Reset Password</a>
+                                {{ if ne .ID $.AdminID }}
                                 <form action="/admin/users/reset-link" method="post" class="reset-link-form">
                                     <input type="hidden" name="user_id" value="{{ .ID }}" />
                                     <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}" />
                                     <button type="submit" class="action-link">Reset Link</button>
                                 </form>
+                                {{ end }}
+                                {{ if ne .ID $.AdminID }}
                                 <form action="/admin/users/delete" method="post" class="delete-form" data-username="{{ .Username }}">
                                     <input type="hidden" name="user_id" value="{{ .ID }}" />
                                     <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}" />
                                     <button type="submit" class="action-link danger">Delete</button>
                                 </form>
+                                {{ end }}
                             </div>
                         </td>
                         {{ end }}

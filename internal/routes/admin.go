@@ -51,6 +51,7 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 	sessionCookie, _ := req.Cookie("session")
 	if err := r.template.ExecuteTemplate(res, "admin.html", struct {
 		Username      string
+		AdminID       string
 		Users         any
 		CSRFToken     string
 		KnownGroups   []string
@@ -60,6 +61,7 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 		ResetLinkUser string
 	}{
 		Username:      admin.Username,
+		AdminID:       admin.ID,
 		Users:         users,
 		CSRFToken:     r.csrfToken(sessionCookie.Value),
 		KnownGroups:   r.user.KnownGroups(),
