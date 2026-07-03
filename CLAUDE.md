@@ -53,8 +53,9 @@ main.go                  # config load + route wiring + server start
 internal/routes/         # HTTP handlers (login, password, admin, OIDC), CSRF, templates
 internal/session/        # in-memory session store
 internal/resettoken/     # single-use password-reset tokens
-internal/codestore/      # OIDC authorization codes
+internal/codestore/      # OIDC authorization codes (carry the grant)
 internal/tokenstore/     # OIDC token revocation list
+internal/refreshstore/   # rotating refresh tokens (reuse detection, families)
 pkg/user/                # user database (users.json), password hashing, admin ops
 pkg/oidc/                # OIDC provider, JWKS, signing
 pkg/keychain/            # signing-key storage
@@ -64,7 +65,7 @@ scripts/e2e.py           # stdlib-only end-to-end tests
 
 ## Endpoints
 
-- **OIDC**: `/.well-known/openid-configuration`, `/oidc/auth` (PKCE S256 supported; per-client `requirePKCE`), `/token`, `/oidc/jwks`, `/oidc/userinfo`, `/revoke`
+- **OIDC**: `/.well-known/openid-configuration`, `/oidc/auth` (PKCE S256 supported; per-client `requirePKCE`), `/token` (`authorization_code` + `refresh_token` grants), `/oidc/jwks`, `/oidc/userinfo`, `/revoke`
 - **Auth / session**: `/` (profile), `/login`, `/logout`, `/register` (if self-registration is enabled)
 - **Self-service**: `/password` (change), `/set-password?token=…` (admin-issued reset link)
 - **Admin** (`userAdminGroup` members): `/admin`, `/admin/users/api`, plus writes `/admin/register` and `/admin/users/{delete,reset-password,update-groups,reset-link}`
@@ -72,9 +73,13 @@ scripts/e2e.py           # stdlib-only end-to-end tests
 ## Request flow
 
 Login verifies the password and sets a `session` cookie (in-memory `session`
-store). OIDC auth issues an authorization code (`codestore`); `/token` exchanges
-it for a JWT signed with the key from `keychain`; `/revoke` records revocations
-in `tokenstore`.
+store). OIDC auth issues an authorization code (`codestore`, which carries the
+grant); `/token` exchanges it for a JWT signed with the key from `keychain`.
+When the `refresh` config block is present and the client is an
+`allowOfflineAccess` client that requested `offline_access`, `/token` also
+issues a rotating refresh token (`refreshstore`); `grant_type=refresh_token`
+then rotates it and re-mints the id_token. `/revoke` kills a refresh token's
+whole family, else records the token in `tokenstore`.
 
 ## Conventions
 
@@ -103,3 +108,13 @@ in `tokenstore`.
   `requirePKCE` makes a challenge mandatory; a verifier presented against a code
   with no bound challenge is rejected (anti-downgrade). Discovery advertises
   `code_challenge_methods_supported: ["S256"]`.
+- Refresh tokens are opt-in: a top-level `refresh` block enables them and
+  shortens the id_token TTL to 15m (24h otherwise; override with `idTokenTTL`).
+  Per-client `allowOfflineAccess` gates issuance and requires a non-empty
+  `clientSecret`. Tokens are opaque, server-side, and rotating with family
+  reuse detection; state is in-memory (a restart drops all refresh tokens; no
+  multi-replica without shared storage). Consent is pre-established per client
+  (no consent screen — a deviation from OIDC Core §11), offline grants survive
+  logout, and a password change / admin reset / reset-link revokes them.
+  `auth_time` is intentionally not emitted until a session-accurate value is
+  captured.
