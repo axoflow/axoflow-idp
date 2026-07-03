@@ -268,14 +268,22 @@ func TestOidcToken_Success(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 	var body struct {
-		IDToken   string `json:"id_token"`
-		TokenType string `json:"token_type"`
+		IDToken     string `json:"id_token"`
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+		TokenType   string `json:"token_type"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("bad json: %v", err)
 	}
 	if body.IDToken != "the-id-token" {
 		t.Errorf("id_token = %q, want %q", body.IDToken, "the-id-token")
+	}
+	if body.AccessToken != "the-id-token" {
+		t.Errorf("access_token = %q, want it to equal the id_token", body.AccessToken)
+	}
+	if body.ExpiresIn != 24*3600 {
+		t.Errorf("expires_in = %d, want %d", body.ExpiresIn, 24*3600)
 	}
 	if body.TokenType != "Bearer" {
 		t.Errorf("token_type = %q, want Bearer", body.TokenType)

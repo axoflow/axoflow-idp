@@ -33,6 +33,8 @@ import (
 
 const (
 	SigningKeyKid = "oidc-signing-key"
+
+	defaultIDTokenTTL = 24 * time.Hour
 )
 
 type Client struct {
@@ -61,10 +63,11 @@ func (c Client) allowsRedirect(uri string) bool {
 }
 
 type Oidc struct {
-	baseUrl  string
-	clients  []Client
-	keychain *keychain.Keychain
-	signer   jose.Signer
+	baseUrl    string
+	clients    []Client
+	keychain   *keychain.Keychain
+	signer     jose.Signer
+	idTokenTTL time.Duration
 }
 
 type Config struct {
@@ -73,6 +76,7 @@ type Config struct {
 	Keychain          *keychain.Keychain
 	SigningKeyPath    string
 	GenerateIfMissing bool
+	IDTokenTTL        time.Duration
 }
 
 func New(cfg Config) (*Oidc, error) {
@@ -126,12 +130,22 @@ func New(cfg Config) (*Oidc, error) {
 		return nil, fmt.Errorf("failed to create signer: %w", err)
 	}
 
+	idTokenTTL := cfg.IDTokenTTL
+	if idTokenTTL == 0 {
+		idTokenTTL = defaultIDTokenTTL
+	}
+
 	return &Oidc{
-		baseUrl:  cfg.BaseUrl,
-		clients:  cfg.Clients,
-		keychain: cfg.Keychain,
-		signer:   signer,
+		baseUrl:    cfg.BaseUrl,
+		clients:    cfg.Clients,
+		keychain:   cfg.Keychain,
+		signer:     signer,
+		idTokenTTL: idTokenTTL,
 	}, nil
+}
+
+func (o *Oidc) IDTokenTTL() time.Duration {
+	return o.idTokenTTL
 }
 
 func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jose.JSONWebKey, error) {
@@ -285,7 +299,7 @@ func (o *Oidc) ValidateRedirect(clientID, redirectUri string) error {
 }
 
 func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
-	if !strings.Contains(req.Scope, "openid") {
+	if !slices.Contains(strings.Fields(req.Scope), "openid") {
 		return errors.New("invalid_scope")
 	}
 
@@ -301,7 +315,7 @@ func (o *Oidc) GenerateIDToken(user user.UserInfo, clientID string, nonce string
 		Issuer:     o.baseUrl,
 		Subject:    user.ID,
 		Audience:   clientID,
-		Expiration: time.Now().Add(time.Hour * 24).Unix(),
+		Expiration: time.Now().Add(o.idTokenTTL).Unix(),
 		IssuedAt:   time.Now().Unix(),
 		Nonce:      nonce,
 		Name:       user.Username,

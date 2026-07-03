@@ -15,10 +15,15 @@
 package oidc
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
+	"github.com/axoflow/axoflow-idp/pkg/user"
+	"github.com/go-jose/go-jose/v3"
 )
 
 func newTestOidc(t *testing.T, clients []Client) *Oidc {
@@ -158,6 +163,75 @@ func TestValidateTokenRequest_ExactRedirect(t *testing.T) {
 	}
 }
 
+func newSignedOidc(t *testing.T, cfg Config) *Oidc {
+	t.Helper()
+	cfg.Keychain = keychain.New()
+	cfg.SigningKeyPath = filepath.Join(t.TempDir(), "signing-key.json")
+	cfg.GenerateIfMissing = true
+	if cfg.BaseUrl == "" {
+		cfg.BaseUrl = "https://idp.example.com"
+	}
+	o, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return o
+}
+
+func decodeIDToken(t *testing.T, o *Oidc, idToken string) IDTokenPayload {
+	t.Helper()
+	tok, err := jose.ParseSigned(idToken)
+	if err != nil {
+		t.Fatalf("parse token: %v", err)
+	}
+	payload, err := tok.Verify(o.keychain.GetAll()[0].Public().Key)
+	if err != nil {
+		t.Fatalf("verify token: %v", err)
+	}
+	var claims IDTokenPayload
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("unmarshal claims: %v", err)
+	}
+	return claims
+}
+
+func TestIDTokenTTLDefault(t *testing.T) {
+	o := newSignedOidc(t, Config{})
+	if o.IDTokenTTL() != defaultIDTokenTTL {
+		t.Errorf("IDTokenTTL() = %v, want %v", o.IDTokenTTL(), defaultIDTokenTTL)
+	}
+}
+
+func TestGenerateIDTokenClaims(t *testing.T) {
+	o := newSignedOidc(t, Config{IDTokenTTL: time.Hour})
+	u := user.UserInfo{ID: "u1", Username: "alice", Email: "a@example.com", Groups: []string{"admins"}}
+
+	idToken, err := o.GenerateIDToken(u, "app", "nonce-123")
+	if err != nil {
+		t.Fatalf("GenerateIDToken: %v", err)
+	}
+	claims := decodeIDToken(t, o, idToken)
+
+	if got := claims.Expiration - claims.IssuedAt; got < 3598 || got > 3600 {
+		t.Errorf("exp-iat = %ds, want ~3600 (the configured 1h TTL)", got)
+	}
+	if claims.Issuer != "https://idp.example.com" {
+		t.Errorf("iss = %q, want %q", claims.Issuer, "https://idp.example.com")
+	}
+	if claims.Audience != "app" {
+		t.Errorf("aud = %q, want %q", claims.Audience, "app")
+	}
+	if claims.Subject != "u1" || claims.Name != "alice" || claims.Email != "a@example.com" {
+		t.Errorf("unexpected identity claims: %+v", claims)
+	}
+	if !slices.Equal(claims.Groups, []string{"admins"}) {
+		t.Errorf("groups = %v, want [admins]", claims.Groups)
+	}
+	if claims.Nonce != "nonce-123" {
+		t.Errorf("nonce = %q, want %q", claims.Nonce, "nonce-123")
+	}
+}
+
 func TestValidateTokenRequest(t *testing.T) {
 	o := newTestOidc(t, []Client{{
 		Id:           "app",
@@ -182,6 +256,44 @@ func TestValidateTokenRequest(t *testing.T) {
 			err := o.ValidateTokenRequest(tt.req)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateTokenRequest(%+v) error = %v, wantErr %v", tt.req, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateAuthenticationRequestScope(t *testing.T) {
+	o := newTestOidc(t, []Client{{
+		Id:           "app",
+		RedirectUri:  "https://app.example.com/cb",
+		ClientSecret: "s3cret",
+	}})
+	base := func(scope string) AuthenticationRequest {
+		return AuthenticationRequest{
+			Scope:        scope,
+			ResponseType: "code",
+			ClientID:     "app",
+			RedirectUri:  "https://app.example.com/cb",
+		}
+	}
+	tests := []struct {
+		name    string
+		scope   string
+		wantErr bool
+	}{
+		{"exact openid", "openid", false},
+		{"openid with extras", "openid profile email", false},
+		{"openid not first", "profile openid", false},
+		{"missing openid", "profile email", true},
+		{"substring notopenid", "notopenid", true},
+		{"substring openidx", "openidx", true},
+		{"empty", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := o.ValidateAuthenticationRequest(base(tt.scope))
+			if (err != nil) != tt.wantErr {
+				t.Errorf("scope %q: err = %v, wantErr %v", tt.scope, err, tt.wantErr)
 			}
 		})
 	}

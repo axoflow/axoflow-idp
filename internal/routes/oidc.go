@@ -230,11 +230,9 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		TokenType   string `json:"token_type"`
 	}{
 		IDToken:     id_token,
-		AccessToken: "not-used", // TODO ?
-		ExpiresIn:   24 * 3600,  // TODO dynamic
+		AccessToken: id_token,
+		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
 		TokenType:   "Bearer",
-		//"scope": "photo offline_access",
-		//"refresh_token": "vUOknvjU8_Oal1a7j0F5XXD3"
 	}
 
 	body_json, err := json.Marshal(body)
