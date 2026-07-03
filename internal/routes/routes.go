@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/refreshstore"
 	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/session"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
@@ -37,6 +38,7 @@ type Config struct {
 	User          *user.User
 	CodeStore     *codestore.CodeStore
 	TokenStore    *tokenstore.TokenStore
+	RefreshStore  *refreshstore.Store
 	ResetTokens   *resettoken.Store
 	BaseURL       string
 	SecureCookies bool
@@ -49,6 +51,7 @@ type Routes struct {
 	user          *user.User
 	store         *codestore.CodeStore
 	tokenStore    *tokenstore.TokenStore
+	refreshStore  *refreshstore.Store
 	resetTokens   *resettoken.Store
 	baseURL       string
 	secureCookies bool
@@ -90,6 +93,7 @@ func New(config Config) (*Routes, error) {
 		user:          config.User,
 		store:         config.CodeStore,
 		tokenStore:    config.TokenStore,
+		refreshStore:  config.RefreshStore,
 		resetTokens:   config.ResetTokens,
 		baseURL:       config.BaseURL,
 		secureCookies: config.SecureCookies,

@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/refreshstore"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
@@ -190,6 +191,24 @@ func newTokenTestRoutes(t *testing.T) *Routes {
 	return &Routes{oidc: o, store: codestore.New()}
 }
 
+func newRefreshTestRoutes(t *testing.T) *Routes {
+	t.Helper()
+	o, err := oidc.New(oidc.Config{
+		BaseUrl: "https://idp.example.com",
+		Clients: []oidc.Client{
+			{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret", AllowOfflineAccess: true},
+		},
+		Keychain:          keychain.New(),
+		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		GenerateIfMissing: true,
+		RefreshEnabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+	return &Routes{oidc: o, store: codestore.New(), refreshStore: refreshstore.New(refreshstore.Config{})}
+}
+
 func postToken(t *testing.T, r *Routes, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
@@ -257,11 +276,15 @@ const (
 )
 
 func decodeTokenResponse(t *testing.T, rec *httptest.ResponseRecorder) struct {
-	IDToken string `json:"id_token"`
+	IDToken      string `json:"id_token"`
+	RefreshToken string `json:"refresh_token"`
+	Scope        string `json:"scope"`
 } {
 	t.Helper()
 	var body struct {
-		IDToken string `json:"id_token"`
+		IDToken      string `json:"id_token"`
+		RefreshToken string `json:"refresh_token"`
+		Scope        string `json:"scope"`
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
@@ -338,6 +361,46 @@ func TestOidcTokenPKCE(t *testing.T) {
 			t.Errorf("id_token = %q, want the-id-token", body.IDToken)
 		}
 	})
+}
+
+func TestOidcTokenRefreshIssuance(t *testing.T) {
+	tests := []struct {
+		name           string
+		scopes         []string
+		offlineGranted bool
+		wantRefresh    bool
+		wantScope      string
+	}{
+		{"offline granted", []string{"openid", "offline_access"}, true, true, "openid offline_access"},
+		{"offline not requested", []string{"openid"}, false, false, "openid"},
+		{"offline requested but denied", []string{"openid", "offline_access"}, false, false, "openid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newRefreshTestRoutes(t)
+			code := r.store.Create(codestore.Grant{
+				IDToken:        "the-id-token",
+				UserID:         "u1",
+				ClientID:       "app",
+				Scopes:         tt.scopes,
+				OfflineGranted: tt.offlineGranted,
+			})
+			body := decodeTokenResponse(t, postToken(t, r, url.Values{
+				"grant_type":    {"authorization_code"},
+				"client_id":     {"app"},
+				"client_secret": {"s3cret"},
+				"redirect_uri":  {"https://app.example.com/cb"},
+				"code":          {code},
+			}))
+
+			if got := body.RefreshToken != ""; got != tt.wantRefresh {
+				t.Errorf("refresh_token issued = %v, want %v", got, tt.wantRefresh)
+			}
+			if body.Scope != tt.wantScope {
+				t.Errorf("scope = %q, want %q", body.Scope, tt.wantScope)
+			}
+		})
+	}
 }
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)

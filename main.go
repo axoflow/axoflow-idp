@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/refreshstore"
 	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/routes"
 	"github.com/axoflow/axoflow-idp/internal/session"
@@ -39,11 +40,21 @@ import (
 // stays valid. Kept short to limit the window of a leaked link.
 const passwordResetLinkTTL = time.Hour
 
+// id_token lifetime defaults. When refresh tokens are enabled the id_token is
+// kept short so revocation takes effect quickly; otherwise it stays long-lived
+// for backward compatibility.
+const (
+	defaultIDTokenTTL = 24 * time.Hour
+	refreshIDTokenTTL = 15 * time.Minute
+)
+
 type config struct {
-	BaseUrl    string             `json:"baseUrl"`
-	Clients    []oidc.Client      `json:"clients"`
-	Users      *user.Config       `json:"users,omitempty"`
-	Token      *tokenstore.Config `json:"token,omitempty"`
+	BaseUrl    string               `json:"baseUrl"`
+	Clients    []oidc.Client        `json:"clients"`
+	Users      *user.Config         `json:"users,omitempty"`
+	Token      *tokenstore.Config   `json:"token,omitempty"`
+	Refresh    *refreshstore.Config `json:"refresh,omitempty"`
+	IDTokenTTL time.Duration        `json:"idTokenTTL,omitempty"`
 	SigningKey struct {
 		FilePath          string `json:"filePath,omitempty"`
 		GenerateIfMissing bool   `json:"generateIfMissing,omitempty"`
@@ -72,6 +83,14 @@ func LoadConfig() (cfg config, err error) {
 	if cfg.Token == nil {
 		cfg.Token = &tokenstore.Config{
 			TTL: 24 * time.Hour,
+		}
+	}
+
+	if cfg.IDTokenTTL == 0 {
+		if cfg.Refresh != nil {
+			cfg.IDTokenTTL = refreshIDTokenTTL
+		} else {
+			cfg.IDTokenTTL = defaultIDTokenTTL
 		}
 	}
 
@@ -106,6 +125,9 @@ func (c *config) Validate() error {
 		if !strings.HasPrefix(client.RedirectUri, "http://") && !strings.HasPrefix(client.RedirectUri, "https://") {
 			return fmt.Errorf("client %d (%s): redirectUri must start with http:// or https://", i, client.Id)
 		}
+		if client.AllowOfflineAccess && client.ClientSecret == "" {
+			return fmt.Errorf("client %d (%s): clientSecret is required when allowOfflineAccess is true", i, client.Id)
+		}
 	}
 
 	if !c.SigningKey.GenerateIfMissing && c.SigningKey.FilePath == "" {
@@ -135,6 +157,8 @@ func main() {
 		Keychain:          keychain.New(),
 		SigningKeyPath:    cfg.SigningKey.FilePath,
 		GenerateIfMissing: cfg.SigningKey.GenerateIfMissing,
+		IDTokenTTL:        cfg.IDTokenTTL,
+		RefreshEnabled:    cfg.Refresh != nil,
 	}
 	o, err := oidc.New(oidcConfig)
 	if err != nil {
@@ -148,12 +172,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	var refreshStore *refreshstore.Store
+	if cfg.Refresh != nil {
+		refreshStore = refreshstore.New(*cfg.Refresh)
+		slog.Info("refresh tokens are enabled")
+	}
+
 	r, err := routes.New(routes.Config{
 		Oidc:          o,
 		Session:       session.New(),
 		User:          u,
 		CodeStore:     codestore.New(),
 		TokenStore:    tokenstore.New(*cfg.Token),
+		RefreshStore:  refreshStore,
 		ResetTokens:   resettoken.New(passwordResetLinkTTL),
 		BaseURL:       cfg.BaseUrl,
 		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),

@@ -33,7 +33,7 @@ func newTestStore() (*Store, *fakeClock) {
 }
 
 func testGrant() Grant {
-	return Grant{UserID: "u1", ClientID: "app", Scopes: []string{"openid", "offline_access"}, AuthTime: 42}
+	return Grant{UserID: "u1", ClientID: "app", Scopes: []string{"openid", "offline_access"}}
 }
 
 func TestRotateClientMismatchNoRevoke(t *testing.T) {

@@ -49,7 +49,6 @@ type Grant struct {
 	UserID   string
 	ClientID string
 	Scopes   []string
-	AuthTime int64
 }
 
 type entry struct {
@@ -153,6 +152,13 @@ func (s *Store) Rotate(token, clientID string) (Grant, string, error) {
 		return Grant{}, "", ErrInvalidGrant
 	}
 
+	// Client binding is checked before anything else so a client presenting
+	// another client's token can neither obtain its successor nor force-revoke
+	// its family.
+	if e.grant.ClientID != clientID {
+		return Grant{}, "", ErrInvalidGrant
+	}
+
 	now := s.now()
 
 	if e.consumed {
@@ -162,10 +168,6 @@ func (s *Store) Rotate(token, clientID string) (Grant, string, error) {
 			}
 		}
 		s.revokeFamily(e.familyID)
-		return Grant{}, "", ErrInvalidGrant
-	}
-
-	if e.grant.ClientID != clientID {
 		return Grant{}, "", ErrInvalidGrant
 	}
 

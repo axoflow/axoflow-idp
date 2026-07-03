@@ -20,9 +20,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/refreshstore"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 	"github.com/go-jose/go-jose/v3"
@@ -166,9 +168,13 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	scopes := strings.Fields(authReq.Scope)
 	code := r.store.Create(codestore.Grant{
 		IDToken:             idToken,
+		UserID:              user.ID,
 		ClientID:            authReq.ClientID,
+		Scopes:              scopes,
+		OfflineGranted:      slices.Contains(scopes, "offline_access") && r.oidc.OfflineAccessAllowed(authReq.ClientID),
 		CodeChallenge:       authReq.CodeChallenge,
 		CodeChallengeMethod: authReq.CodeChallengeMethod,
 	})
@@ -242,16 +248,40 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	grantedScopes := grant.Scopes
+	if !grant.OfflineGranted {
+		grantedScopes = slices.DeleteFunc(slices.Clone(grant.Scopes), func(s string) bool {
+			return s == "offline_access"
+		})
+	}
+
 	body := struct {
-		IDToken     string `json:"id_token"`
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-		TokenType   string `json:"token_type"`
+		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		TokenType    string `json:"token_type"`
+		RefreshToken string `json:"refresh_token,omitempty"`
+		Scope        string `json:"scope,omitempty"`
 	}{
 		IDToken:     grant.IDToken,
 		AccessToken: grant.IDToken,
 		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
 		TokenType:   "Bearer",
+		Scope:       strings.Join(grantedScopes, " "),
+	}
+
+	if grant.OfflineGranted && r.refreshStore != nil {
+		refreshToken, err := r.refreshStore.Issue(refreshstore.Grant{
+			UserID:   grant.UserID,
+			ClientID: grant.ClientID,
+			Scopes:   grant.Scopes,
+		})
+		if err != nil {
+			slog.Error("failed to issue refresh token", "error", err)
+			http.Error(res, "server error", http.StatusInternalServerError)
+			return
+		}
+		body.RefreshToken = refreshToken
 	}
 
 	body_json, err := json.Marshal(body)

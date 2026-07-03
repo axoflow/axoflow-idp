@@ -38,12 +38,13 @@ const (
 )
 
 type Client struct {
-	Id           string   `json:"id"`
-	Name         string   `json:"name"`
-	RedirectUri  string   `json:"redirectUri"`
-	RedirectUris []string `json:"redirectUris,omitempty"`
-	ClientSecret string   `json:"clientSecret"`
-	RequirePKCE  bool     `json:"requirePKCE,omitempty"`
+	Id                 string   `json:"id"`
+	Name               string   `json:"name"`
+	RedirectUri        string   `json:"redirectUri"`
+	RedirectUris       []string `json:"redirectUris,omitempty"`
+	ClientSecret       string   `json:"clientSecret"`
+	RequirePKCE        bool     `json:"requirePKCE,omitempty"`
+	AllowOfflineAccess bool     `json:"allowOfflineAccess,omitempty"`
 }
 
 // registeredRedirectUris returns every redirect URI registered for the client:
@@ -64,11 +65,12 @@ func (c Client) allowsRedirect(uri string) bool {
 }
 
 type Oidc struct {
-	baseUrl    string
-	clients    []Client
-	keychain   *keychain.Keychain
-	signer     jose.Signer
-	idTokenTTL time.Duration
+	baseUrl        string
+	clients        []Client
+	keychain       *keychain.Keychain
+	signer         jose.Signer
+	idTokenTTL     time.Duration
+	refreshEnabled bool
 }
 
 type Config struct {
@@ -77,6 +79,8 @@ type Config struct {
 	Keychain          *keychain.Keychain
 	SigningKeyPath    string
 	GenerateIfMissing bool
+	IDTokenTTL        time.Duration
+	RefreshEnabled    bool
 }
 
 func New(cfg Config) (*Oidc, error) {
@@ -122,6 +126,11 @@ func New(cfg Config) (*Oidc, error) {
 
 	cfg.Keychain.Add(*signingKey)
 
+	idTokenTTL := cfg.IDTokenTTL
+	if idTokenTTL == 0 {
+		idTokenTTL = defaultIDTokenTTL
+	}
+
 	signer, err := jose.NewSigner(jose.SigningKey{
 		Algorithm: jose.RS256,
 		Key:       signingKey,
@@ -131,16 +140,22 @@ func New(cfg Config) (*Oidc, error) {
 	}
 
 	return &Oidc{
-		baseUrl:    cfg.BaseUrl,
-		clients:    cfg.Clients,
-		keychain:   cfg.Keychain,
-		signer:     signer,
-		idTokenTTL: defaultIDTokenTTL,
+		baseUrl:        cfg.BaseUrl,
+		clients:        cfg.Clients,
+		keychain:       cfg.Keychain,
+		signer:         signer,
+		idTokenTTL:     idTokenTTL,
+		refreshEnabled: cfg.RefreshEnabled,
 	}, nil
 }
 
 func (o *Oidc) IDTokenTTL() time.Duration {
 	return o.idTokenTTL
+}
+
+func (o *Oidc) OfflineAccessAllowed(clientID string) bool {
+	client, ok := o.getClient(clientID)
+	return ok && client.AllowOfflineAccess
 }
 
 func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jose.JSONWebKey, error) {
@@ -222,6 +237,7 @@ type OpenIDProviderMetadata struct {
 	JWKsUri                           string   `json:"jwks_uri"`
 	ResponseTypesSupported            []string `json:"response_types_supported"`
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported,omitempty"`
+	GrantTypesSupported               []string `json:"grant_types_supported,omitempty"`
 	SubjectTypesSupported             []string `json:"subject_types_supported"`
 	IdTokenSigningAlgValuesSupported  []string `json:"id_token_signing_alg_values_supported"`
 	TokenURL                          string   `json:"token_endpoint"`
@@ -233,6 +249,13 @@ type OpenIDProviderMetadata struct {
 }
 
 func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
+	grantTypes := []string{"authorization_code", "implicit"}
+	scopes := []string{"openid", "profile", "email"}
+	if o.refreshEnabled {
+		grantTypes = append(grantTypes, "refresh_token")
+		scopes = append(scopes, "offline_access")
+	}
+
 	return OpenIDProviderMetadata{
 		Issuer:                o.baseUrl,
 		AuthorizationEndpoint: o.baseUrl + "/oidc/auth",
@@ -244,11 +267,8 @@ func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
 			"code",
 		},
 		CodeChallengeMethodsSupported: []string{pkceMethodS256},
-		ScopesSupported: []string{
-			"openid",
-			"profile",
-			"email",
-		},
+		GrantTypesSupported:           grantTypes,
+		ScopesSupported:               scopes,
 		SubjectTypesSupported: []string{
 			"public",
 		},
