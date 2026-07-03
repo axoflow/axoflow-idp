@@ -282,6 +282,7 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 	// Invalidate the target's existing sessions so an admin reset actually locks
 	// out a compromised/departed user (mirrors the reset-link flow).
 	r.session.DeleteUserSessions(userId)
+	r.revokeUserRefreshTokens(userId)
 
 	slog.Info("admin reset user password", "admin", admin.Username, "target_user_id", userId)
 

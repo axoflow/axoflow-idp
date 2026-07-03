@@ -101,6 +101,15 @@ func New(config Config) (*Routes, error) {
 	}, nil
 }
 
+// revokeUserRefreshTokens cuts off every offline (refresh-token) grant for a
+// user. Called alongside session invalidation wherever a credential reset must
+// lock the user out everywhere. No-op when refresh tokens are disabled.
+func (r *Routes) revokeUserRefreshTokens(userID string) {
+	if r.refreshStore != nil {
+		r.refreshStore.RevokeUser(userID)
+	}
+}
+
 // findTemplatesDir locates the HTML templates directory. It checks, in order:
 // the TEMPLATES_DIR environment variable, ./templates in the current working
 // directory, and a templates/ directory next to the running executable.

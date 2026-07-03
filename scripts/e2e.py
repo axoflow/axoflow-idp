@@ -124,22 +124,26 @@ def _write_seed_users(path):
         ], f)
 
 
-def _write_config(path, users_path, signing_path, static):
+def _write_config(path, users_path, signing_path, static, refresh=False):
+    cfg = {
+        "baseUrl": BASE,
+        "clients": [{"id": "dev", "name": "Dev", "clientSecret": "s",
+                     "redirectUri": BASE + "/cb",
+                     "allowOfflineAccess": refresh}],
+        "users": {
+            "createIfMissing": False,
+            "filePath": users_path,
+            "userAdminGroup": "admin",
+            # legacy key intentionally left in to prove it is tolerated:
+            "passwordChangeable": True,
+            "static": static,
+        },
+        "signingKey": {"filePath": signing_path, "generateIfMissing": True},
+    }
+    if refresh:
+        cfg["refresh"] = {}  # empty block enables refresh tokens with defaults
     with open(path, "w") as f:
-        json.dump({
-            "baseUrl": BASE,
-            "clients": [{"id": "dev", "name": "Dev", "clientSecret": "s",
-                         "redirectUri": BASE + "/cb"}],
-            "users": {
-                "createIfMissing": False,
-                "filePath": users_path,
-                "userAdminGroup": "admin",
-                # legacy key intentionally left in to prove it is tolerated:
-                "passwordChangeable": True,
-                "static": static,
-            },
-            "signingKey": {"filePath": signing_path, "generateIfMissing": True},
-        }, f)
+        json.dump(cfg, f)
 
 
 def _wait_for_port(port, timeout=20):
@@ -162,12 +166,15 @@ def setUpModule():
     _ENV["signing"] = os.path.join(workdir, "signing-key.json")
     _ENV["cfg_rw"] = os.path.join(workdir, "config_rw.json")
     _ENV["cfg_static"] = os.path.join(workdir, "config_static.json")
+    _ENV["cfg_refresh"] = os.path.join(workdir, "config_refresh.json")
     _ENV["binary"] = os.path.join(workdir, "idp")
 
     subprocess.run(["go", "build", "-o", _ENV["binary"], "."],
                    cwd=REPO_ROOT, check=True)
     _write_config(_ENV["cfg_rw"], _ENV["users"], _ENV["signing"], static=False)
     _write_config(_ENV["cfg_static"], _ENV["users"], _ENV["signing"], static=True)
+    _write_config(_ENV["cfg_refresh"], _ENV["users"], _ENV["signing"],
+                  static=False, refresh=True)
 
 
 def tearDownModule():
@@ -189,9 +196,14 @@ class ServerCase(unittest.TestCase):
 
     STATIC = False
 
+    CONFIG_KEY = None
+
     def setUp(self):
         _write_seed_users(_ENV["users"])
-        config = _ENV["cfg_static"] if self.STATIC else _ENV["cfg_rw"]
+        if self.CONFIG_KEY:
+            config = _ENV[self.CONFIG_KEY]
+        else:
+            config = _ENV["cfg_static"] if self.STATIC else _ENV["cfg_rw"]
         env = dict(os.environ)
         env["CONFIG"] = config
         env["TEMPLATES_DIR"] = os.path.join(REPO_ROOT, "templates")
@@ -441,6 +453,76 @@ class StaticModeTest(ServerCase):
         self.assertNotIn("<th>Actions</th>", body)
         self.assertNotIn("Register New User", body)
 
+
+class RefreshTokenTest(ServerCase):
+    CONFIG_KEY = "cfg_refresh"
+
+    def _authorize_code(self, client, scope):
+        query = urllib.parse.urlencode({
+            "response_type": "code",
+            "client_id": "dev",
+            "redirect_uri": BASE + "/cb",
+            "scope": scope,
+            "state": "s1",
+        })
+        code, hdrs, _ = client.get("/oidc/auth?" + query)
+        self.assertEqual(code, 302, "authorize should redirect with a code")
+        params = urllib.parse.parse_qs(
+            urllib.parse.urlparse(hdrs.get("Location", "")).query)
+        self.assertIn("code", params, f"no code in redirect: {hdrs.get('Location')}")
+        return params["code"][0]
+
+    def _token(self, client, form):
+        code, _, body = client.post("/token", form)
+        return code, json.loads(body) if body else {}
+
+    def test_discovery_advertises_refresh(self):
+        _, _, body = Client().get("/.well-known/openid-configuration")
+        md = json.loads(body)
+        self.assertIn("refresh_token", md.get("grant_types_supported", []))
+        self.assertIn("offline_access", md.get("scopes_supported", []))
+
+    def test_no_refresh_token_without_offline_scope(self):
+        bob = Client()
+        bob.login("bob", "bobpass")
+        auth_code = self._authorize_code(bob, "openid")
+        status, tok = self._token(bob, {
+            "grant_type": "authorization_code", "code": auth_code,
+            "client_id": "dev", "client_secret": "s", "redirect_uri": BASE + "/cb"})
+        self.assertEqual(status, 200, tok)
+        self.assertNotIn("refresh_token", tok)
+
+    def test_full_refresh_flow(self):
+        bob = Client()
+        self.assertEqual(bob.login("bob", "bobpass")[0], 302)
+
+        auth_code = self._authorize_code(bob, "openid offline_access")
+        status, tok = self._token(bob, {
+            "grant_type": "authorization_code", "code": auth_code,
+            "client_id": "dev", "client_secret": "s", "redirect_uri": BASE + "/cb"})
+        self.assertEqual(status, 200, tok)
+        self.assertEqual(tok.get("scope"), "openid offline_access")
+        refresh_token = tok.get("refresh_token")
+        self.assertTrue(refresh_token, "expected a refresh_token")
+
+        # Exchange the refresh token: fresh id_token + a rotated refresh token.
+        status, tok2 = self._token(bob, {
+            "grant_type": "refresh_token", "refresh_token": refresh_token,
+            "client_id": "dev", "client_secret": "s"})
+        self.assertEqual(status, 200, tok2)
+        self.assertTrue(tok2.get("id_token"))
+        rotated = tok2.get("refresh_token")
+        self.assertTrue(rotated)
+        self.assertNotEqual(rotated, refresh_token, "refresh token should rotate")
+
+        # Revoking the family stops further refreshes.
+        self.assertEqual(bob.post("/revoke", {
+            "token": rotated, "client_id": "dev", "client_secret": "s"})[0], 200)
+        status, tok3 = self._token(bob, {
+            "grant_type": "refresh_token", "refresh_token": rotated,
+            "client_id": "dev", "client_secret": "s"})
+        self.assertEqual(status, 400, tok3)
+        self.assertEqual(tok3.get("error"), "invalid_grant")
 
 def _b64url(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()

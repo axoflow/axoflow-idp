@@ -324,6 +324,31 @@ func TestDiscoveryMetadataGrantTypes(t *testing.T) {
 	}
 }
 
+func TestValidateTokenRequestRefreshGrant(t *testing.T) {
+	client := Client{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret"}
+	enabled := &Oidc{clients: []Client{client}, refreshEnabled: true}
+	disabled := &Oidc{clients: []Client{client}, refreshEnabled: false}
+
+	tests := []struct {
+		name    string
+		o       *Oidc
+		req     TokenRequest
+		wantErr error
+	}{
+		{"valid refresh", enabled, TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "s3cret", RefreshToken: "rt"}, nil},
+		{"missing refresh token", enabled, TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "s3cret"}, ErrInvalidRequest},
+		{"wrong secret", enabled, TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "nope", RefreshToken: "rt"}, ErrInvalidClient},
+		{"refresh disabled", disabled, TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "s3cret", RefreshToken: "rt"}, ErrUnsupportedGrantType},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.o.ValidateTokenRequest(tt.req); err != tt.wantErr {
+				t.Errorf("ValidateTokenRequest = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateAuthenticationRequestScope(t *testing.T) {
 	o := newTestOidc(t, []Client{{
 		Id:           "app",

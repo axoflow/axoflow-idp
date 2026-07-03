@@ -382,6 +382,7 @@ type TokenRequest struct {
 	RedirectUri  string
 	Code         string
 	CodeVerifier string
+	RefreshToken string
 }
 
 type RevocationRequest struct {
@@ -406,10 +407,6 @@ var (
 )
 
 func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
-	if req.GrantType != "authorization_code" {
-		return ErrUnsupportedGrantType
-	}
-
 	client, ok := o.getClient(req.ClientID)
 	if !ok {
 		return ErrInvalidClient
@@ -419,8 +416,20 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return ErrInvalidClient
 	}
 
-	if !client.allowsRedirect(req.RedirectUri) {
-		return ErrInvalidGrant
+	switch req.GrantType {
+	case "authorization_code":
+		if !client.allowsRedirect(req.RedirectUri) {
+			return ErrInvalidGrant
+		}
+	case "refresh_token":
+		if !o.refreshEnabled {
+			return ErrUnsupportedGrantType
+		}
+		if req.RefreshToken == "" {
+			return ErrInvalidRequest
+		}
+	default:
+		return ErrUnsupportedGrantType
 	}
 
 	return nil
