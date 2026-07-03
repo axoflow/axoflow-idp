@@ -250,6 +250,95 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 	}
 }
 
+// RFC 7636 appendix B worked example.
+const (
+	pkceVerifier  = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+	pkceChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+)
+
+func decodeTokenResponse(t *testing.T, rec *httptest.ResponseRecorder) struct {
+	IDToken string `json:"id_token"`
+} {
+	t.Helper()
+	var body struct {
+		IDToken string `json:"id_token"`
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not JSON: %v (body=%q)", err, rec.Body.String())
+	}
+	return body
+}
+
+func assertTokenError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantError string) {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Errorf("status = %d, want %d (body=%q)", rec.Code, wantStatus, rec.Body.String())
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not JSON: %v (body=%q)", err, rec.Body.String())
+	}
+	if body.Error != wantError {
+		t.Errorf("error = %q, want %q", body.Error, wantError)
+	}
+}
+
+func TestOidcTokenPKCE(t *testing.T) {
+	tokenForm := func(code, verifier string) url.Values {
+		f := url.Values{
+			"grant_type":    {"authorization_code"},
+			"client_id":     {"app"},
+			"client_secret": {"s3cret"},
+			"redirect_uri":  {"https://app.example.com/cb"},
+			"code":          {code},
+		}
+		if verifier != "" {
+			f.Set("code_verifier", verifier)
+		}
+		return f
+	}
+
+	t.Run("valid S256 verifier succeeds", func(t *testing.T) {
+		r := newTokenTestRoutes(t)
+		code := r.store.Create(codestore.Grant{IDToken: "the-id-token", ClientID: "app", CodeChallenge: pkceChallenge, CodeChallengeMethod: "S256"})
+		body := decodeTokenResponse(t, postToken(t, r, tokenForm(code, pkceVerifier)))
+		if body.IDToken != "the-id-token" {
+			t.Errorf("id_token = %q, want the-id-token", body.IDToken)
+		}
+	})
+
+	t.Run("wrong verifier is rejected", func(t *testing.T) {
+		r := newTokenTestRoutes(t)
+		code := r.store.Create(codestore.Grant{IDToken: "x", ClientID: "app", CodeChallenge: pkceChallenge, CodeChallengeMethod: "S256"})
+		assertTokenError(t, postToken(t, r, tokenForm(code, strings.Repeat("a", 43))), http.StatusBadRequest, "invalid_grant")
+	})
+
+	t.Run("missing verifier for a PKCE code is rejected", func(t *testing.T) {
+		r := newTokenTestRoutes(t)
+		code := r.store.Create(codestore.Grant{IDToken: "x", ClientID: "app", CodeChallenge: pkceChallenge, CodeChallengeMethod: "S256"})
+		assertTokenError(t, postToken(t, r, tokenForm(code, "")), http.StatusBadRequest, "invalid_grant")
+	})
+
+	t.Run("verifier without a bound challenge is rejected (anti-downgrade)", func(t *testing.T) {
+		r := newTokenTestRoutes(t)
+		code := r.store.Create(codestore.Grant{IDToken: "x", ClientID: "app"})
+		assertTokenError(t, postToken(t, r, tokenForm(code, pkceVerifier)), http.StatusBadRequest, "invalid_grant")
+	})
+
+	t.Run("legacy non-PKCE code still works", func(t *testing.T) {
+		r := newTokenTestRoutes(t)
+		code := r.store.Create(codestore.Grant{IDToken: "the-id-token", ClientID: "app"})
+		body := decodeTokenResponse(t, postToken(t, r, tokenForm(code, "")))
+		if body.IDToken != "the-id-token" {
+			t.Errorf("id_token = %q, want the-id-token", body.IDToken)
+		}
+	})
+}
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
 	code := r.store.Create(codestore.Grant{IDToken: "the-id-token", ClientID: "app"})

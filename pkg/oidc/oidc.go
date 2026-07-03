@@ -43,6 +43,7 @@ type Client struct {
 	RedirectUri  string   `json:"redirectUri"`
 	RedirectUris []string `json:"redirectUris,omitempty"`
 	ClientSecret string   `json:"clientSecret"`
+	RequirePKCE  bool     `json:"requirePKCE,omitempty"`
 }
 
 // registeredRedirectUris returns every redirect URI registered for the client:
@@ -187,12 +188,14 @@ func (o *Oidc) FirstClient() *ClientInfo {
 }
 
 type AuthenticationRequest struct {
-	Scope        string
-	ResponseType string
-	ClientID     string
-	RedirectUri  string
-	Nonce        string
-	State        string
+	Scope               string
+	ResponseType        string
+	ClientID            string
+	RedirectUri         string
+	Nonce               string
+	State               string
+	CodeChallenge       string
+	CodeChallengeMethod string
 }
 
 type IDTokenPayload struct {
@@ -218,6 +221,7 @@ type OpenIDProviderMetadata struct {
 	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
 	JWKsUri                           string   `json:"jwks_uri"`
 	ResponseTypesSupported            []string `json:"response_types_supported"`
+	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported,omitempty"`
 	SubjectTypesSupported             []string `json:"subject_types_supported"`
 	IdTokenSigningAlgValuesSupported  []string `json:"id_token_signing_alg_values_supported"`
 	TokenURL                          string   `json:"token_endpoint"`
@@ -239,6 +243,7 @@ func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
 			"id_token",
 			"code",
 		},
+		CodeChallengeMethodsSupported: []string{pkceMethodS256},
 		ScopesSupported: []string{
 			"openid",
 			"profile",
@@ -305,7 +310,25 @@ func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
 		return errors.New("unsupported_response_type")
 	}
 
-	return o.ValidateRedirect(req.ClientID, req.RedirectUri)
+	if err := o.ValidateRedirect(req.ClientID, req.RedirectUri); err != nil {
+		return err
+	}
+
+	// PKCE applies only to the authorization-code flow. When a challenge is
+	// present it must use S256 ("plain" and an omitted method are rejected);
+	// a RequirePKCE client must send one at all (defeats challenge-stripping).
+	if req.ResponseType == "code" {
+		client, _ := o.getClient(req.ClientID) // ValidateRedirect proved it exists
+		if req.CodeChallenge == "" {
+			if client.RequirePKCE {
+				return errors.New("invalid_request")
+			}
+		} else if req.CodeChallengeMethod != pkceMethodS256 {
+			return errors.New("invalid_request")
+		}
+	}
+
+	return nil
 }
 
 func (o *Oidc) GenerateIDToken(user user.UserInfo, clientID string, nonce string) (string, error) {
@@ -338,6 +361,7 @@ type TokenRequest struct {
 	ClientSecret string
 	RedirectUri  string
 	Code         string
+	CodeVerifier string
 }
 
 type RevocationRequest struct {

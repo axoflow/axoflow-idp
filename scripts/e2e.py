@@ -35,6 +35,8 @@ have patched it. E2E_KEEP=1 keeps the temp working dir for debugging.
 Standard unittest flags (-v, -k, -f, test selectors) all work.
 """
 
+import base64
+import hashlib
 import http.cookiejar
 import json
 import os
@@ -439,6 +441,62 @@ class StaticModeTest(ServerCase):
         self.assertNotIn("<th>Actions</th>", body)
         self.assertNotIn("Register New User", body)
 
+
+def _b64url(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+class PKCETest(ServerCase):
+    def _authorize(self, client, challenge=None, method=None):
+        params = {
+            "response_type": "code",
+            "client_id": "dev",
+            "redirect_uri": BASE + "/cb",
+            "scope": "openid",
+            "state": "s1",
+        }
+        if challenge is not None:
+            params["code_challenge"] = challenge
+        if method is not None:
+            params["code_challenge_method"] = method
+        code, hdrs, _ = client.get("/oidc/auth?" + urllib.parse.urlencode(params))
+        self.assertEqual(code, 302, "authorize should redirect")
+        loc = hdrs.get("Location", "")
+        return urllib.parse.parse_qs(urllib.parse.urlparse(loc).query), loc
+
+    def test_discovery_advertises_pkce(self):
+        _, _, body = Client().get("/.well-known/openid-configuration")
+        self.assertIn("S256", json.loads(body).get("code_challenge_methods_supported", []))
+
+    def test_s256_roundtrip(self):
+        verifier = _b64url(os.urandom(32))
+        challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
+
+        bob = Client()
+        self.assertEqual(bob.login("bob", "bobpass")[0], 302)
+        params, loc = self._authorize(bob, challenge, "S256")
+        self.assertIn("code", params, f"no code in redirect: {loc}")
+
+        code, _, body = bob.post("/token", {
+            "grant_type": "authorization_code", "code": params["code"][0],
+            "client_id": "dev", "client_secret": "s", "redirect_uri": BASE + "/cb",
+            "code_verifier": verifier})
+        self.assertEqual(code, 200, body)
+        self.assertTrue(json.loads(body).get("id_token"))
+
+    def test_wrong_verifier_rejected(self):
+        verifier = _b64url(os.urandom(32))
+        challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
+
+        bob = Client()
+        bob.login("bob", "bobpass")
+        params, _ = self._authorize(bob, challenge, "S256")
+
+        code, _, body = bob.post("/token", {
+            "grant_type": "authorization_code", "code": params["code"][0],
+            "client_id": "dev", "client_secret": "s", "redirect_uri": BASE + "/cb",
+            "code_verifier": _b64url(os.urandom(32))})  # a different, wrong verifier
+        self.assertEqual(code, 400, body)
+        self.assertEqual(json.loads(body).get("error"), "invalid_grant")
 
 if __name__ == "__main__":
     unittest.main()
