@@ -25,8 +25,10 @@ import (
 // Grant is the state captured at authorize time and consumed at the token
 // endpoint, so the exchange can be checked against the request that created it.
 type Grant struct {
-	IDToken  string
-	ClientID string
+	IDToken             string
+	ClientID            string
+	CodeChallenge       string
+	CodeChallengeMethod string
 }
 
 type code struct {

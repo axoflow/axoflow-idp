@@ -59,12 +59,14 @@ func (r *Routes) WellKnownOpenIdConfiguration(res http.ResponseWriter, _ *http.R
 
 func authRequest(getter interface{ Get(string) string }) oidc.AuthenticationRequest {
 	return oidc.AuthenticationRequest{
-		Scope:        getter.Get("scope"),
-		ResponseType: getter.Get("response_type"),
-		ClientID:     getter.Get("client_id"),
-		RedirectUri:  getter.Get("redirect_uri"),
-		Nonce:        getter.Get("nonce"),
-		State:        getter.Get("state"),
+		Scope:               getter.Get("scope"),
+		ResponseType:        getter.Get("response_type"),
+		ClientID:            getter.Get("client_id"),
+		RedirectUri:         getter.Get("redirect_uri"),
+		Nonce:               getter.Get("nonce"),
+		State:               getter.Get("state"),
+		CodeChallenge:       getter.Get("code_challenge"),
+		CodeChallengeMethod: getter.Get("code_challenge_method"),
 	}
 }
 
@@ -164,7 +166,12 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	code := r.store.Create(codestore.Grant{IDToken: idToken, ClientID: authReq.ClientID})
+	code := r.store.Create(codestore.Grant{
+		IDToken:             idToken,
+		ClientID:            authReq.ClientID,
+		CodeChallenge:       authReq.CodeChallenge,
+		CodeChallengeMethod: authReq.CodeChallengeMethod,
+	})
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
@@ -205,6 +212,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			ClientSecret: req.Form.Get("client_secret"),
 			RedirectUri:  req.Form.Get("redirect_uri"),
 			Code:         req.Form.Get("code"),
+			CodeVerifier: req.Form.Get("code_verifier"),
 		}
 	default:
 		res.Header().Add("allow", http.MethodPost)
@@ -226,6 +234,11 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	// RFC 6749 §4.1.3: the code must have been issued to the authenticated client.
 	if grant.ClientID != tokenRequest.ClientID {
 		writeTokenError(res, oidc.ErrInvalidGrant)
+		return
+	}
+
+	if err := oidc.VerifyPKCE(grant.CodeChallenge, grant.CodeChallengeMethod, tokenRequest.CodeVerifier); err != nil {
+		writeTokenError(res, err)
 		return
 	}
 
