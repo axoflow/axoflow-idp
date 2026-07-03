@@ -16,6 +16,7 @@ package routes
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -25,6 +26,23 @@ import (
 	"github.com/axoflow/axoflow-idp/pkg/user"
 	"github.com/go-jose/go-jose/v3"
 )
+
+// writeTokenError emits an RFC 6749 §5.2 JSON error response. err must be one
+// of the oidc.Err* sentinels; its string is the OAuth error code.
+func writeTokenError(res http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	if errors.Is(err, oidc.ErrInvalidClient) {
+		status = http.StatusUnauthorized
+	}
+
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(status)
+	if encErr := json.NewEncoder(res).Encode(struct {
+		Error string `json:"error"`
+	}{Error: err.Error()}); encErr != nil {
+		slog.Error("failed to write token error response", "error", encErr)
+	}
+}
 
 func (r *Routes) WellKnownOpenIdConfiguration(res http.ResponseWriter, _ *http.Request) {
 	json, err := json.Marshal(r.oidc.GetOpenIDProviderMetadata())
@@ -177,7 +195,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodPost:
 		if err := req.ParseForm(); err != nil {
-			http.Error(res, err.Error(), http.StatusBadRequest)
+			writeTokenError(res, oidc.ErrInvalidRequest)
 			return
 		}
 
@@ -195,13 +213,13 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := r.oidc.ValidateTokenRequest(tokenRequest); err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		writeTokenError(res, err)
 		return
 	}
 
 	id_token, err := r.store.Pop(tokenRequest.Code)
 	if err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		writeTokenError(res, oidc.ErrInvalidGrant)
 		return
 	}
 
@@ -226,6 +244,8 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	}
 
 	res.Header().Set("Content-Type", "application/json")
+	res.Header().Set("Cache-Control", "no-store")
+	res.Header().Set("Pragma", "no-cache")
 	if _, err := res.Write(body_json); err != nil {
 		slog.Error("failed to write token response", "error", err)
 	}

@@ -15,10 +15,12 @@
 package routes
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
@@ -167,5 +169,115 @@ func TestOidcAuth_UnregisteredRedirectIsNotRedirect(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); loc != "" {
 		t.Errorf("must not redirect to an unregistered uri, got Location %q", loc)
+	}
+}
+
+func newTokenTestRoutes(t *testing.T) *Routes {
+	t.Helper()
+	o, err := oidc.New(oidc.Config{
+		BaseUrl: "https://idp.example.com",
+		Clients: []oidc.Client{
+			{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret"},
+		},
+		Keychain:          keychain.New(),
+		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		GenerateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+	return &Routes{oidc: o, store: codestore.New()}
+}
+
+func postToken(t *testing.T, r *Routes, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.OidcToken(rec, req)
+	return rec
+}
+
+func TestOidcToken_ErrorEnvelope(t *testing.T) {
+	valid := func() url.Values {
+		return url.Values{
+			"grant_type":    {"authorization_code"},
+			"client_id":     {"app"},
+			"client_secret": {"s3cret"},
+			"redirect_uri":  {"https://app.example.com/cb"},
+		}
+	}
+	with := func(k, v string) url.Values {
+		f := valid()
+		f.Set(k, v)
+		return f
+	}
+
+	tests := []struct {
+		name       string
+		form       url.Values
+		wantStatus int
+		wantError  string
+	}{
+		{"unsupported grant type", with("grant_type", "password"), http.StatusBadRequest, "unsupported_grant_type"},
+		{"unknown client", with("client_id", "nope"), http.StatusUnauthorized, "invalid_client"},
+		{"wrong client secret", with("client_secret", "totally-wrong"), http.StatusUnauthorized, "invalid_client"},
+		{"redirect uri mismatch", with("redirect_uri", "https://evil.example.com/cb"), http.StatusBadRequest, "invalid_grant"},
+		{"unknown code", with("code", "does-not-exist"), http.StatusBadRequest, "invalid_grant"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newTokenTestRoutes(t)
+			rec := postToken(t, r, tt.form)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body=%q)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("response body is not JSON: %v (body=%q)", err, rec.Body.String())
+			}
+			if body.Error != tt.wantError {
+				t.Errorf("error = %q, want %q", body.Error, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestOidcToken_Success(t *testing.T) {
+	r := newTokenTestRoutes(t)
+	code := r.store.Create("the-id-token")
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+		"redirect_uri":  {"https://app.example.com/cb"},
+		"code":          {code},
+	}
+	rec := postToken(t, r, form)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
+	var body struct {
+		IDToken   string `json:"id_token"`
+		TokenType string `json:"token_type"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if body.IDToken != "the-id-token" {
+		t.Errorf("id_token = %q, want %q", body.IDToken, "the-id-token")
+	}
+	if body.TokenType != "Bearer" {
+		t.Errorf("token_type = %q, want Bearer", body.TokenType)
 	}
 }

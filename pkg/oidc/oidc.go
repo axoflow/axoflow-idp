@@ -15,6 +15,7 @@
 package oidc
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -340,22 +341,31 @@ type UserinfoResponse struct {
 	Groups  []string `json:"groups,omitempty"`
 }
 
+// Token-endpoint error codes per RFC 6749 §5.2. The error string is the OAuth
+// error code sent to the client; the routes layer maps these to HTTP status.
+var (
+	ErrInvalidRequest       = errors.New("invalid_request")
+	ErrInvalidClient        = errors.New("invalid_client")
+	ErrInvalidGrant         = errors.New("invalid_grant")
+	ErrUnsupportedGrantType = errors.New("unsupported_grant_type")
+)
+
 func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 	if req.GrantType != "authorization_code" {
-		return errors.New("unsupported grant type")
+		return ErrUnsupportedGrantType
 	}
 
 	client, ok := o.getClient(req.ClientID)
 	if !ok {
-		return errors.New("access_denied")
+		return ErrInvalidClient
 	}
 
-	if client.ClientSecret != req.ClientSecret {
-		return errors.New("bad client secret")
+	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
+		return ErrInvalidClient
 	}
 
 	if !client.allowsRedirect(req.RedirectUri) {
-		return errors.New("invalid_redirect_uri")
+		return ErrInvalidGrant
 	}
 
 	return nil
@@ -371,7 +381,7 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 		return errors.New("invalid client")
 	}
 
-	if client.ClientSecret != req.ClientSecret {
+	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
 		return errors.New("invalid client credentials")
 	}
 
