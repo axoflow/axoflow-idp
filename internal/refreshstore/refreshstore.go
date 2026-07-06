@@ -225,6 +225,14 @@ func (s *Store) RevokeUser(userID string) {
 	}
 }
 
+// CleanUp prunes families past their absolute expiry; Issue prunes lazily, so
+// this exists for the periodic sweeper.
+func (s *Store) CleanUp() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanUp()
+}
+
 func (s *Store) cleanUp() {
 	now := s.now()
 	for fid, fam := range s.byFamily {

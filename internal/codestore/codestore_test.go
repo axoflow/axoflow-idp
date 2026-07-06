@@ -31,6 +31,29 @@ func TestCodeIsSingleUse(t *testing.T) {
 	}
 }
 
+func TestCodeIsOpaqueRandom(t *testing.T) {
+	s := New()
+	const n = 1000
+	seen := make(map[string]struct{}, n)
+	for i := 0; i < n; i++ {
+		c := s.Create(Grant{IDToken: "t"})
+		if len(c) != 43 { // base64url (no pad) of 32 bytes
+			t.Fatalf("code length = %d, want 43", len(c))
+		}
+		for _, r := range c {
+			urlSafe := r == '-' || r == '_' ||
+				(r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+			if !urlSafe {
+				t.Fatalf("code %q contains non-URL-safe char %q", c, r)
+			}
+		}
+		if _, dup := seen[c]; dup {
+			t.Fatalf("duplicate code generated: %q", c)
+		}
+		seen[c] = struct{}{}
+	}
+}
+
 // No assertions: this fails only under -race, as a regression for the
 // unsynchronized map access.
 func TestConcurrentAccess(_ *testing.T) {

@@ -15,11 +15,11 @@
 package codestore
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"sync"
 	"time"
-
-	"github.com/oklog/ulid/v2"
 )
 
 // Grant is the state captured at authorize time and consumed at the token
@@ -35,8 +35,8 @@ type Grant struct {
 }
 
 type code struct {
-	ID    ulid.ULID
-	grant Grant
+	createdAt time.Time
+	grant     Grant
 }
 
 type CodeStore struct {
@@ -64,8 +64,9 @@ func (s *CodeStore) cleanUp() {
 	if s.ttl == 0 {
 		return
 	}
+	cutoff := time.Now().Add(-s.ttl)
 	for k, v := range s.codes {
-		if ulid.Time(v.ID.Time()).Before(time.Now().Add(-s.ttl)) {
+		if v.createdAt.Before(cutoff) {
 			delete(s.codes, k)
 		}
 	}
@@ -76,13 +77,22 @@ func (s *CodeStore) Create(grant Grant) string {
 	defer s.mu.Unlock()
 
 	s.cleanUp()
-	code := code{
-		ID:    ulid.Make(),
-		grant: grant,
+	id := newCode()
+	s.codes[id] = code{
+		createdAt: time.Now(),
+		grant:     grant,
 	}
-	s.codes[code.ID.String()] = code
 
-	return code.ID.String()
+	return id
+}
+
+// newCode returns a 256-bit crypto-random, URL-safe opaque authorization code.
+func newCode() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("codestore: failed to read random bytes: " + err.Error())
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func (s *CodeStore) Pop(code string) (Grant, error) {
