@@ -65,13 +65,14 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 	}
 
 	return &Routes{
-		session:      session.New(),
-		user:         u,
-		template:     tpl,
-		resetTokens:  resettoken.New(time.Hour),
-		refreshStore: refreshstore.New(refreshstore.Config{}),
-		baseURL:      "https://idp.example.com",
-		csrfKey:      generateCSRFKey(),
+		session:          session.New(session.Config{}),
+		user:             u,
+		template:         tpl,
+		resetTokens:      resettoken.New(time.Hour),
+		refreshStore:     refreshstore.New(refreshstore.Config{}),
+		baseURL:          "https://idp.example.com",
+		sessionCookieTTL: 7 * 24 * time.Hour,
+		csrfKey:          generateCSRFKey(),
 	}
 }
 

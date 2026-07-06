@@ -15,51 +15,111 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"sync"
-
-	"github.com/oklog/ulid/v2"
+	"time"
 )
 
 type session struct {
-	ID     ulid.ULID
-	userID string
+	userID    string
+	createdAt time.Time
+	lastSeen  time.Time
+}
+
+// Config bounds a session's server-side lifetime. A zero TTL disables that
+// check; the zero Config keeps sessions until explicitly deleted.
+type Config struct {
+	IdleTTL     time.Duration `json:"idleTTL,omitempty"`
+	AbsoluteTTL time.Duration `json:"absoluteTTL,omitempty"`
 }
 
 type Session struct {
 	mu       sync.RWMutex
 	sessions map[string]session
+	cfg      Config
+	now      func() time.Time
 }
 
-func New() *Session {
+func New(cfg Config) *Session {
 	return &Session{
 		sessions: map[string]session{},
+		cfg:      cfg,
+		now:      time.Now,
 	}
 }
 
 func (s *Session) Create(userId string) string {
+	now := s.now()
+	id := newToken()
 	ses := session{
-		ID:     ulid.Make(),
-		userID: userId,
+		userID:    userId,
+		createdAt: now,
+		lastSeen:  now,
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[ses.ID.String()] = ses
+	s.sessions[id] = ses
 
-	return ses.ID.String()
+	return id
+}
+
+// newToken returns a 256-bit crypto-random, URL-safe opaque session ID.
+func newToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("session: failed to read random bytes: " + err.Error())
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func (s *Session) Get(sessionId string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	session, ok := s.sessions[sessionId]
+	sess, ok := s.sessions[sessionId]
 	if !ok {
 		return "", errors.New("session not found")
 	}
 
-	return session.userID, nil
+	now := s.now()
+	if s.expired(sess, now) {
+		delete(s.sessions, sessionId)
+		return "", errors.New("session expired")
+	}
+
+	if s.cfg.IdleTTL > 0 {
+		sess.lastSeen = now
+		s.sessions[sessionId] = sess
+	}
+
+	return sess.userID, nil
+}
+
+func (s *Session) expired(sess session, now time.Time) bool {
+	if s.cfg.AbsoluteTTL > 0 && now.After(sess.createdAt.Add(s.cfg.AbsoluteTTL)) {
+		return true
+	}
+	if s.cfg.IdleTTL > 0 && now.After(sess.lastSeen.Add(s.cfg.IdleTTL)) {
+		return true
+	}
+	return false
+}
+
+func (s *Session) CleanUp() {
+	if s.cfg.IdleTTL == 0 && s.cfg.AbsoluteTTL == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	for id, sess := range s.sessions {
+		if s.expired(sess, now) {
+			delete(s.sessions, id)
+		}
+	}
 }
 
 func (s *Session) Delete(sessionId string) {
@@ -73,8 +133,8 @@ func (s *Session) Delete(sessionId string) {
 func (s *Session) DeleteUserSessions(userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, ses := range s.sessions {
-		if ses.userID == userID {
+	for id, sess := range s.sessions {
+		if sess.userID == userID {
 			delete(s.sessions, id)
 		}
 	}

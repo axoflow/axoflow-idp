@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/internal/refreshstore"
@@ -33,29 +34,31 @@ import (
 )
 
 type Config struct {
-	Oidc          *oidc.Oidc
-	Session       *session.Session
-	User          *user.User
-	CodeStore     *codestore.CodeStore
-	TokenStore    *tokenstore.TokenStore
-	RefreshStore  *refreshstore.Store
-	ResetTokens   *resettoken.Store
-	BaseURL       string
-	SecureCookies bool
+	Oidc             *oidc.Oidc
+	Session          *session.Session
+	User             *user.User
+	CodeStore        *codestore.CodeStore
+	TokenStore       *tokenstore.TokenStore
+	RefreshStore     *refreshstore.Store
+	ResetTokens      *resettoken.Store
+	BaseURL          string
+	SecureCookies    bool
+	SessionCookieTTL time.Duration
 }
 
 type Routes struct {
-	oidc          *oidc.Oidc
-	session       *session.Session
-	template      *template.Template
-	user          *user.User
-	store         *codestore.CodeStore
-	tokenStore    *tokenstore.TokenStore
-	refreshStore  *refreshstore.Store
-	resetTokens   *resettoken.Store
-	baseURL       string
-	secureCookies bool
-	csrfKey       []byte
+	oidc             *oidc.Oidc
+	session          *session.Session
+	template         *template.Template
+	user             *user.User
+	store            *codestore.CodeStore
+	tokenStore       *tokenstore.TokenStore
+	refreshStore     *refreshstore.Store
+	resetTokens      *resettoken.Store
+	baseURL          string
+	secureCookies    bool
+	sessionCookieTTL time.Duration
+	csrfKey          []byte
 }
 
 // templateFuncs are the helpers available to every HTML template.
@@ -87,17 +90,18 @@ func New(config Config) (*Routes, error) {
 		return nil, fmt.Errorf("parse templates in %s: %w", dir, err)
 	}
 	return &Routes{
-		oidc:          config.Oidc,
-		session:       config.Session,
-		template:      tpl,
-		user:          config.User,
-		store:         config.CodeStore,
-		tokenStore:    config.TokenStore,
-		refreshStore:  config.RefreshStore,
-		resetTokens:   config.ResetTokens,
-		baseURL:       config.BaseURL,
-		secureCookies: config.SecureCookies,
-		csrfKey:       generateCSRFKey(),
+		oidc:             config.Oidc,
+		session:          config.Session,
+		template:         tpl,
+		user:             config.User,
+		store:            config.CodeStore,
+		tokenStore:       config.TokenStore,
+		refreshStore:     config.RefreshStore,
+		resetTokens:      config.ResetTokens,
+		baseURL:          config.BaseURL,
+		secureCookies:    config.SecureCookies,
+		sessionCookieTTL: config.SessionCookieTTL,
+		csrfKey:          generateCSRFKey(),
 	}, nil
 }
 

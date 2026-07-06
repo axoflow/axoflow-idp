@@ -92,6 +92,12 @@ func New(cfg Config) *Store {
 	}
 }
 
+// IdleTTL returns the effective sliding idle lifetime.
+func (s *Store) IdleTTL() time.Duration { return s.cfg.IdleTTL }
+
+// AbsoluteTTL returns the effective absolute family lifetime.
+func (s *Store) AbsoluteTTL() time.Duration { return s.cfg.AbsoluteTTL }
+
 func randomToken() (string, error) {
 	b := make([]byte, tokenBytes)
 	if _, err := rand.Read(b); err != nil {
