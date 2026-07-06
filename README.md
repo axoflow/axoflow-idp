@@ -34,6 +34,12 @@ go run main.go
 
 3. The IdP will be available at `http://localhost:8080` with OIDC discovery at `/.well-known/openid-configuration`
 
+> `redirect_uri` is matched by **exact string comparison** against a client's
+> registered URIs at both `/oidc/auth` and `/token`. Register additional
+> callbacks with a `redirectUris` array alongside (or instead of) the singular
+> `redirectUri`; any request whose `redirect_uri` is not an exact match is
+> rejected.
+
 ## Contributing
 
 If you find this project useful, help us:
