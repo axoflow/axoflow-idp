@@ -106,6 +106,32 @@ Behaviour:
 - State is **in-memory**: a restart invalidates all refresh tokens, and
   running multiple replicas without shared storage is not supported.
 
+## Sessions
+
+The interactive login session is a `session` cookie backed by an in-memory
+store. Lifetimes are configurable via an optional top-level `session` block
+(durations in nanoseconds, matching `refresh`):
+
+```json
+{
+    "session": { "cookieTTL": 604800000000000, "idleTTL": 0, "absoluteTTL": 0 }
+}
+```
+
+- `cookieTTL` — the cookie `MaxAge`. Default **7 days**.
+- `absoluteTTL` — server-side cap on total session lifetime. Defaults to
+  `cookieTTL`, so a session can't outlive its cookie even if the client keeps
+  it. Set `0` to disable server-side absolute expiry.
+- `idleTTL` — server-side sliding idle window; each request refreshes it.
+  Default `0` (disabled).
+
+Expired sessions and revoked tokens are pruned hourly by a background sweeper
+(also cleared on restart). At startup the effective lifetimes are logged; a
+**warning** is emitted when the id_token outlives the session (as a bearer JWT
+it stays valid at relying parties until it expires — `/revoke` only affects this
+server's `/userinfo`), and an **info** line when refresh tokens outlive the
+session (expected for `offline_access`).
+
 ## Contributing
 
 If you find this project useful, help us:

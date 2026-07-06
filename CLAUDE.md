@@ -49,9 +49,10 @@ so it runs the in-daemon image instead of pulling from the registry.
 ## Project layout
 
 ```
-main.go                  # config load + route wiring + server start
+main.go                  # thin entrypoint: load config, validate, app.Run
+internal/app/            # config load/validate, dependency wiring, route registration, lifetimes, cleanup sweeper
 internal/routes/         # HTTP handlers (login, password, admin, OIDC), CSRF, templates
-internal/session/        # in-memory session store
+internal/session/        # in-memory session store (server-side idle/absolute expiry)
 internal/resettoken/     # single-use password-reset tokens
 internal/codestore/      # OIDC authorization codes (carry the grant)
 internal/tokenstore/     # OIDC token revocation list
