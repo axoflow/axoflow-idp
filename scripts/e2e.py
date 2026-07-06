@@ -344,6 +344,71 @@ class AdminGroupHighlightTest(ServerCase):
         self.assertIn("Member of the administrator group", body)
 
 
+class AuthorizeRedirectTest(ServerCase):
+    """Hardening of the /oidc/auth redirect handling.
+
+    The e2e config registers client "dev" with redirect_uri BASE + "/cb".
+    """
+
+    CB = BASE + "/cb"
+
+    def _authorize(self, client, **params):
+        return client.get("/oidc/auth?" + urllib.parse.urlencode(params))
+
+    @staticmethod
+    def _location_query(hdrs):
+        return urllib.parse.parse_qs(
+            urllib.parse.urlparse(hdrs["Location"]).query, keep_blank_values=True)
+
+    def test_code_success_encodes_state(self):
+        bob = Client()
+        bob.login("bob", "bobpass")
+        state = "a b&c=d#e"  # chars that would break naive interpolation
+        code, hdrs, _ = self._authorize(
+            bob, scope="openid", response_type="code",
+            client_id="dev", redirect_uri=self.CB, state=state)
+        self.assertEqual(code, 302)
+        q = self._location_query(hdrs)
+        self.assertEqual(q.get("state"), [state])
+        self.assertTrue(q.get("code"), "authorization code must be present")
+
+    def test_error_redirect_echoes_state(self):
+        bob = Client()
+        bob.login("bob", "bobpass")
+        state = "s t&u"
+        # Missing "openid" scope: valid client/redirect_uri, so the error is
+        # redirected back with the state echoed (RFC 6749 §4.1.2.1).
+        code, hdrs, _ = self._authorize(
+            bob, scope="profile", response_type="code",
+            client_id="dev", redirect_uri=self.CB, state=state)
+        self.assertEqual(code, 302)
+        q = self._location_query(hdrs)
+        self.assertEqual(q.get("error"), ["invalid_scope"])
+        self.assertEqual(q.get("state"), [state])
+
+    def test_suffix_bypass_rejected(self):
+        bob = Client()
+        bob.login("bob", "bobpass")
+        # Prefix/suffix bypass: the registered value is a prefix of this URI,
+        # which the old strings.HasPrefix check accepted. Must now be rejected
+        # in place, never a redirect to the attacker host.
+        code, hdrs, _ = self._authorize(
+            bob, scope="openid", response_type="code",
+            client_id="dev", redirect_uri=self.CB + ".evil.com", state="s")
+        self.assertEqual(code, 400)
+        self.assertIsNone(hdrs.get("Location"),
+                          "must not redirect to an unregistered uri")
+
+    def test_path_append_rejected(self):
+        bob = Client()
+        bob.login("bob", "bobpass")
+        code, hdrs, _ = self._authorize(
+            bob, scope="openid", response_type="code",
+            client_id="dev", redirect_uri=self.CB + "/extra", state="s")
+        self.assertEqual(code, 400)
+        self.assertIsNone(hdrs.get("Location"))
+
+
 class StaticModeTest(ServerCase):
     STATIC = True
 
