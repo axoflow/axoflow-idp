@@ -46,6 +46,11 @@ It builds the image into minikube's Docker (tagged `:dev`) and points the
 `axoidp` deployment at it. The deployment uses `imagePullPolicy: IfNotPresent`,
 so it runs the in-daemon image instead of pulling from the registry.
 
+The recipe patches the container command to `/axoidp` along with the image:
+this image is distroless with the binary at the root, which is not on `PATH`,
+so a deployment invoking a bare `axoidp` fails with `CreateContainerError`.
+Templates resolve from `/templates` via the default `./templates` lookup.
+
 ## Project layout
 
 ```

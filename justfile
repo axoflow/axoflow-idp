@@ -43,7 +43,11 @@ minikube-deploy:
     set -euo pipefail
     eval "$(minikube docker-env)"
     docker build -t {{IMAGE}}:dev .
-    kubectl -n axoflow-local set image deployment/axoidp '*={{IMAGE}}:dev'
+    # The command is patched alongside the image: this image is distroless with
+    # the binary at /axoidp, which is not on PATH, so a deployment invoking a
+    # bare "axoidp" cannot start it.
+    kubectl -n axoflow-local patch deployment/axoidp -p \
+      '{"spec":{"template":{"spec":{"containers":[{"name":"axoidp","image":"{{IMAGE}}:dev","command":["/axoidp"]}]}}}}'
     kubectl -n axoflow-local rollout status deployment/axoidp --timeout=120s
 
 lint-go: (_install-golangci-lint GOLANGCI_LINT_VERSION GOVERSION)
