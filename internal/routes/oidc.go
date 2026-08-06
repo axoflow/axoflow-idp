@@ -16,9 +16,9 @@ package routes
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
@@ -50,6 +50,35 @@ func authRequest(getter interface{ Get(string) string }) oidc.AuthenticationRequ
 	}
 }
 
+// authRedirect sends a 302 back to redirectUri with params merged into its
+// query string, all properly percent-encoded. It must only be called with a
+// redirect_uri that has already passed ValidateRedirect.
+func authRedirect(res http.ResponseWriter, req *http.Request, redirectUri string, params url.Values) {
+	u, err := url.Parse(redirectUri)
+	if err != nil {
+		http.Error(res, "invalid redirect_uri", http.StatusBadRequest)
+		return
+	}
+	q := u.Query()
+	for key, values := range params {
+		for _, v := range values {
+			q.Set(key, v)
+		}
+	}
+	u.RawQuery = q.Encode()
+	http.Redirect(res, req, u.String(), http.StatusFound)
+}
+
+// authError redirects an authorization error back to the client, echoing the
+// request's state when present (RFC 6749 §4.1.2.1).
+func authError(res http.ResponseWriter, req *http.Request, authReq oidc.AuthenticationRequest, errCode string) {
+	params := url.Values{"error": {errCode}}
+	if authReq.State != "" {
+		params.Set("state", authReq.State)
+	}
+	authRedirect(res, req, authReq.RedirectUri, params)
+}
+
 func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	var user *user.UserInfo
 	var authReq oidc.AuthenticationRequest
@@ -73,19 +102,26 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 			authReq = authRequest(req.Form)
 		}
 	default:
-		http.Redirect(res, req, fmt.Sprintf("%s?error=invalid_request&error_description=method not allowed", authReq.RedirectUri), http.StatusFound)
+		res.Header().Set("Allow", "GET, POST")
+		http.Error(res, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	fmt.Printf("%#v\n", authReq)
+	// Validate the client and redirect_uri before redirecting anything back to
+	// it; an unregistered URI is rejected in place rather than turned into an
+	// open redirect (RFC 6749 §4.1.2.1).
+	if err := r.oidc.ValidateRedirect(authReq.ClientID, authReq.RedirectUri); err != nil {
+		http.Error(res, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-	err := r.oidc.ValidateAuthenticationRequest(authReq)
-	if err != nil {
-		http.Redirect(res, req, fmt.Sprintf("%s?error=%s", authReq.RedirectUri, err.Error()), http.StatusFound)
+	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
+		authError(res, req, authReq, err.Error())
 		return
 	}
 
 	if user == nil {
+		var err error
 		user, err = r.getUserFromSession(req)
 		if err != nil {
 			if err := r.template.ExecuteTemplate(res, "login.html", nil); err != nil {
@@ -97,17 +133,25 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 
 	idToken, err := r.oidc.GenerateIDToken(*user, authReq.ClientID, authReq.Nonce)
 	if err != nil {
-		http.Redirect(res, req, fmt.Sprintf("%s?error=server_error", authReq.RedirectUri), http.StatusFound)
+		authError(res, req, authReq, "server_error")
 		return
 	}
 
 	if authReq.ResponseType == "id_token" {
-		http.Redirect(res, req, fmt.Sprintf("%s?id_token=%s", authReq.RedirectUri, idToken), http.StatusFound)
+		params := url.Values{"id_token": {idToken}}
+		if authReq.State != "" {
+			params.Set("state", authReq.State)
+		}
+		authRedirect(res, req, authReq.RedirectUri, params)
 		return
 	}
 
 	code := r.store.Create(idToken)
-	http.Redirect(res, req, fmt.Sprintf("%s?code=%s&state=%s", authReq.RedirectUri, code, authReq.State), http.StatusFound)
+	params := url.Values{"code": {code}}
+	if authReq.State != "" {
+		params.Set("state", authReq.State)
+	}
+	authRedirect(res, req, authReq.RedirectUri, params)
 }
 
 func (r *Routes) OidcJwks(res http.ResponseWriter, _ *http.Request) {
@@ -149,8 +193,6 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "unsupported method (must be POST)", http.StatusMethodNotAllowed)
 		return
 	}
-
-	fmt.Printf("%#v\n", tokenRequest)
 
 	if err := r.oidc.ValidateTokenRequest(tokenRequest); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)

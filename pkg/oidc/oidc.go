@@ -35,10 +35,28 @@ const (
 )
 
 type Client struct {
-	Id           string `json:"id"`
-	Name         string `json:"name"`
-	RedirectUri  string `json:"redirectUri"`
-	ClientSecret string `json:"clientSecret"`
+	Id           string   `json:"id"`
+	Name         string   `json:"name"`
+	RedirectUri  string   `json:"redirectUri"`
+	RedirectUris []string `json:"redirectUris,omitempty"`
+	ClientSecret string   `json:"clientSecret"`
+}
+
+// registeredRedirectUris returns every redirect URI registered for the client:
+// the singular redirectUri (if set) plus any in the redirectUris list.
+func (c Client) registeredRedirectUris() []string {
+	uris := make([]string, 0, len(c.RedirectUris)+1)
+	if c.RedirectUri != "" {
+		uris = append(uris, c.RedirectUri)
+	}
+	return append(uris, c.RedirectUris...)
+}
+
+// allowsRedirect reports whether uri exactly matches one of the client's
+// registered redirect URIs. Matching is an exact string comparison per
+// RFC 6749 §3.1.2.3 / RFC 9700 §4.1.1 — no prefix or pattern matching.
+func (c Client) allowsRedirect(uri string) bool {
+	return slices.Contains(c.registeredRedirectUris(), uri)
 }
 
 type Oidc struct {
@@ -248,6 +266,23 @@ func (o *Oidc) GetPublicKeys() []jose.JSONWebKey {
 	return publicKeys
 }
 
+// ValidateRedirect validates the client and its redirect_uri. It must be
+// checked before redirecting anything back to redirect_uri, so that an
+// unregistered URI is rejected in place rather than turned into an open
+// redirect (RFC 6749 §4.1.2.1).
+func (o *Oidc) ValidateRedirect(clientID, redirectUri string) error {
+	client, ok := o.getClient(clientID)
+	if !ok {
+		return errors.New("access_denied")
+	}
+
+	if !client.allowsRedirect(redirectUri) {
+		return errors.New("invalid_redirect_uri")
+	}
+
+	return nil
+}
+
 func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
 	if !strings.Contains(req.Scope, "openid") {
 		return errors.New("invalid_scope")
@@ -257,16 +292,7 @@ func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
 		return errors.New("unsupported_response_type")
 	}
 
-	client, ok := o.getClient(req.ClientID)
-	if !ok {
-		return errors.New("access_denied")
-	}
-
-	if !strings.HasPrefix(req.RedirectUri, client.RedirectUri) {
-		return errors.New("invalid_redirect_uri")
-	}
-
-	return nil
+	return o.ValidateRedirect(req.ClientID, req.RedirectUri)
 }
 
 func (o *Oidc) GenerateIDToken(user user.UserInfo, clientID string, nonce string) (string, error) {
@@ -328,7 +354,7 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return errors.New("bad client secret")
 	}
 
-	if client.RedirectUri != req.RedirectUri {
+	if !client.allowsRedirect(req.RedirectUri) {
 		return errors.New("invalid_redirect_uri")
 	}
 
