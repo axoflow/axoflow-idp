@@ -326,3 +326,18 @@ func TestValidateRevocationRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestFirstClient_RedirectUrisOnly(t *testing.T) {
+	o := newTestOidc(t, []Client{{
+		Name:         "App",
+		RedirectUris: []string{"https://app.example.com/cb"},
+	}})
+
+	info := o.FirstClient()
+	if info == nil {
+		t.Fatal("a client registered only via redirectUris should still yield client info")
+	}
+	if info.URL != "https://app.example.com" {
+		t.Errorf("URL = %q, want %q", info.URL, "https://app.example.com")
+	}
+}

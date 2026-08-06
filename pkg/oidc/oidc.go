@@ -178,7 +178,11 @@ func (o *Oidc) FirstClient() *ClientInfo {
 	if len(o.clients) == 0 {
 		return nil
 	}
-	u, err := url.Parse(o.clients[0].RedirectUri)
+	uris := o.clients[0].registeredRedirectUris()
+	if len(uris) == 0 {
+		return nil
+	}
+	u, err := url.Parse(uris[0])
 	if err != nil || u.Host == "" {
 		return nil
 	}
