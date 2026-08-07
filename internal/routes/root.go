@@ -17,7 +17,6 @@ package routes
 import (
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -140,7 +139,7 @@ func (r *Routes) setSessionCookie(res http.ResponseWriter, sessionId string) {
 	http.SetCookie(res, &http.Cookie{
 		Name:     "session",
 		Value:    sessionId,
-		MaxAge:   int((7 * 24 * time.Hour).Seconds()),
+		MaxAge:   int(r.sessionCookieTTL.Seconds()),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   r.secureCookies,
@@ -171,6 +170,7 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 	http.SetCookie(res, &http.Cookie{
 		MaxAge: -1,
 		Name:   "session",
+		Path:   "/",
 	})
 
 	http.Redirect(res, req, "/?flash=logout", http.StatusFound)
