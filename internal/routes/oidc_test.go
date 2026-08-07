@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 )
@@ -287,5 +288,33 @@ func TestOidcToken_Success(t *testing.T) {
 	}
 	if body.TokenType != "Bearer" {
 		t.Errorf("token_type = %q, want Bearer", body.TokenType)
+	}
+}
+
+func TestOidcRevokeBadClientCredentials(t *testing.T) {
+	r := newTokenTestRoutes(t)
+	r.tokenStore = tokenstore.New(tokenstore.Config{})
+
+	form := url.Values{
+		"token":         {"some-token"},
+		"client_id":     {"app"},
+		"client_secret": {"wrong-secret"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.OidcRevoke(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (RFC 7009 §2.1: failed client auth is not a 200)", rec.Code, http.StatusUnauthorized)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error != "invalid_client" {
+		t.Errorf("error = %q, want %q", body.Error, "invalid_client")
 	}
 }

@@ -385,18 +385,21 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 	return nil
 }
 
+// ValidateRevocationRequest authenticates the client before inspecting the
+// token: RFC 7009 §2.1 makes a failed client authentication a 401, while an
+// invalid token is still a 200.
 func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
-	if req.Token == "" {
-		return errors.New("token is required")
-	}
-
 	client, ok := o.getClient(req.ClientID)
 	if !ok {
-		return errors.New("invalid client")
+		return ErrInvalidClient
 	}
 
 	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
-		return errors.New("invalid client credentials")
+		return ErrInvalidClient
+	}
+
+	if req.Token == "" {
+		return ErrInvalidRequest
 	}
 
 	return nil
