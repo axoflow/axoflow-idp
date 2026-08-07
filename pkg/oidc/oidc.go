@@ -203,7 +203,7 @@ type IDTokenPayload struct {
 	Audience   string   `json:"aud"`
 	Expiration int64    `json:"exp"`
 	IssuedAt   int64    `json:"iat"`
-	Nonce      string   `json:"nonce"`
+	Nonce      string   `json:"nonce,omitempty"`
 	Name       string   `json:"name"`
 	Groups     []string `json:"groups"`
 	Email      string   `json:"email"`
