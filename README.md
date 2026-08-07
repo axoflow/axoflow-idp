@@ -4,7 +4,7 @@ A lightweight OpenID Connect (OIDC) Identity Provider, designed to work seamless
 
 ## Overview
 
-Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authentication for your applications. It supports multiple clients, user self-registration, administrative user management, and JWT-based token signing. The provider implements standard OIDC endpoints including authorization (with PKCE), token exchange, revocation, and JWKS discovery.
+Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authentication for your applications. It supports multiple clients, user self-registration, administrative user management, JWT-based token signing, and optional rotating refresh tokens. The provider implements standard OIDC endpoints including authorization, token exchange, refresh, revocation, and JWKS discovery.
 
 ## Quickstart
 
@@ -57,6 +57,54 @@ that client:
 ```
 
 Clients without `requirePKCE` keep working with or without PKCE.
+
+## Refresh tokens
+
+Refresh tokens are **off by default**. To enable them, add a top-level
+`refresh` block and mark each client that may receive them with
+`allowOfflineAccess` (such a client **must** have a `clientSecret`):
+
+```json
+{
+    "baseUrl": "http://localhost:8080",
+    "clients": [
+        {
+            "id": "your-client-id",
+            "redirectUri": "http://localhost:3000/callback",
+            "clientSecret": "a-strong-secret",
+            "allowOfflineAccess": true
+        }
+    ],
+    "refresh": {},
+    "signingKey": { "generateIfMissing": true }
+}
+```
+
+An empty `refresh: {}` uses the defaults: a sliding **idle** lifetime of
+168h capped by an **absolute** family lifetime of 720h, and a 10s
+reuse-leeway window (override with `idleTTL`, `absoluteTTL`,
+`reuseLeeway`, all in nanoseconds). When refresh is enabled the id_token
+lifetime defaults to 15m (24h otherwise); override with `idTokenTTL`.
+
+Behaviour:
+
+- A refresh token is issued from `/token` only when the client requested
+  the `offline_access` scope **and** it is an `allowOfflineAccess`
+  client. Discovery then advertises `refresh_token` in
+  `grant_types_supported` and `offline_access` in `scopes_supported`.
+- Tokens are **opaque, server-side, and rotating**: every
+  `grant_type=refresh_token` exchange returns a new refresh token and
+  invalidates the old one. Replaying an already-used token revokes the
+  entire token family (reuse detection per the OAuth 2.0 Security BCP).
+- `/revoke` on a refresh token kills its whole family. A password change,
+  an admin password reset, and a reset-link `set-password` all revoke
+  every one of the user's refresh tokens (a deleted user is cut off on
+  the next exchange).
+- Consent is **pre-established** per client via `allowOfflineAccess`
+  (no consent screen — a documented deviation from OIDC Core §11), and
+  offline sessions survive logout by design.
+- State is **in-memory**: a restart invalidates all refresh tokens, and
+  running multiple replicas without shared storage is not supported.
 
 ## Contributing
 

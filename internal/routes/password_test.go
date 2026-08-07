@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/axoflow/axoflow-idp/internal/refreshstore"
 	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/session"
 	"github.com/axoflow/axoflow-idp/pkg/user"
@@ -64,12 +65,13 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 	}
 
 	return &Routes{
-		session:     session.New(),
-		user:        u,
-		template:    tpl,
-		resetTokens: resettoken.New(time.Hour),
-		baseURL:     "https://idp.example.com",
-		csrfKey:     generateCSRFKey(),
+		session:      session.New(),
+		user:         u,
+		template:     tpl,
+		resetTokens:  resettoken.New(time.Hour),
+		refreshStore: refreshstore.New(refreshstore.Config{}),
+		baseURL:      "https://idp.example.com",
+		csrfKey:      generateCSRFKey(),
 	}
 }
 
@@ -157,6 +159,30 @@ func TestChangePassword_Success(t *testing.T) {
 	}
 	if cookies := rec.Result().Cookies(); len(cookies) == 0 || cookies[0].Name != "session" {
 		t.Error("a fresh session cookie should be set")
+	}
+}
+
+func TestChangePassword_RevokesRefreshTokens(t *testing.T) {
+	r := newTestRoutes(t, false)
+	rt, err := r.refreshStore.Issue(refreshstore.Grant{UserID: "bob", ClientID: "app", Scopes: []string{"openid"}})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	cookie, csrf := r.authed("bob")
+
+	form := url.Values{"current_password": {"bobpass1"}, "new_password": {"newsecret"}, "csrf_token": {csrf}}
+	req := httptest.NewRequest(http.MethodPost, "/password", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+
+	r.ChangePassword(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
+	}
+	if _, _, err := r.refreshStore.Rotate(rt, "app"); err != refreshstore.ErrInvalidGrant {
+		t.Errorf("refresh token after password change = %v, want revoked", err)
 	}
 }
 

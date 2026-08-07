@@ -26,7 +26,10 @@ import (
 // endpoint, so the exchange can be checked against the request that created it.
 type Grant struct {
 	IDToken             string
+	UserID              string
 	ClientID            string
+	Scopes              []string
+	OfflineGranted      bool
 	CodeChallenge       string
 	CodeChallengeMethod string
 }

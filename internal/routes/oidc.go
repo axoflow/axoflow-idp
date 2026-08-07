@@ -20,9 +20,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/refreshstore"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 	"github.com/go-jose/go-jose/v3"
@@ -166,9 +168,13 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	scopes := strings.Fields(authReq.Scope)
 	code := r.store.Create(codestore.Grant{
 		IDToken:             idToken,
+		UserID:              user.ID,
 		ClientID:            authReq.ClientID,
+		Scopes:              scopes,
+		OfflineGranted:      slices.Contains(scopes, "offline_access") && r.oidc.OfflineAccessAllowed(authReq.ClientID),
 		CodeChallenge:       authReq.CodeChallenge,
 		CodeChallengeMethod: authReq.CodeChallengeMethod,
 	})
@@ -197,6 +203,15 @@ func (r *Routes) OidcJwks(res http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+type tokenResponse struct {
+	IDToken      string `json:"id_token"`
+	AccessToken  string `json:"access_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+}
+
 func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	var tokenRequest oidc.TokenRequest
 	switch req.Method {
@@ -213,6 +228,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			RedirectUri:  req.Form.Get("redirect_uri"),
 			Code:         req.Form.Get("code"),
 			CodeVerifier: req.Form.Get("code_verifier"),
+			RefreshToken: req.Form.Get("refresh_token"),
 		}
 	default:
 		res.Header().Add("allow", http.MethodPost)
@@ -222,6 +238,11 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 
 	if err := r.oidc.ValidateTokenRequest(tokenRequest); err != nil {
 		writeTokenError(res, err)
+		return
+	}
+
+	if tokenRequest.GrantType == "refresh_token" {
+		r.refreshGrant(res, tokenRequest)
 		return
 	}
 
@@ -242,19 +263,75 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	body := struct {
-		IDToken     string `json:"id_token"`
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-		TokenType   string `json:"token_type"`
-	}{
+	grantedScopes := grant.Scopes
+	if !grant.OfflineGranted {
+		grantedScopes = slices.DeleteFunc(slices.Clone(grant.Scopes), func(s string) bool {
+			return s == "offline_access"
+		})
+	}
+
+	body := tokenResponse{
 		IDToken:     grant.IDToken,
 		AccessToken: grant.IDToken,
 		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
 		TokenType:   "Bearer",
+		Scope:       strings.Join(grantedScopes, " "),
 	}
 
-	body_json, err := json.Marshal(body)
+	if grant.OfflineGranted && r.refreshStore != nil {
+		refreshToken, err := r.refreshStore.Issue(refreshstore.Grant{
+			UserID:   grant.UserID,
+			ClientID: grant.ClientID,
+			Scopes:   grant.Scopes,
+		})
+		if err != nil {
+			slog.Error("failed to issue refresh token", "error", err)
+			http.Error(res, "server error", http.StatusInternalServerError)
+			return
+		}
+		body.RefreshToken = refreshToken
+	}
+
+	r.writeTokenResponse(res, body)
+}
+
+// refreshGrant handles grant_type=refresh_token: it rotates the presented
+// token, re-fetches the user (a deleted user cuts off the family), and re-mints
+// a fresh id_token. ValidateTokenRequest has already gated this on the refresh
+// feature being enabled, so r.refreshStore is non-nil here.
+func (r *Routes) refreshGrant(res http.ResponseWriter, req oidc.TokenRequest) {
+	grant, newRefreshToken, err := r.refreshStore.Rotate(req.RefreshToken, req.ClientID)
+	if err != nil {
+		writeTokenError(res, oidc.ErrInvalidGrant)
+		return
+	}
+
+	u, ok := r.user.Get(grant.UserID)
+	if !ok {
+		r.refreshStore.RevokeUser(grant.UserID)
+		writeTokenError(res, oidc.ErrInvalidGrant)
+		return
+	}
+
+	idToken, err := r.oidc.GenerateIDToken(u, grant.ClientID, "")
+	if err != nil {
+		slog.Error("failed to mint id_token on refresh", "error", err)
+		http.Error(res, "server error", http.StatusInternalServerError)
+		return
+	}
+
+	r.writeTokenResponse(res, tokenResponse{
+		IDToken:      idToken,
+		AccessToken:  idToken,
+		ExpiresIn:    int(r.oidc.IDTokenTTL().Seconds()),
+		TokenType:    "Bearer",
+		RefreshToken: newRefreshToken,
+		Scope:        strings.Join(grant.Scopes, " "),
+	})
+}
+
+func (r *Routes) writeTokenResponse(res http.ResponseWriter, body tokenResponse) {
+	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		http.Error(res, err.Error(), http.StatusInternalServerError)
 		return
@@ -263,7 +340,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	res.Header().Set("Content-Type", "application/json")
 	res.Header().Set("Cache-Control", "no-store")
 	res.Header().Set("Pragma", "no-cache")
-	if _, err := res.Write(body_json); err != nil {
+	if _, err := res.Write(bodyJSON); err != nil {
 		slog.Error("failed to write token response", "error", err)
 	}
 }
@@ -296,7 +373,11 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.tokenStore.Revoke(revocationRequest.Token)
+	// A refresh token revokes its whole family (owner-checked); anything else is
+	// treated as an issued id/access token and added to the blocklist.
+	if r.refreshStore == nil || !r.refreshStore.Revoke(revocationRequest.Token, revocationRequest.ClientID) {
+		r.tokenStore.Revoke(revocationRequest.Token)
+	}
 
 	res.WriteHeader(http.StatusOK)
 }

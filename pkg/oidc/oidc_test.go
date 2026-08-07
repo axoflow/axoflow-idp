@@ -276,6 +276,79 @@ func TestDiscoveryAdvertisesPKCE(t *testing.T) {
 		t.Error("plain must not be advertised")
 	}
 }
+
+func TestOfflineAccessAllowed(t *testing.T) {
+	o := &Oidc{clients: []Client{
+		{Id: "app", AllowOfflineAccess: true},
+		{Id: "web", AllowOfflineAccess: false},
+	}}
+	if !o.OfflineAccessAllowed("app") {
+		t.Error("app should allow offline access")
+	}
+	if o.OfflineAccessAllowed("web") {
+		t.Error("web should not allow offline access")
+	}
+	if o.OfflineAccessAllowed("unknown") {
+		t.Error("unknown client should not allow offline access")
+	}
+}
+
+func TestDiscoveryMetadataGrantTypes(t *testing.T) {
+	tests := []struct {
+		name           string
+		refreshEnabled bool
+		wantRefresh    bool
+		wantOffline    bool
+	}{
+		{"refresh disabled", false, false, false},
+		{"refresh enabled", true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := &Oidc{baseUrl: "https://idp.example.com", refreshEnabled: tt.refreshEnabled}
+			md := o.GetOpenIDProviderMetadata()
+
+			if !slices.Contains(md.GrantTypesSupported, "authorization_code") {
+				t.Error("grant_types_supported must always include authorization_code")
+			}
+			if !slices.Contains(md.GrantTypesSupported, "implicit") {
+				t.Error("grant_types_supported must always include implicit")
+			}
+			if got := slices.Contains(md.GrantTypesSupported, "refresh_token"); got != tt.wantRefresh {
+				t.Errorf("refresh_token in grant_types = %v, want %v", got, tt.wantRefresh)
+			}
+			if got := slices.Contains(md.ScopesSupported, "offline_access"); got != tt.wantOffline {
+				t.Errorf("offline_access in scopes = %v, want %v", got, tt.wantOffline)
+			}
+		})
+	}
+}
+
+func TestValidateTokenRequestRefreshGrant(t *testing.T) {
+	client := Client{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret"}
+	enabled := &Oidc{clients: []Client{client}, refreshEnabled: true}
+	disabled := &Oidc{clients: []Client{client}, refreshEnabled: false}
+
+	tests := []struct {
+		name    string
+		o       *Oidc
+		req     TokenRequest
+		wantErr error
+	}{
+		{"valid refresh", enabled, TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "s3cret", RefreshToken: "rt"}, nil},
+		{"missing refresh token", enabled, TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "s3cret"}, ErrInvalidRequest},
+		{"wrong secret", enabled, TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "nope", RefreshToken: "rt"}, ErrInvalidClient},
+		{"refresh disabled", disabled, TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "s3cret", RefreshToken: "rt"}, ErrUnsupportedGrantType},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.o.ValidateTokenRequest(tt.req); err != tt.wantErr {
+				t.Errorf("ValidateTokenRequest = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateAuthenticationRequestScope(t *testing.T) {
 	o := newTestOidc(t, []Client{{
 		Id:           "app",

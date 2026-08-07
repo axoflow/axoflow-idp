@@ -19,14 +19,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/refreshstore"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 const testRedirectURI = "https://app.example.com/cb"
@@ -190,6 +194,59 @@ func newTokenTestRoutes(t *testing.T) *Routes {
 	return &Routes{oidc: o, store: codestore.New()}
 }
 
+func newRefreshTestRoutes(t *testing.T) *Routes {
+	t.Helper()
+	o, err := oidc.New(oidc.Config{
+		BaseUrl: "https://idp.example.com",
+		Clients: []oidc.Client{
+			{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret", AllowOfflineAccess: true},
+		},
+		Keychain:          keychain.New(),
+		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		GenerateIfMissing: true,
+		RefreshEnabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "users.json")
+	if err := os.WriteFile(path, []byte(`[{"ID":"u1","Username":"alice","Groups":["users"]}]`), 0o600); err != nil {
+		t.Fatalf("write users: %v", err)
+	}
+	u, err := user.New(user.Config{FilePath: path, UserAdminGroup: "admins"})
+	if err != nil {
+		t.Fatalf("user store: %v", err)
+	}
+
+	return &Routes{
+		oidc:         o,
+		store:        codestore.New(),
+		refreshStore: refreshstore.New(refreshstore.Config{}),
+		tokenStore:   tokenstore.New(tokenstore.Config{TTL: time.Hour}),
+		user:         u,
+	}
+}
+
+func assertTokenError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantError string) {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Errorf("status = %d, want %d (body=%q)", rec.Code, wantStatus, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not JSON: %v (body=%q)", err, rec.Body.String())
+	}
+	if body.Error != wantError {
+		t.Errorf("error = %q, want %q", body.Error, wantError)
+	}
+}
+
 func postToken(t *testing.T, r *Routes, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
@@ -246,6 +303,8 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 			if body.Error != tt.wantError {
 				t.Errorf("error = %q, want %q", body.Error, tt.wantError)
 			}
+			r := newTokenTestRoutes(t)
+			assertTokenError(t, postToken(t, r, tt.form), tt.wantStatus, tt.wantError)
 		})
 	}
 }
@@ -257,11 +316,15 @@ const (
 )
 
 func decodeTokenResponse(t *testing.T, rec *httptest.ResponseRecorder) struct {
-	IDToken string `json:"id_token"`
+	IDToken      string `json:"id_token"`
+	RefreshToken string `json:"refresh_token"`
+	Scope        string `json:"scope"`
 } {
 	t.Helper()
 	var body struct {
-		IDToken string `json:"id_token"`
+		IDToken      string `json:"id_token"`
+		RefreshToken string `json:"refresh_token"`
+		Scope        string `json:"scope"`
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
@@ -270,22 +333,6 @@ func decodeTokenResponse(t *testing.T, rec *httptest.ResponseRecorder) struct {
 		t.Fatalf("response body is not JSON: %v (body=%q)", err, rec.Body.String())
 	}
 	return body
-}
-
-func assertTokenError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantError string) {
-	t.Helper()
-	if rec.Code != wantStatus {
-		t.Errorf("status = %d, want %d (body=%q)", rec.Code, wantStatus, rec.Body.String())
-	}
-	var body struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("response body is not JSON: %v (body=%q)", err, rec.Body.String())
-	}
-	if body.Error != wantError {
-		t.Errorf("error = %q, want %q", body.Error, wantError)
-	}
 }
 
 func TestOidcTokenPKCE(t *testing.T) {
@@ -339,6 +386,159 @@ func TestOidcTokenPKCE(t *testing.T) {
 		}
 	})
 }
+
+func TestOidcTokenRefreshIssuance(t *testing.T) {
+	tests := []struct {
+		name           string
+		scopes         []string
+		offlineGranted bool
+		wantRefresh    bool
+		wantScope      string
+	}{
+		{"offline granted", []string{"openid", "offline_access"}, true, true, "openid offline_access"},
+		{"offline not requested", []string{"openid"}, false, false, "openid"},
+		{"offline requested but denied", []string{"openid", "offline_access"}, false, false, "openid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newRefreshTestRoutes(t)
+			code := r.store.Create(codestore.Grant{
+				IDToken:        "the-id-token",
+				UserID:         "u1",
+				ClientID:       "app",
+				Scopes:         tt.scopes,
+				OfflineGranted: tt.offlineGranted,
+			})
+			body := decodeTokenResponse(t, postToken(t, r, url.Values{
+				"grant_type":    {"authorization_code"},
+				"client_id":     {"app"},
+				"client_secret": {"s3cret"},
+				"redirect_uri":  {"https://app.example.com/cb"},
+				"code":          {code},
+			}))
+
+			if got := body.RefreshToken != ""; got != tt.wantRefresh {
+				t.Errorf("refresh_token issued = %v, want %v", got, tt.wantRefresh)
+			}
+			if body.Scope != tt.wantScope {
+				t.Errorf("scope = %q, want %q", body.Scope, tt.wantScope)
+			}
+		})
+	}
+}
+func TestOidcTokenRefreshGrantExchange(t *testing.T) {
+	r := newRefreshTestRoutes(t)
+	rt, err := r.refreshStore.Issue(refreshstore.Grant{UserID: "u1", ClientID: "app", Scopes: []string{"openid", "offline_access"}})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+		"refresh_token": {rt},
+	}
+	body := decodeTokenResponse(t, postToken(t, r, form))
+
+	if body.RefreshToken == "" || body.RefreshToken == rt {
+		t.Errorf("refresh_token = %q, want a rotated token != %q", body.RefreshToken, rt)
+	}
+	info, err := r.oidc.GetUserinfoFromToken(body.IDToken)
+	if err != nil {
+		t.Fatalf("re-minted id_token did not verify: %v", err)
+	}
+	if info.Subject != "u1" {
+		t.Errorf("re-minted id_token sub = %q, want u1", info.Subject)
+	}
+}
+
+func TestOidcTokenRefreshInvalidToken(t *testing.T) {
+	r := newRefreshTestRoutes(t)
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+		"refresh_token": {"not-a-real-token"},
+	}
+	rec := postToken(t, r, form)
+	assertTokenError(t, rec, http.StatusBadRequest, "invalid_grant")
+}
+
+func TestOidcTokenRefreshDeletedUser(t *testing.T) {
+	r := newRefreshTestRoutes(t)
+	rt, _ := r.refreshStore.Issue(refreshstore.Grant{UserID: "ghost", ClientID: "app", Scopes: []string{"openid"}})
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+		"refresh_token": {rt},
+	}
+	rec := postToken(t, r, form)
+	assertTokenError(t, rec, http.StatusBadRequest, "invalid_grant")
+
+	// The now-orphaned family is revoked, so the token cannot be retried.
+	if _, _, err := r.refreshStore.Rotate(rt, "app"); err != refreshstore.ErrInvalidGrant {
+		t.Errorf("orphaned family should be revoked, Rotate = %v", err)
+	}
+}
+
+func TestOidcTokenRefreshDisabledIsUnsupported(t *testing.T) {
+	r := newTokenTestRoutes(t) // refresh disabled, refreshStore is nil
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+		"refresh_token": {"whatever"},
+	}
+	rec := postToken(t, r, form)
+	assertTokenError(t, rec, http.StatusBadRequest, "unsupported_grant_type")
+}
+
+func postRevoke(t *testing.T, r *Routes, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.OidcRevoke(rec, req)
+	return rec
+}
+
+func TestOidcRevokeKillsRefreshFamily(t *testing.T) {
+	r := newRefreshTestRoutes(t)
+	rt, _ := r.refreshStore.Issue(refreshstore.Grant{UserID: "u1", ClientID: "app", Scopes: []string{"openid"}})
+
+	rec := postRevoke(t, r, url.Values{
+		"token":         {rt},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Errorf("revoke status = %d, want 200", rec.Code)
+	}
+	if _, _, err := r.refreshStore.Rotate(rt, "app"); err != refreshstore.ErrInvalidGrant {
+		t.Errorf("family after revoke = %v, want ErrInvalidGrant", err)
+	}
+}
+
+func TestOidcRevokeFallsBackToBlocklist(t *testing.T) {
+	r := newRefreshTestRoutes(t)
+
+	// A token the refresh store does not own (e.g. an id_token used as a bearer)
+	// falls through to the token blocklist consulted by /oidc/userinfo.
+	rec := postRevoke(t, r, url.Values{
+		"token":         {"opaque-access-token"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Errorf("revoke status = %d, want 200", rec.Code)
+	}
+	if !r.tokenStore.IsRevoked("opaque-access-token") {
+		t.Error("a non-refresh token should fall through to the token blocklist")
+	}
+}
+
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
 	code := r.store.Create(codestore.Grant{IDToken: "the-id-token", ClientID: "app"})

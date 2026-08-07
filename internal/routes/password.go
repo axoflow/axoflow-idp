@@ -75,6 +75,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		// Invalidate every session for this user (including the current one),
 		// then issue a fresh session so this browser stays logged in.
 		r.session.DeleteUserSessions(u.ID)
+		r.revokeUserRefreshTokens(u.ID)
 		r.setSessionCookie(res, r.session.Create(u.ID))
 
 		slog.Info("user changed password", "user_id", u.ID, "username", u.Username)
@@ -240,6 +241,7 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			slog.Warn("reset token already consumed by a concurrent request", "target_user_id", userID)
 		}
 		r.session.DeleteUserSessions(userID)
+		r.revokeUserRefreshTokens(userID)
 
 		slog.Info("password set via reset link", "target_user_id", userID)
 		http.Redirect(res, req, "/login?flash=password_reset", http.StatusSeeOther)
