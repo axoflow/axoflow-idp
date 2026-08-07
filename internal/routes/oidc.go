@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 	"github.com/go-jose/go-jose/v3"
@@ -163,7 +164,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	code := r.store.Create(idToken)
+	code := r.store.Create(codestore.Grant{IDToken: idToken, ClientID: authReq.ClientID})
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
@@ -216,8 +217,14 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	id_token, err := r.store.Pop(tokenRequest.Code)
+	grant, err := r.store.Pop(tokenRequest.Code)
 	if err != nil {
+		writeTokenError(res, oidc.ErrInvalidGrant)
+		return
+	}
+
+	// RFC 6749 §4.1.3: the code must have been issued to the authenticated client.
+	if grant.ClientID != tokenRequest.ClientID {
 		writeTokenError(res, oidc.ErrInvalidGrant)
 		return
 	}
@@ -228,8 +235,8 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		ExpiresIn   int    `json:"expires_in"`
 		TokenType   string `json:"token_type"`
 	}{
-		IDToken:     id_token,
-		AccessToken: id_token,
+		IDToken:     grant.IDToken,
+		AccessToken: grant.IDToken,
 		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
 		TokenType:   "Bearer",
 	}
