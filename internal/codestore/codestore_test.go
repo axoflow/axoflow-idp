@@ -19,49 +19,20 @@ import (
 	"testing"
 )
 
-func TestCreateGetPop(t *testing.T) {
+func TestCodeIsSingleUse(t *testing.T) {
 	s := New()
 
 	code := s.Create("id-token-1")
-	if code == "" {
-		t.Fatal("Create returned empty code")
-	}
-
-	idToken, err := s.Get(code)
-	if err != nil {
-		t.Fatalf("Get returned error: %v", err)
-	}
-	if idToken != "id-token-1" {
-		t.Errorf("Get = %q, want %q", idToken, "id-token-1")
-	}
-
-	popped, err := s.Pop(code)
-	if err != nil {
+	if _, err := s.Pop(code); err != nil {
 		t.Fatalf("Pop returned error: %v", err)
 	}
-	if popped != "id-token-1" {
-		t.Errorf("Pop = %q, want %q", popped, "id-token-1")
-	}
-
-	if _, err := s.Get(code); err == nil {
-		t.Error("Get after Pop should return error")
+	if _, err := s.Pop(code); err == nil {
+		t.Error("an authorization code must not be redeemable twice (RFC 6749 §10.5)")
 	}
 }
 
-func TestGetPopUnknownCode(t *testing.T) {
-	s := New()
-
-	if _, err := s.Get("nope"); err == nil {
-		t.Error("Get of unknown code should return error")
-	}
-	if _, err := s.Pop("nope"); err == nil {
-		t.Error("Pop of unknown code should return error")
-	}
-}
-
-// TestConcurrentAccess hammers the store from many goroutines so the race
-// detector (go test -race) catches unsynchronized map access, which in Go
-// panics with "concurrent map read and map write" at runtime.
+// No assertions: this fails only under -race, as a regression for the
+// unsynchronized map access.
 func TestConcurrentAccess(_ *testing.T) {
 	s := New()
 
@@ -73,10 +44,8 @@ func TestConcurrentAccess(_ *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
 				code := s.Create("id-token")
-				_, _ = s.Get(code)
 				s.CleanUp()
 				_, _ = s.Pop(code)
-				s.Delete(code)
 			}
 		}()
 	}

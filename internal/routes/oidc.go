@@ -27,8 +27,7 @@ import (
 	"github.com/go-jose/go-jose/v3"
 )
 
-// writeTokenError emits an RFC 6749 §5.2 JSON error response. err must be one
-// of the oidc.Err* sentinels; its string is the OAuth error code.
+// writeTokenError emits an RFC 6749 §5.2 JSON error; err must be an oidc.Err* sentinel.
 func writeTokenError(res http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	if errors.Is(err, oidc.ErrInvalidClient) {

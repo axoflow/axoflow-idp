@@ -76,7 +76,6 @@ type Config struct {
 	Keychain          *keychain.Keychain
 	SigningKeyPath    string
 	GenerateIfMissing bool
-	IDTokenTTL        time.Duration
 }
 
 func New(cfg Config) (*Oidc, error) {
@@ -130,17 +129,12 @@ func New(cfg Config) (*Oidc, error) {
 		return nil, fmt.Errorf("failed to create signer: %w", err)
 	}
 
-	idTokenTTL := cfg.IDTokenTTL
-	if idTokenTTL == 0 {
-		idTokenTTL = defaultIDTokenTTL
-	}
-
 	return &Oidc{
 		baseUrl:    cfg.BaseUrl,
 		clients:    cfg.Clients,
 		keychain:   cfg.Keychain,
 		signer:     signer,
-		idTokenTTL: idTokenTTL,
+		idTokenTTL: defaultIDTokenTTL,
 	}, nil
 }
 
@@ -359,8 +353,7 @@ type UserinfoResponse struct {
 	Groups  []string `json:"groups,omitempty"`
 }
 
-// Token-endpoint error codes per RFC 6749 §5.2. The error string is the OAuth
-// error code sent to the client; the routes layer maps these to HTTP status.
+// Token-endpoint error codes per RFC 6749 §5.2; the string is the code sent to the client.
 var (
 	ErrInvalidRequest       = errors.New("invalid_request")
 	ErrInvalidClient        = errors.New("invalid_client")

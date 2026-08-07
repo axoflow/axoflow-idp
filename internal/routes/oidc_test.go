@@ -226,9 +226,9 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 		{"redirect uri mismatch", with("redirect_uri", "https://evil.example.com/cb"), http.StatusBadRequest, "invalid_grant"},
 		{"unknown code", with("code", "does-not-exist"), http.StatusBadRequest, "invalid_grant"},
 	}
+	r := newTokenTestRoutes(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := newTokenTestRoutes(t)
 			rec := postToken(t, r, tt.form)
 
 			if rec.Code != tt.wantStatus {

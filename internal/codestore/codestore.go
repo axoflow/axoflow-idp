@@ -47,8 +47,7 @@ func (s *CodeStore) CleanUp() {
 	s.cleanUp()
 }
 
-// cleanUp assumes the caller already holds the write lock; sync.RWMutex is not
-// reentrant, so Create must reach expiry pruning through this, not CleanUp.
+// cleanUp assumes the caller holds the write lock.
 func (s *CodeStore) cleanUp() {
 	if s.ttl == 0 {
 		return
@@ -74,18 +73,6 @@ func (s *CodeStore) Create(id_token string) string {
 	return code.ID.String()
 }
 
-func (s *CodeStore) Get(code string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	session, ok := s.codes[code]
-	if !ok {
-		return "", errors.New("code not found")
-	}
-
-	return session.id_token, nil
-}
-
 func (s *CodeStore) Pop(code string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -97,11 +84,4 @@ func (s *CodeStore) Pop(code string) (string, error) {
 
 	delete(s.codes, code)
 	return session.id_token, nil
-}
-
-func (s *CodeStore) Delete(code string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	delete(s.codes, code)
 }

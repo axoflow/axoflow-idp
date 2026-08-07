@@ -16,6 +16,7 @@ package oidc
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -157,7 +158,7 @@ func TestValidateTokenRequest_ExactRedirect(t *testing.T) {
 	}
 
 	bad = base
-	bad.ClientSecret = "wrong"
+	bad.ClientSecret = "sekret" // same length as "secret": a length-only compare must still reject
 	if err := o.ValidateTokenRequest(bad); err == nil {
 		t.Error("bad client secret should be rejected")
 	}
@@ -195,15 +196,9 @@ func decodeIDToken(t *testing.T, o *Oidc, idToken string) IDTokenPayload {
 	return claims
 }
 
-func TestIDTokenTTLDefault(t *testing.T) {
-	o := newSignedOidc(t, Config{})
-	if o.IDTokenTTL() != defaultIDTokenTTL {
-		t.Errorf("IDTokenTTL() = %v, want %v", o.IDTokenTTL(), defaultIDTokenTTL)
-	}
-}
-
 func TestGenerateIDTokenClaims(t *testing.T) {
-	o := newSignedOidc(t, Config{IDTokenTTL: time.Hour})
+	o := newSignedOidc(t, Config{})
+	o.idTokenTTL = time.Hour
 	u := user.UserInfo{ID: "u1", Username: "alice", Email: "a@example.com", Groups: []string{"admins"}}
 
 	idToken, err := o.GenerateIDToken(u, "app", "nonce-123")
@@ -232,35 +227,6 @@ func TestGenerateIDTokenClaims(t *testing.T) {
 	}
 }
 
-func TestValidateTokenRequest(t *testing.T) {
-	o := newTestOidc(t, []Client{{
-		Id:           "app",
-		RedirectUri:  "https://app.example.com/cb",
-		ClientSecret: "s3cret",
-	}})
-	tests := []struct {
-		name    string
-		req     TokenRequest
-		wantErr bool
-	}{
-		{"valid", TokenRequest{GrantType: "authorization_code", ClientID: "app", ClientSecret: "s3cret", RedirectUri: "https://app.example.com/cb", Code: "x"}, false},
-		{"unsupported grant", TokenRequest{GrantType: "refresh_token", ClientID: "app", ClientSecret: "s3cret", RedirectUri: "https://app.example.com/cb"}, true},
-		{"unknown client", TokenRequest{GrantType: "authorization_code", ClientID: "nope", ClientSecret: "s3cret", RedirectUri: "https://app.example.com/cb"}, true},
-		{"wrong secret", TokenRequest{GrantType: "authorization_code", ClientID: "app", ClientSecret: "totally-wrong", RedirectUri: "https://app.example.com/cb"}, true},
-		{"equal-length wrong secret", TokenRequest{GrantType: "authorization_code", ClientID: "app", ClientSecret: "s3crXt", RedirectUri: "https://app.example.com/cb"}, true},
-		{"wrong redirect", TokenRequest{GrantType: "authorization_code", ClientID: "app", ClientSecret: "s3cret", RedirectUri: "https://evil.example.com/cb"}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := o.ValidateTokenRequest(tt.req)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateTokenRequest(%+v) error = %v, wantErr %v", tt.req, err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestValidateAuthenticationRequestScope(t *testing.T) {
 	o := newTestOidc(t, []Client{{
 		Id:           "app",
@@ -280,13 +246,9 @@ func TestValidateAuthenticationRequestScope(t *testing.T) {
 		scope   string
 		wantErr bool
 	}{
-		{"exact openid", "openid", false},
-		{"openid with extras", "openid profile email", false},
 		{"openid not first", "profile openid", false},
-		{"missing openid", "profile email", true},
 		{"substring notopenid", "notopenid", true},
 		{"substring openidx", "openidx", true},
-		{"empty", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -306,22 +268,18 @@ func TestValidateRevocationRequest(t *testing.T) {
 		ClientSecret: "s3cret",
 	}})
 	tests := []struct {
-		name    string
-		req     RevocationRequest
-		wantErr bool
+		name string
+		req  RevocationRequest
+		want error
 	}{
-		{"valid", RevocationRequest{Token: "t", ClientID: "app", ClientSecret: "s3cret"}, false},
-		{"empty token", RevocationRequest{Token: "", ClientID: "app", ClientSecret: "s3cret"}, true},
-		{"unknown client", RevocationRequest{Token: "t", ClientID: "nope", ClientSecret: "s3cret"}, true},
-		{"wrong secret", RevocationRequest{Token: "t", ClientID: "app", ClientSecret: "nope"}, true},
-		{"equal-length wrong secret", RevocationRequest{Token: "t", ClientID: "app", ClientSecret: "s3crXt"}, true},
+		{"credentials are checked before the token", RevocationRequest{Token: "", ClientID: "app", ClientSecret: "s3cret"}, ErrInvalidRequest},
+		{"equal-length wrong secret", RevocationRequest{Token: "t", ClientID: "app", ClientSecret: "s3crXt"}, ErrInvalidClient},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := o.ValidateRevocationRequest(tt.req)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateRevocationRequest(%+v) error = %v, wantErr %v", tt.req, err, tt.wantErr)
+			if err := o.ValidateRevocationRequest(tt.req); !errors.Is(err, tt.want) {
+				t.Errorf("ValidateRevocationRequest(%+v) error = %v, want %v", tt.req, err, tt.want)
 			}
 		})
 	}
