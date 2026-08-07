@@ -22,9 +22,16 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// Grant is the state captured at authorize time and consumed at the token
+// endpoint, so the exchange can be checked against the request that created it.
+type Grant struct {
+	IDToken  string
+	ClientID string
+}
+
 type code struct {
-	ID       ulid.ULID
-	id_token string
+	ID    ulid.ULID
+	grant Grant
 }
 
 type CodeStore struct {
@@ -59,29 +66,29 @@ func (s *CodeStore) cleanUp() {
 	}
 }
 
-func (s *CodeStore) Create(id_token string) string {
+func (s *CodeStore) Create(grant Grant) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.cleanUp()
 	code := code{
-		ID:       ulid.Make(),
-		id_token: id_token,
+		ID:    ulid.Make(),
+		grant: grant,
 	}
 	s.codes[code.ID.String()] = code
 
 	return code.ID.String()
 }
 
-func (s *CodeStore) Pop(code string) (string, error) {
+func (s *CodeStore) Pop(code string) (Grant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	session, ok := s.codes[code]
 	if !ok {
-		return "", errors.New("code not found")
+		return Grant{}, errors.New("code not found")
 	}
 
 	delete(s.codes, code)
-	return session.id_token, nil
+	return session.grant, nil
 }

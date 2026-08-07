@@ -252,7 +252,7 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
-	code := r.store.Create("the-id-token")
+	code := r.store.Create(codestore.Grant{IDToken: "the-id-token", ClientID: "app"})
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {"app"},
@@ -316,5 +316,25 @@ func TestOidcRevokeBadClientCredentials(t *testing.T) {
 	}
 	if body.Error != "invalid_client" {
 		t.Errorf("error = %q, want %q", body.Error, "invalid_client")
+	}
+}
+
+func TestOidcToken_CodeIssuedToAnotherClient(t *testing.T) {
+	r := newTokenTestRoutes(t)
+	code := r.store.Create(codestore.Grant{IDToken: "the-id-token", ClientID: "other-client"})
+
+	rec := postToken(t, r, url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+		"redirect_uri":  {"https://app.example.com/cb"},
+		"code":          {code},
+	})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (RFC 6749 §4.1.3: a code is bound to the client it was issued to)", rec.Code, http.StatusBadRequest)
+	}
+	if strings.Contains(rec.Body.String(), "the-id-token") {
+		t.Error("the id_token leaked to a client the code was not issued to")
 	}
 }
