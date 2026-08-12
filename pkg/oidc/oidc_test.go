@@ -15,10 +15,16 @@
 package oidc
 
 import (
+	"encoding/json"
+	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
+	"github.com/axoflow/axoflow-idp/pkg/user"
+	"github.com/go-jose/go-jose/v3"
 )
 
 func newTestOidc(t *testing.T, clients []Client) *Oidc {
@@ -152,8 +158,144 @@ func TestValidateTokenRequest_ExactRedirect(t *testing.T) {
 	}
 
 	bad = base
-	bad.ClientSecret = "wrong"
+	bad.ClientSecret = "sekret" // same length as "secret": a length-only compare must still reject
 	if err := o.ValidateTokenRequest(bad); err == nil {
 		t.Error("bad client secret should be rejected")
+	}
+}
+
+func newSignedOidc(t *testing.T, cfg Config) *Oidc {
+	t.Helper()
+	cfg.Keychain = keychain.New()
+	cfg.SigningKeyPath = filepath.Join(t.TempDir(), "signing-key.json")
+	cfg.GenerateIfMissing = true
+	if cfg.BaseUrl == "" {
+		cfg.BaseUrl = "https://idp.example.com"
+	}
+	o, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return o
+}
+
+func decodeIDToken(t *testing.T, o *Oidc, idToken string) IDTokenPayload {
+	t.Helper()
+	tok, err := jose.ParseSigned(idToken)
+	if err != nil {
+		t.Fatalf("parse token: %v", err)
+	}
+	payload, err := tok.Verify(o.keychain.GetAll()[0].Public().Key)
+	if err != nil {
+		t.Fatalf("verify token: %v", err)
+	}
+	var claims IDTokenPayload
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("unmarshal claims: %v", err)
+	}
+	return claims
+}
+
+func TestGenerateIDTokenClaims(t *testing.T) {
+	o := newSignedOidc(t, Config{})
+	o.idTokenTTL = time.Hour
+	u := user.UserInfo{ID: "u1", Username: "alice", Email: "a@example.com", Groups: []string{"admins"}}
+
+	idToken, err := o.GenerateIDToken(u, "app", "nonce-123")
+	if err != nil {
+		t.Fatalf("GenerateIDToken: %v", err)
+	}
+	claims := decodeIDToken(t, o, idToken)
+
+	if got := claims.Expiration - claims.IssuedAt; got < 3598 || got > 3600 {
+		t.Errorf("exp-iat = %ds, want ~3600 (the configured 1h TTL)", got)
+	}
+	if claims.Issuer != "https://idp.example.com" {
+		t.Errorf("iss = %q, want %q", claims.Issuer, "https://idp.example.com")
+	}
+	if claims.Audience != "app" {
+		t.Errorf("aud = %q, want %q", claims.Audience, "app")
+	}
+	if claims.Subject != "u1" || claims.Name != "alice" || claims.Email != "a@example.com" {
+		t.Errorf("unexpected identity claims: %+v", claims)
+	}
+	if !slices.Equal(claims.Groups, []string{"admins"}) {
+		t.Errorf("groups = %v, want [admins]", claims.Groups)
+	}
+	if claims.Nonce != "nonce-123" {
+		t.Errorf("nonce = %q, want %q", claims.Nonce, "nonce-123")
+	}
+}
+
+func TestValidateAuthenticationRequestScope(t *testing.T) {
+	o := newTestOidc(t, []Client{{
+		Id:           "app",
+		RedirectUri:  "https://app.example.com/cb",
+		ClientSecret: "s3cret",
+	}})
+	base := func(scope string) AuthenticationRequest {
+		return AuthenticationRequest{
+			Scope:        scope,
+			ResponseType: "code",
+			ClientID:     "app",
+			RedirectUri:  "https://app.example.com/cb",
+		}
+	}
+	tests := []struct {
+		name    string
+		scope   string
+		wantErr bool
+	}{
+		{"openid not first", "profile openid", false},
+		{"substring notopenid", "notopenid", true},
+		{"substring openidx", "openidx", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := o.ValidateAuthenticationRequest(base(tt.scope))
+			if (err != nil) != tt.wantErr {
+				t.Errorf("scope %q: err = %v, wantErr %v", tt.scope, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateRevocationRequest(t *testing.T) {
+	o := newTestOidc(t, []Client{{
+		Id:           "app",
+		RedirectUri:  "https://app.example.com/cb",
+		ClientSecret: "s3cret",
+	}})
+	tests := []struct {
+		name string
+		req  RevocationRequest
+		want error
+	}{
+		{"credentials are checked before the token", RevocationRequest{Token: "", ClientID: "app", ClientSecret: "s3cret"}, ErrInvalidRequest},
+		{"equal-length wrong secret", RevocationRequest{Token: "t", ClientID: "app", ClientSecret: "s3crXt"}, ErrInvalidClient},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := o.ValidateRevocationRequest(tt.req); !errors.Is(err, tt.want) {
+				t.Errorf("ValidateRevocationRequest(%+v) error = %v, want %v", tt.req, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestFirstClient_RedirectUrisOnly(t *testing.T) {
+	o := newTestOidc(t, []Client{{
+		Name:         "App",
+		RedirectUris: []string{"https://app.example.com/cb"},
+	}})
+
+	info := o.FirstClient()
+	if info == nil {
+		t.Fatal("a client registered only via redirectUris should still yield client info")
+	}
+	if info.URL != "https://app.example.com" {
+		t.Errorf("URL = %q, want %q", info.URL, "https://app.example.com")
 	}
 }

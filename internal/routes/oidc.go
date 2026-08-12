@@ -16,6 +16,7 @@ package routes
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -25,6 +26,22 @@ import (
 	"github.com/axoflow/axoflow-idp/pkg/user"
 	"github.com/go-jose/go-jose/v3"
 )
+
+// writeTokenError emits an RFC 6749 §5.2 JSON error; err must be an oidc.Err* sentinel.
+func writeTokenError(res http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	if errors.Is(err, oidc.ErrInvalidClient) {
+		status = http.StatusUnauthorized
+	}
+
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(status)
+	if encErr := json.NewEncoder(res).Encode(struct {
+		Error string `json:"error"`
+	}{Error: err.Error()}); encErr != nil {
+		slog.Error("failed to write token error response", "error", encErr)
+	}
+}
 
 func (r *Routes) WellKnownOpenIdConfiguration(res http.ResponseWriter, _ *http.Request) {
 	json, err := json.Marshal(r.oidc.GetOpenIDProviderMetadata())
@@ -177,7 +194,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodPost:
 		if err := req.ParseForm(); err != nil {
-			http.Error(res, err.Error(), http.StatusBadRequest)
+			writeTokenError(res, oidc.ErrInvalidRequest)
 			return
 		}
 
@@ -195,13 +212,13 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := r.oidc.ValidateTokenRequest(tokenRequest); err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		writeTokenError(res, err)
 		return
 	}
 
 	id_token, err := r.store.Pop(tokenRequest.Code)
 	if err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		writeTokenError(res, oidc.ErrInvalidGrant)
 		return
 	}
 
@@ -212,11 +229,9 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		TokenType   string `json:"token_type"`
 	}{
 		IDToken:     id_token,
-		AccessToken: "not-used", // TODO ?
-		ExpiresIn:   24 * 3600,  // TODO dynamic
+		AccessToken: id_token,
+		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
 		TokenType:   "Bearer",
-		//"scope": "photo offline_access",
-		//"refresh_token": "vUOknvjU8_Oal1a7j0F5XXD3"
 	}
 
 	body_json, err := json.Marshal(body)
@@ -226,6 +241,8 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	}
 
 	res.Header().Set("Content-Type", "application/json")
+	res.Header().Set("Cache-Control", "no-store")
+	res.Header().Set("Pragma", "no-cache")
 	if _, err := res.Write(body_json); err != nil {
 		slog.Error("failed to write token response", "error", err)
 	}
@@ -249,8 +266,12 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := r.oidc.ValidateRevocationRequest(revocationRequest); err != nil {
-		slog.Error("failed to validate revocation request", "error", err)
-		// Per RFC 7009, we should return 200 OK even if the token is invalid
+		// Per RFC 7009 an invalid/unknown token still returns 200 OK, but a
+		// failed client authentication is a 401 invalid_client.
+		if errors.Is(err, oidc.ErrInvalidClient) {
+			writeTokenError(res, err)
+			return
+		}
 		res.WriteHeader(http.StatusOK)
 		return
 	}

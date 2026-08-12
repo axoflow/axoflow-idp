@@ -16,6 +16,7 @@ package codestore
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -28,6 +29,7 @@ type code struct {
 
 type CodeStore struct {
 	codes map[string]code
+	mu    sync.RWMutex
 	ttl   time.Duration
 }
 
@@ -39,6 +41,14 @@ func New() *CodeStore {
 }
 
 func (s *CodeStore) CleanUp() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.cleanUp()
+}
+
+// cleanUp assumes the caller holds the write lock.
+func (s *CodeStore) cleanUp() {
 	if s.ttl == 0 {
 		return
 	}
@@ -50,7 +60,10 @@ func (s *CodeStore) CleanUp() {
 }
 
 func (s *CodeStore) Create(id_token string) string {
-	s.CleanUp()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.cleanUp()
 	code := code{
 		ID:       ulid.Make(),
 		id_token: id_token,
@@ -60,16 +73,10 @@ func (s *CodeStore) Create(id_token string) string {
 	return code.ID.String()
 }
 
-func (s *CodeStore) Get(code string) (string, error) {
-	session, ok := s.codes[code]
-	if !ok {
-		return "", errors.New("code not found")
-	}
-
-	return session.id_token, nil
-}
-
 func (s *CodeStore) Pop(code string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	session, ok := s.codes[code]
 	if !ok {
 		return "", errors.New("code not found")
@@ -77,8 +84,4 @@ func (s *CodeStore) Pop(code string) (string, error) {
 
 	delete(s.codes, code)
 	return session.id_token, nil
-}
-
-func (s *CodeStore) Delete(code string) {
-	delete(s.codes, code)
 }

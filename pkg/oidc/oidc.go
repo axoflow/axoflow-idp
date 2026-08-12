@@ -15,6 +15,7 @@
 package oidc
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ import (
 
 const (
 	SigningKeyKid = "oidc-signing-key"
+
+	defaultIDTokenTTL = 24 * time.Hour
 )
 
 type Client struct {
@@ -60,10 +63,11 @@ func (c Client) allowsRedirect(uri string) bool {
 }
 
 type Oidc struct {
-	baseUrl  string
-	clients  []Client
-	keychain *keychain.Keychain
-	signer   jose.Signer
+	baseUrl    string
+	clients    []Client
+	keychain   *keychain.Keychain
+	signer     jose.Signer
+	idTokenTTL time.Duration
 }
 
 type Config struct {
@@ -126,11 +130,16 @@ func New(cfg Config) (*Oidc, error) {
 	}
 
 	return &Oidc{
-		baseUrl:  cfg.BaseUrl,
-		clients:  cfg.Clients,
-		keychain: cfg.Keychain,
-		signer:   signer,
+		baseUrl:    cfg.BaseUrl,
+		clients:    cfg.Clients,
+		keychain:   cfg.Keychain,
+		signer:     signer,
+		idTokenTTL: defaultIDTokenTTL,
 	}, nil
+}
+
+func (o *Oidc) IDTokenTTL() time.Duration {
+	return o.idTokenTTL
 }
 
 func generateSigningKey(keychain *keychain.Keychain, signingKeyPath string) (*jose.JSONWebKey, error) {
@@ -163,7 +172,11 @@ func (o *Oidc) FirstClient() *ClientInfo {
 	if len(o.clients) == 0 {
 		return nil
 	}
-	u, err := url.Parse(o.clients[0].RedirectUri)
+	uris := o.clients[0].registeredRedirectUris()
+	if len(uris) == 0 {
+		return nil
+	}
+	u, err := url.Parse(uris[0])
 	if err != nil || u.Host == "" {
 		return nil
 	}
@@ -188,7 +201,7 @@ type IDTokenPayload struct {
 	Audience   string   `json:"aud"`
 	Expiration int64    `json:"exp"`
 	IssuedAt   int64    `json:"iat"`
-	Nonce      string   `json:"nonce"`
+	Nonce      string   `json:"nonce,omitempty"`
 	Name       string   `json:"name"`
 	Groups     []string `json:"groups"`
 	Email      string   `json:"email"`
@@ -284,7 +297,7 @@ func (o *Oidc) ValidateRedirect(clientID, redirectUri string) error {
 }
 
 func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
-	if !strings.Contains(req.Scope, "openid") {
+	if !slices.Contains(strings.Fields(req.Scope), "openid") {
 		return errors.New("invalid_scope")
 	}
 
@@ -300,7 +313,7 @@ func (o *Oidc) GenerateIDToken(user user.UserInfo, clientID string, nonce string
 		Issuer:     o.baseUrl,
 		Subject:    user.ID,
 		Audience:   clientID,
-		Expiration: time.Now().Add(time.Hour * 24).Unix(),
+		Expiration: time.Now().Add(o.idTokenTTL).Unix(),
 		IssuedAt:   time.Now().Unix(),
 		Nonce:      nonce,
 		Name:       user.Username,
@@ -340,39 +353,50 @@ type UserinfoResponse struct {
 	Groups  []string `json:"groups,omitempty"`
 }
 
+// Token-endpoint error codes per RFC 6749 §5.2; the string is the code sent to the client.
+var (
+	ErrInvalidRequest       = errors.New("invalid_request")
+	ErrInvalidClient        = errors.New("invalid_client")
+	ErrInvalidGrant         = errors.New("invalid_grant")
+	ErrUnsupportedGrantType = errors.New("unsupported_grant_type")
+)
+
 func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 	if req.GrantType != "authorization_code" {
-		return errors.New("unsupported grant type")
+		return ErrUnsupportedGrantType
 	}
 
 	client, ok := o.getClient(req.ClientID)
 	if !ok {
-		return errors.New("access_denied")
+		return ErrInvalidClient
 	}
 
-	if client.ClientSecret != req.ClientSecret {
-		return errors.New("bad client secret")
+	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
+		return ErrInvalidClient
 	}
 
 	if !client.allowsRedirect(req.RedirectUri) {
-		return errors.New("invalid_redirect_uri")
+		return ErrInvalidGrant
 	}
 
 	return nil
 }
 
+// ValidateRevocationRequest authenticates the client before inspecting the
+// token: RFC 7009 §2.1 makes a failed client authentication a 401, while an
+// invalid token is still a 200.
 func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
-	if req.Token == "" {
-		return errors.New("token is required")
-	}
-
 	client, ok := o.getClient(req.ClientID)
 	if !ok {
-		return errors.New("invalid client")
+		return ErrInvalidClient
 	}
 
-	if client.ClientSecret != req.ClientSecret {
-		return errors.New("invalid client credentials")
+	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
+		return ErrInvalidClient
+	}
+
+	if req.Token == "" {
+		return ErrInvalidRequest
 	}
 
 	return nil
