@@ -77,6 +77,10 @@ func (s *CodeStore) Pop(code string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Prune first: Create is the only other pruner, so on a quiet server an
+	// expired code would otherwise stay redeemable indefinitely.
+	s.cleanUp()
+
 	session, ok := s.codes[code]
 	if !ok {
 		return "", errors.New("code not found")

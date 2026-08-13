@@ -17,6 +17,7 @@ package codestore
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCodeIsSingleUse(t *testing.T) {
@@ -50,4 +51,16 @@ func TestConcurrentAccess(_ *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestExpiredCodeIsNotRedeemable(t *testing.T) {
+	s := New()
+	s.ttl = time.Millisecond
+
+	code := s.Create("id-token-1")
+	time.Sleep(5 * time.Millisecond)
+
+	if _, err := s.Pop(code); err == nil {
+		t.Error("a code past its TTL must not be redeemable, even if no later Create pruned it")
+	}
 }
