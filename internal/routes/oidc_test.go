@@ -318,3 +318,82 @@ func TestOidcRevokeBadClientCredentials(t *testing.T) {
 		t.Errorf("error = %q, want %q", body.Error, "invalid_client")
 	}
 }
+
+func TestOidcRevokeErrorEnvelope(t *testing.T) {
+	valid := url.Values{
+		"token":         {"some-token"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+	}
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantError  string
+	}{
+		{"missing token is a malformed request", validWithout(valid, "token"), http.StatusBadRequest, "invalid_request"},
+		{"unparseable form is a malformed request", "%zz", http.StatusBadRequest, "invalid_request"},
+		{"wrong client secret", validWith(valid, "client_secret", "nope"), http.StatusUnauthorized, "invalid_client"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newTokenTestRoutes(t)
+			r.tokenStore = tokenstore.New(tokenstore.Config{})
+
+			req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			r.OidcRevoke(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body=%q)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("response body is not the JSON error envelope: %v (body=%q)", err, rec.Body.String())
+			}
+			if body.Error != tt.wantError {
+				t.Errorf("error = %q, want %q", body.Error, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestOidcRevokeUnknownTokenIsAccepted(t *testing.T) {
+	r := newTokenTestRoutes(t)
+	r.tokenStore = tokenstore.New(tokenstore.Config{})
+
+	req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(url.Values{
+		"token":         {"never-issued"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.OidcRevoke(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (RFC 7009 §2.2: an invalid token is not an error)", rec.Code)
+	}
+}
+
+func validWithout(v url.Values, drop string) string {
+	c := url.Values{}
+	for k, vals := range v {
+		if k != drop {
+			c[k] = vals
+		}
+	}
+	return c.Encode()
+}
+
+func validWith(v url.Values, key, val string) string {
+	c := url.Values{}
+	for k, vals := range v {
+		c[k] = vals
+	}
+	c.Set(key, val)
+	return c.Encode()
+}
