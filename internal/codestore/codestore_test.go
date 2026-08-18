@@ -17,12 +17,13 @@ package codestore
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCodeIsSingleUse(t *testing.T) {
 	s := New()
 
-	code := s.Create("id-token-1")
+	code := s.Create(Grant{IDToken: "id-token-1"})
 	if _, err := s.Pop(code); err != nil {
 		t.Fatalf("Pop returned error: %v", err)
 	}
@@ -43,11 +44,23 @@ func TestConcurrentAccess(_ *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				code := s.Create("id-token")
+				code := s.Create(Grant{IDToken: "id-token"})
 				s.CleanUp()
 				_, _ = s.Pop(code)
 			}
 		}()
 	}
 	wg.Wait()
+}
+
+func TestExpiredCodeIsNotRedeemable(t *testing.T) {
+	s := New()
+	s.ttl = time.Millisecond
+
+	code := s.Create(Grant{IDToken: "id-token-1"})
+	time.Sleep(5 * time.Millisecond)
+
+	if _, err := s.Pop(code); err == nil {
+		t.Error("a code past its TTL must not be redeemable, even if no later Create pruned it")
+	}
 }

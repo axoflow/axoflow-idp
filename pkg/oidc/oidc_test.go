@@ -227,6 +227,55 @@ func TestGenerateIDTokenClaims(t *testing.T) {
 	}
 }
 
+func TestValidateAuthenticationRequestPKCE(t *testing.T) {
+	o := &Oidc{clients: []Client{
+		{Id: "app", RedirectUri: "https://app.example.com/cb"},
+		{Id: "strict", RedirectUri: "https://app.example.com/cb", RequirePKCE: true},
+	}}
+	req := func(clientID, challenge, method, responseType string) AuthenticationRequest {
+		return AuthenticationRequest{
+			Scope: "openid", ResponseType: responseType, ClientID: clientID,
+			RedirectUri:   "https://app.example.com/cb",
+			CodeChallenge: challenge, CodeChallengeMethod: method,
+		}
+	}
+	tests := []struct {
+		name    string
+		req     AuthenticationRequest
+		wantErr bool
+	}{
+		{"s256 challenge accepted", req("app", rfcChallenge, "S256", "code"), false},
+		{"challenge with omitted method rejected", req("app", rfcChallenge, "", "code"), true},
+		{"plain method rejected", req("app", rfcChallenge, "plain", "code"), true},
+		{"unknown method rejected", req("app", rfcChallenge, "junk", "code"), true},
+		{"no challenge allowed for non-strict client", req("app", "", "", "code"), false},
+		{"strict client without challenge rejected", req("strict", "", "", "code"), true},
+		{"strict client with s256 accepted", req("strict", rfcChallenge, "S256", "code"), false},
+		{"strict client, implicit id_token, pkce not applicable", req("strict", "", "", "id_token"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := o.ValidateAuthenticationRequest(tt.req)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && err.Error() != "invalid_request" {
+				t.Errorf("err = %q, want invalid_request", err.Error())
+			}
+		})
+	}
+}
+
+func TestDiscoveryAdvertisesPKCE(t *testing.T) {
+	o := &Oidc{baseUrl: "https://idp.example.com"}
+	md := o.GetOpenIDProviderMetadata()
+	if !slices.Contains(md.CodeChallengeMethodsSupported, "S256") {
+		t.Errorf("code_challenge_methods_supported = %v, want it to include S256", md.CodeChallengeMethodsSupported)
+	}
+	if slices.Contains(md.CodeChallengeMethodsSupported, "plain") {
+		t.Error("plain must not be advertised")
+	}
+}
 func TestValidateAuthenticationRequestScope(t *testing.T) {
 	o := newTestOidc(t, []Client{{
 		Id:           "app",

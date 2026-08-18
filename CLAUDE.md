@@ -64,7 +64,7 @@ scripts/e2e.py           # stdlib-only end-to-end tests
 
 ## Endpoints
 
-- **OIDC**: `/.well-known/openid-configuration`, `/oidc/auth`, `/token`, `/oidc/jwks`, `/oidc/userinfo`, `/revoke`
+- **OIDC**: `/.well-known/openid-configuration`, `/oidc/auth` (PKCE S256 supported; per-client `requirePKCE`), `/token`, `/oidc/jwks`, `/oidc/userinfo`, `/revoke`
 - **Auth / session**: `/` (profile), `/login`, `/logout`, `/register` (if self-registration is enabled)
 - **Self-service**: `/password` (change), `/set-password?token=…` (admin-issued reset link)
 - **Admin** (`userAdminGroup` members): `/admin`, `/admin/users/api`, plus writes `/admin/register` and `/admin/users/{delete,reset-password,update-groups,reset-link}`
@@ -97,3 +97,9 @@ in `tokenstore`.
   and the admin panel hides its write controls (lets the DB be mounted from a
   read-only source such as a Kubernetes Secret).
 - Config is loaded from the path in `CONFIG` (default `config.json`).
+- PKCE (RFC 7636) is supported on the code flow, **S256 only** (`plain` is
+  rejected). The `code_challenge` is bound to the auth code at `/oidc/auth` and
+  the `code_verifier` verified at `/token` (`pkg/oidc/pkce.go`). Per-client
+  `requirePKCE` makes a challenge mandatory; a verifier presented against a code
+  with no bound challenge is rejected (anti-downgrade). Discovery advertises
+  `code_challenge_methods_supported: ["S256"]`.

@@ -4,7 +4,7 @@ A lightweight OpenID Connect (OIDC) Identity Provider, designed to work seamless
 
 ## Overview
 
-Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authentication for your applications. It supports multiple clients, user self-registration, administrative user management, and JWT-based token signing. The provider implements standard OIDC endpoints including authorization, token exchange, and JWKS discovery.
+Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authentication for your applications. It supports multiple clients, user self-registration, administrative user management, and JWT-based token signing. The provider implements standard OIDC endpoints including authorization (with PKCE), token exchange, revocation, and JWKS discovery.
 
 ## Quickstart
 
@@ -39,6 +39,24 @@ go run main.go
 > callbacks with a `redirectUris` array alongside (or instead of) the singular
 > `redirectUri`; any request whose `redirect_uri` is not an exact match is
 > rejected.
+
+## PKCE
+
+The authorization-code flow supports **PKCE** (RFC 7636) with the **S256**
+method. It works automatically for any client that sends a
+`code_challenge` (+ `code_challenge_method=S256`) at `/oidc/auth` and the
+matching `code_verifier` at `/token`; `plain` and an omitted method are
+rejected. Discovery advertises `code_challenge_methods_supported: ["S256"]`.
+
+To *require* PKCE for a client (so a request without a `code_challenge` is
+rejected — the defence against challenge-stripping), set `requirePKCE` on
+that client:
+
+```json
+{ "id": "your-client-id", "redirectUri": "…", "clientSecret": "…", "requirePKCE": true }
+```
+
+Clients without `requirePKCE` keep working with or without PKCE.
 
 ## Contributing
 
