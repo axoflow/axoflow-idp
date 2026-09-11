@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -65,6 +66,8 @@ func LoadConfig() (cfg config, err error) {
 		return cfg, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	cfg.BaseUrl = strings.TrimRight(cfg.BaseUrl, "/")
+
 	if cfg.Users == nil {
 		cfg.Users = &user.Config{}
 	}
@@ -92,6 +95,22 @@ func (c *config) Validate() error {
 		return errors.New("baseUrl must start with http:// or https://")
 	}
 
+	if parsedUrl.RawQuery != "" || parsedUrl.Fragment != "" {
+		return errors.New("baseUrl must not contain a query or fragment")
+	}
+
+	// The path becomes a ServeMux pattern prefix and is echoed into every
+	// redirect, cookie and link. An unclean path ("//idp", "/idp/../x") would
+	// register patterns the path-cleaning mux can never match — the server
+	// would start and then 404 every request — and "{" or "}" is ServeMux
+	// wildcard syntax that panics at registration. A percent-encoded path
+	// would decode here and re-emit unencoded in headers. Reject them all.
+	if p := parsedUrl.Path; p != "" {
+		if p != parsedUrl.EscapedPath() || p != path.Clean(p) || strings.ContainsAny(p, "{}") {
+			return errors.New("baseUrl path must be a clean, unescaped path such as /idp")
+		}
+	}
+
 	if len(c.Clients) == 0 {
 		return errors.New("at least one client is required")
 	}
@@ -113,6 +132,66 @@ func (c *config) Validate() error {
 	}
 
 	return nil
+}
+
+// newMux registers every route under pathPrefix, so the same binary can be
+// served from the host root or from a prefix such as /idp. A reverse proxy in
+// front of it must pass the prefix through rather than strip it.
+func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
+	mux := http.NewServeMux()
+	handle := func(pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(pathPrefix+pattern, handler)
+	}
+
+	rootPath := pathPrefix + "/"
+	handle("/", func(res http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != rootPath {
+			http.NotFound(res, req)
+			return
+		}
+		r.Index(res, req)
+	})
+	handle("/.well-known/openid-configuration", r.WellKnownOpenIdConfiguration)
+	handle("/login", r.Login)
+	handle("/logout", r.Logout)
+	handle("/oidc/auth", r.OidcAuth)
+	handle("/oidc/jwks", r.OidcJwks)
+	handle("/oidc/userinfo", r.OidcUserinfo)
+	handle("/token", r.OidcToken)
+	handle("/revoke", r.OidcRevoke)
+
+	// In static mode the user database is read-only, so no route that mutates
+	// it is registered (registration, password changes/resets, group updates,
+	// deletion). Only read endpoints remain.
+	if u.Static {
+		slog.Info("user database is static (read-only); user-mutating routes are disabled")
+	}
+
+	if u.SelfRegistration && !u.Static {
+		slog.Info("self-registration is enabled")
+		handle("/register", r.Register)
+	}
+
+	if !u.Static {
+		handle("/password", r.ChangePassword)
+		handle("/set-password", r.SetPassword)
+	}
+
+	if u.UserAdminGroup != "" {
+		handle("/admin", r.AdminPanel)
+		handle("/admin/users/api", r.AdminUsersAPI)
+		if !u.Static {
+			handle("/admin/register", r.AdminRegister)
+			handle("/admin/users/delete", r.AdminDeleteUser)
+			handle("/admin/users/reset-password", r.AdminResetPassword)
+			handle("/admin/users/update-groups", r.AdminUpdateUserGroups)
+			handle("/admin/users/reset-link", r.AdminCreateResetLink)
+		}
+	} else {
+		slog.Warn("user admin group is not set; admin routes are disabled")
+	}
+
+	return mux
 }
 
 func main() {
@@ -148,6 +227,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Validate() has already parsed baseUrl, so this cannot fail.
+	parsedBaseUrl, _ := url.Parse(cfg.BaseUrl)
+	pathPrefix := parsedBaseUrl.Path
+
 	r, err := routes.New(routes.Config{
 		Oidc:          o,
 		Session:       session.New(),
@@ -156,61 +239,18 @@ func main() {
 		TokenStore:    tokenstore.New(*cfg.Token),
 		ResetTokens:   resettoken.New(passwordResetLinkTTL),
 		BaseURL:       cfg.BaseUrl,
+		PathPrefix:    pathPrefix,
 		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
 	})
 	if err != nil {
 		slog.Error("failed to create routes", "error", err)
 		os.Exit(1)
 	}
-	http.HandleFunc("/", func(res http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/" {
-			http.NotFound(res, req)
-			return
-		}
-		r.Index(res, req)
-	})
-	http.HandleFunc("/.well-known/openid-configuration", r.WellKnownOpenIdConfiguration)
-	http.HandleFunc("/login", r.Login)
-	http.HandleFunc("/logout", r.Logout)
-	http.HandleFunc("/oidc/auth", r.OidcAuth)
-	http.HandleFunc("/oidc/jwks", r.OidcJwks)
-	http.HandleFunc("/oidc/userinfo", r.OidcUserinfo)
-	http.HandleFunc("/token", r.OidcToken)
-	http.HandleFunc("/revoke", r.OidcRevoke)
 
-	// In static mode the user database is read-only, so no route that mutates
-	// it is registered (registration, password changes/resets, group updates,
-	// deletion). Only read endpoints remain.
-	if u.Static {
-		slog.Info("user database is static (read-only); user-mutating routes are disabled")
-	}
-
-	if u.SelfRegistration && !u.Static {
-		slog.Info("self-registration is enabled")
-		http.HandleFunc("/register", r.Register)
-	}
-
-	if !u.Static {
-		http.HandleFunc("/password", r.ChangePassword)
-		http.HandleFunc("/set-password", r.SetPassword)
-	}
-
-	if u.UserAdminGroup != "" {
-		http.HandleFunc("/admin", r.AdminPanel)
-		http.HandleFunc("/admin/users/api", r.AdminUsersAPI)
-		if !u.Static {
-			http.HandleFunc("/admin/register", r.AdminRegister)
-			http.HandleFunc("/admin/users/delete", r.AdminDeleteUser)
-			http.HandleFunc("/admin/users/reset-password", r.AdminResetPassword)
-			http.HandleFunc("/admin/users/update-groups", r.AdminUpdateUserGroups)
-			http.HandleFunc("/admin/users/reset-link", r.AdminCreateResetLink)
-		}
-	} else {
-		slog.Warn("user admin group is not set; admin routes are disabled")
-	}
+	mux := newMux(r, pathPrefix, u)
 
 	slog.Info("listening", "addr", "http://localhost:8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := http.ListenAndServe(":8080", mux); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}

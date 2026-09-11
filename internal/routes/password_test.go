@@ -58,7 +58,7 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 		t.Fatalf("user store: %v", err)
 	}
 
-	tpl, err := parseTemplates(filepath.Join("..", "..", "templates"))
+	tpl, err := parseTemplates(filepath.Join("..", "..", "templates"), "")
 	if err != nil {
 		t.Fatalf("parse templates: %v", err)
 	}

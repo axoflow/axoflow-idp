@@ -39,6 +39,7 @@ type Config struct {
 	TokenStore    *tokenstore.TokenStore
 	ResetTokens   *resettoken.Store
 	BaseURL       string
+	PathPrefix    string
 	SecureCookies bool
 }
 
@@ -51,27 +52,35 @@ type Routes struct {
 	tokenStore    *tokenstore.TokenStore
 	resetTokens   *resettoken.Store
 	baseURL       string
+	prefix        string
 	secureCookies bool
 	csrfKey       []byte
 }
 
 // templateFuncs are the helpers available to every HTML template.
-var templateFuncs = template.FuncMap{
-	// toJSON renders a value as a JSON literal, e.g. to pass a user's groups to
-	// client-side JS through a data- attribute as a real array.
-	"toJSON": func(v any) (string, error) {
-		b, err := json.Marshal(v)
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
-	},
+func templateFuncs(prefix string) template.FuncMap {
+	return template.FuncMap{
+		// toJSON renders a value as a JSON literal, e.g. to pass a user's groups to
+		// client-side JS through a data- attribute as a real array.
+		"toJSON": func(v any) (string, error) {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		},
+		// url turns an app-relative path into one the browser can follow, which
+		// is the path itself unless the IdP is served under a prefix.
+		"url": func(path string) string {
+			return prefix + path
+		},
+	}
 }
 
 // parseTemplates loads every *.html template in dir with templateFuncs
 // registered. Both the server and the tests go through it.
-func parseTemplates(dir string) (*template.Template, error) {
-	return template.New("").Funcs(templateFuncs).ParseGlob(filepath.Join(dir, "*.html"))
+func parseTemplates(dir, prefix string) (*template.Template, error) {
+	return template.New("").Funcs(templateFuncs(prefix)).ParseGlob(filepath.Join(dir, "*.html"))
 }
 
 func New(config Config) (*Routes, error) {
@@ -79,7 +88,7 @@ func New(config Config) (*Routes, error) {
 	if err != nil {
 		return nil, err
 	}
-	tpl, err := parseTemplates(dir)
+	tpl, err := parseTemplates(dir, config.PathPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("parse templates in %s: %w", dir, err)
 	}
@@ -92,6 +101,7 @@ func New(config Config) (*Routes, error) {
 		tokenStore:    config.TokenStore,
 		resetTokens:   config.ResetTokens,
 		baseURL:       config.BaseURL,
+		prefix:        config.PathPrefix,
 		secureCookies: config.SecureCookies,
 		csrfKey:       generateCSRFKey(),
 	}, nil
@@ -115,6 +125,12 @@ func findTemplatesDir() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("templates directory not found in any of: %v", candidates)
+}
+
+// url is the Go counterpart of the url template func: it scopes an
+// app-relative path to the prefix the IdP is served under.
+func (r *Routes) url(path string) string {
+	return r.prefix + path
 }
 
 func (r *Routes) getUserFromSession(req *http.Request) (*user.UserInfo, error) {

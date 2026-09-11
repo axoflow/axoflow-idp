@@ -43,7 +43,7 @@
             <button type="submit">Continue</button>
 
             {{ if .SelfRegistration }}
-            <div class="account">Don't have an account? <a href="/register">Register here</a></div>
+            <div class="account">Don't have an account? <a href="{{ url "/register" }}">Register here</a></div>
             {{ end }}
         </form>
     </div>

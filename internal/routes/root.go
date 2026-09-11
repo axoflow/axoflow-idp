@@ -69,7 +69,7 @@ func (r *Routes) Index(res http.ResponseWriter, req *http.Request) {
 func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 	_, err := r.getUserFromSession(req)
 	if err == nil {
-		http.Redirect(res, req, "/", http.StatusFound)
+		http.Redirect(res, req, r.url("/"), http.StatusFound)
 		return
 	}
 
@@ -86,7 +86,7 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 	case http.MethodPost:
 		if user := r.login(res, req); user != nil {
-			http.Redirect(res, req, "/?flash=login", http.StatusFound)
+			http.Redirect(res, req, r.url("/?flash=login"), http.StatusFound)
 		}
 		return
 
@@ -141,7 +141,7 @@ func (r *Routes) setSessionCookie(res http.ResponseWriter, sessionId string) {
 		Name:     "session",
 		Value:    sessionId,
 		MaxAge:   int((7 * 24 * time.Hour).Seconds()),
-		Path:     "/",
+		Path:     r.url("/"),
 		HttpOnly: true,
 		Secure:   r.secureCookies,
 		SameSite: http.SameSiteLaxMode,
@@ -163,7 +163,7 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 	session, err := req.Cookie("session")
 	if err != nil {
 		slog.Warn("logout attempted without session cookie")
-		http.Redirect(res, req, "/?flash=logout", http.StatusFound)
+		http.Redirect(res, req, r.url("/?flash=logout"), http.StatusFound)
 		return
 	}
 
@@ -171,15 +171,16 @@ func (r *Routes) Logout(res http.ResponseWriter, req *http.Request) {
 	http.SetCookie(res, &http.Cookie{
 		MaxAge: -1,
 		Name:   "session",
+		Path:   r.url("/"),
 	})
 
-	http.Redirect(res, req, "/?flash=logout", http.StatusFound)
+	http.Redirect(res, req, r.url("/?flash=logout"), http.StatusFound)
 }
 
 func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 	_, err := r.getUserFromSession(req)
 	if err == nil {
-		http.Redirect(res, req, "/", http.StatusFound)
+		http.Redirect(res, req, r.url("/"), http.StatusFound)
 		return
 	}
 

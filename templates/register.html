@@ -10,7 +10,7 @@
     {{template "layout-logo" .}}
 
     <div class="layout-right">
-        <form class="register-container" action="/register" method="post">
+        <form class="register-container" action="{{ url "/register" }}" method="post">
             <h1>Register</h1>
 
             <label class="label">
@@ -59,7 +59,7 @@
 
             <button type="submit">Register</button>
 
-            <div class="account">Already have an account? <a href="/login">Login here</a></div>
+            <div class="account">Already have an account? <a href="{{ url "/login" }}">Login here</a></div>
         </form>
     </div>
 </div>

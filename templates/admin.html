@@ -317,7 +317,7 @@
     <div class="layout-right">
         <div class="admin-container">
             <div class="nav">
-                <a href="/">← Back to Home</a>
+                <a href="{{ url "/" }}">← Back to Home</a>
             </div>
 
             <h1>Admin Panel</h1>
@@ -327,7 +327,7 @@
             </div>
 
             {{ if not .Static }}
-            <a class="button" href="/admin/register" style="align-self: flex-start;">Register New User</a>
+            <a class="button" href="{{ url "/admin/register" }}" style="align-self: flex-start;">Register New User</a>
             {{ end }}
 
             <h2>Users</h2>
@@ -385,14 +385,14 @@
                                     data-username="{{ .Username }}"
                                     onclick="openResetModalFromData(this); return false;">Reset Password</a>
                                 {{ if ne .ID $.AdminID }}
-                                <form action="/admin/users/reset-link" method="post" class="reset-link-form">
+                                <form action="{{ url "/admin/users/reset-link" }}" method="post" class="reset-link-form">
                                     <input type="hidden" name="user_id" value="{{ .ID }}" />
                                     <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}" />
                                     <button type="submit" class="action-link">Reset Link</button>
                                 </form>
                                 {{ end }}
                                 {{ if ne .ID $.AdminID }}
-                                <form action="/admin/users/delete" method="post" class="delete-form" data-username="{{ .Username }}">
+                                <form action="{{ url "/admin/users/delete" }}" method="post" class="delete-form" data-username="{{ .Username }}">
                                     <input type="hidden" name="user_id" value="{{ .ID }}" />
                                     <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}" />
                                     <button type="submit" class="action-link danger">Delete</button>
@@ -414,7 +414,7 @@
         <div class="modal-header">
             <h2>Reset Password</h2>
         </div>
-        <form id="resetPasswordForm" action="/admin/users/reset-password" method="post">
+        <form id="resetPasswordForm" action="{{ url "/admin/users/reset-password" }}" method="post">
             <input type="hidden" id="reset_user_id" name="user_id" />
             <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}" />
             <div class="form-group">
@@ -438,7 +438,7 @@
         <div class="modal-header">
             <h2>Update User Groups</h2>
         </div>
-        <form id="updateGroupsForm" action="/admin/users/update-groups" method="post">
+        <form id="updateGroupsForm" action="{{ url "/admin/users/update-groups" }}" method="post">
             <input type="hidden" id="groups_user_id" name="user_id" />
             <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}" />
             <div class="form-group">
