@@ -25,7 +25,7 @@ import (
 func (r *Routes) AdminPanel(res http.ResponseWriter, req *http.Request) {
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Redirect(res, req, "/login", http.StatusFound)
+		http.Redirect(res, req, r.url("/login"), http.StatusFound)
 		return
 	}
 
@@ -77,7 +77,7 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Redirect(res, req, "/login", http.StatusFound)
+		http.Redirect(res, req, r.url("/login"), http.StatusFound)
 		return
 	}
 
@@ -128,7 +128,7 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 
 		slog.Info("admin registered new user", "admin", admin.Username, "new_user", username)
 
-		http.Redirect(res, req, "/admin", http.StatusSeeOther)
+		http.Redirect(res, req, r.url("/admin"), http.StatusSeeOther)
 		return
 
 	default:
@@ -227,7 +227,7 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 
 	slog.Info("admin deleted user", "admin", admin.Username, "deleted_user_id", userId)
 
-	http.Redirect(res, req, "/admin", http.StatusSeeOther)
+	http.Redirect(res, req, r.url("/admin"), http.StatusSeeOther)
 }
 
 func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) {
@@ -285,7 +285,7 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 
 	slog.Info("admin reset user password", "admin", admin.Username, "target_user_id", userId)
 
-	http.Redirect(res, req, "/admin", http.StatusSeeOther)
+	http.Redirect(res, req, r.url("/admin"), http.StatusSeeOther)
 }
 
 func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Request) {
@@ -334,7 +334,7 @@ func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Reques
 
 	slog.Info("admin updated user groups", "admin", admin.Username, "target_user_id", userId, "groups", groups)
 
-	http.Redirect(res, req, "/admin", http.StatusSeeOther)
+	http.Redirect(res, req, r.url("/admin"), http.StatusSeeOther)
 }
 
 func (r *Routes) AdminUsersAPI(res http.ResponseWriter, req *http.Request) {

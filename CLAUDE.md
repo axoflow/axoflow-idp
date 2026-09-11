@@ -96,4 +96,7 @@ in `tokenstore`.
   operation returns `user.ErrReadOnly`, the write routes are not registered,
   and the admin panel hides its write controls (lets the DB be mounted from a
   read-only source such as a Kubernetes Secret).
+- `baseUrl` may carry a path (e.g. `https://host/idp`). Its path becomes the
+  prefix every route, redirect, cookie and template link is scoped to, so a
+  reverse proxy must pass the prefix through instead of stripping it.
 - Config is loaded from the path in `CONFIG` (default `config.json`).

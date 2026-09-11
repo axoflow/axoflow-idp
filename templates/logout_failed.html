@@ -15,10 +15,10 @@
             {{ if .Message }}
             <div class="error">{{ .Message }}</div>
             {{ end }}
-            <form action="/logout" method="post">
+            <form action="{{ url "/logout" }}" method="post">
                 <button type="submit">Logout</button>
             </form>
-            <div class="account"><a href="/">Back to Home</a></div>
+            <div class="account"><a href="{{ url "/" }}">Back to Home</a></div>
         </div>
     </div>
 </div>

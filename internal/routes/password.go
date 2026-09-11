@@ -19,7 +19,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -30,7 +29,7 @@ import (
 func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 	u, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Redirect(res, req, "/login", http.StatusFound)
+		http.Redirect(res, req, r.url("/login"), http.StatusFound)
 		return
 	}
 
@@ -78,7 +77,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		r.setSessionCookie(res, r.session.Create(u.ID))
 
 		slog.Info("user changed password", "user_id", u.ID, "username", u.Username)
-		http.Redirect(res, req, "/?flash=password", http.StatusSeeOther)
+		http.Redirect(res, req, r.url("/?flash=password"), http.StatusSeeOther)
 		return
 
 	default:
@@ -160,7 +159,7 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 // resetLinkURL builds the absolute password-reset URL from the configured base
 // URL (never the request Host header, which is client-controlled).
 func (r *Routes) resetLinkURL(token string) string {
-	return strings.TrimRight(r.baseURL, "/") + "/set-password?token=" + url.QueryEscape(token)
+	return r.baseURL + "/set-password?token=" + url.QueryEscape(token)
 }
 
 // SetPassword handles the password-reset link: it shows a form gated by a
@@ -242,7 +241,7 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 		r.session.DeleteUserSessions(userID)
 
 		slog.Info("password set via reset link", "target_user_id", userID)
-		http.Redirect(res, req, "/login?flash=password_reset", http.StatusSeeOther)
+		http.Redirect(res, req, r.url("/login?flash=password_reset"), http.StatusSeeOther)
 		return
 
 	default:

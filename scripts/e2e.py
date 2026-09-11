@@ -35,6 +35,7 @@ have patched it. E2E_KEEP=1 keeps the temp working dir for debugging.
 Standard unittest flags (-v, -k, -f, test selectors) all work.
 """
 
+import base64
 import http.cookiejar
 import json
 import os
@@ -122,10 +123,10 @@ def _write_seed_users(path):
         ], f)
 
 
-def _write_config(path, users_path, signing_path, static):
+def _write_config(path, users_path, signing_path, static, base=BASE):
     with open(path, "w") as f:
         json.dump({
-            "baseUrl": BASE,
+            "baseUrl": base,
             "clients": [{"id": "dev", "name": "Dev", "clientSecret": "s",
                          "redirectUri": BASE + "/cb"}],
             "users": {
@@ -160,12 +161,15 @@ def setUpModule():
     _ENV["signing"] = os.path.join(workdir, "signing-key.json")
     _ENV["cfg_rw"] = os.path.join(workdir, "config_rw.json")
     _ENV["cfg_static"] = os.path.join(workdir, "config_static.json")
+    _ENV["cfg_prefix"] = os.path.join(workdir, "config_prefix.json")
     _ENV["binary"] = os.path.join(workdir, "idp")
 
     subprocess.run(["go", "build", "-o", _ENV["binary"], "."],
                    cwd=REPO_ROOT, check=True)
     _write_config(_ENV["cfg_rw"], _ENV["users"], _ENV["signing"], static=False)
     _write_config(_ENV["cfg_static"], _ENV["users"], _ENV["signing"], static=True)
+    _write_config(_ENV["cfg_prefix"], _ENV["users"], _ENV["signing"],
+                  static=False, base=BASE + "/idp")
 
 
 def tearDownModule():
@@ -185,11 +189,11 @@ class ServerCase(unittest.TestCase):
     fresh seed + server per test keeps them independent of execution order.
     """
 
-    STATIC = False
+    CONFIG_KEY = "cfg_rw"
 
     def setUp(self):
         _write_seed_users(_ENV["users"])
-        config = _ENV["cfg_static"] if self.STATIC else _ENV["cfg_rw"]
+        config = _ENV[self.CONFIG_KEY]
         env = dict(os.environ)
         env["CONFIG"] = config
         env["TEMPLATES_DIR"] = os.path.join(REPO_ROOT, "templates")
@@ -410,7 +414,7 @@ class AuthorizeRedirectTest(ServerCase):
 
 
 class StaticModeTest(ServerCase):
-    STATIC = True
+    CONFIG_KEY = "cfg_static"
 
     WRITE_ROUTES = [
         "/password", "/set-password", "/admin/register", "/admin/users/delete",
@@ -438,6 +442,81 @@ class StaticModeTest(ServerCase):
         self.assertEqual(code, 200)
         self.assertNotIn("<th>Actions</th>", body)
         self.assertNotIn("Register New User", body)
+
+
+class PathPrefixTest(ServerCase):
+    """The server honors a path in baseUrl (here /idp): every route, redirect,
+    cookie and generated link lives under the prefix, nothing outside it is
+    served, and the tokens/metadata advertise the prefixed issuer."""
+
+    CONFIG_KEY = "cfg_prefix"
+    ISSUER = BASE + "/idp"
+    CB = BASE + "/cb"
+
+    def test_routes_live_under_the_prefix_only(self):
+        c = Client()
+        self.assertEqual(c.get("/")[0], 404, "the host root must not be served")
+        self.assertEqual(c.get("/login")[0], 404, "unprefixed routes must be gone")
+        code, hdrs, _ = c.get("/idp")
+        self.assertIn(code, (301, 307), "the bare prefix should redirect")
+        self.assertEqual(hdrs.get("Location"), "/idp/")
+        self.assertEqual(c.get("/idp/")[0], 200)
+        self.assertEqual(c.get("/idp/login")[0], 200)
+
+    def test_discovery_advertises_prefixed_urls(self):
+        code, _, body = Client().get("/idp/.well-known/openid-configuration")
+        self.assertEqual(code, 200)
+        meta = json.loads(body)
+        self.assertEqual(meta["issuer"], self.ISSUER)
+        self.assertEqual(meta["authorization_endpoint"], self.ISSUER + "/oidc/auth")
+        self.assertEqual(meta["token_endpoint"], self.ISSUER + "/token")
+        self.assertEqual(meta["jwks_uri"], self.ISSUER + "/oidc/jwks")
+
+    def test_auth_code_flow_issues_prefixed_iss(self):
+        bob = Client()
+        code, hdrs, _ = bob.post("/idp/login",
+                                 {"username": "bob", "password": "bobpass"})
+        self.assertEqual((code, hdrs.get("Location")), (302, "/idp/?flash=login"))
+        self.assertIn("Path=/idp/", hdrs.get("Set-Cookie", ""),
+                      "session cookie must be scoped to the prefix")
+
+        code, hdrs, _ = bob.get("/idp/oidc/auth?" + urllib.parse.urlencode({
+            "scope": "openid", "response_type": "code",
+            "client_id": "dev", "redirect_uri": self.CB, "state": "s"}))
+        self.assertEqual(code, 302)
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(hdrs["Location"]).query)
+        self.assertTrue(q.get("code"), "authorization code must be present")
+
+        code, _, body = Client().post("/idp/token", {
+            "grant_type": "authorization_code", "client_id": "dev",
+            "client_secret": "s", "redirect_uri": self.CB,
+            "code": q["code"][0]})
+        self.assertEqual(code, 200)
+        payload = json.loads(body)["id_token"].split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        self.assertEqual(claims["iss"], self.ISSUER,
+                         "iss must match the prefixed issuer")
+
+    def test_logout_clears_the_prefixed_session(self):
+        bob = Client()
+        bob.post("/idp/login", {"username": "bob", "password": "bobpass"})
+        code, hdrs, _ = bob.post("/idp/logout", {})
+        self.assertEqual((code, hdrs.get("Location")), (302, "/idp/?flash=logout"))
+        self.assertIn("Path=/idp/", hdrs.get("Set-Cookie", ""),
+                      "the clearing cookie must use the session cookie's path")
+        code, hdrs, _ = bob.get("/idp/password")
+        self.assertEqual((code, hdrs.get("Location")), (302, "/idp/login"),
+                         "the session must be gone after logout")
+
+    def test_reset_link_carries_the_prefix(self):
+        admin = Client()
+        admin.post("/idp/login", {"username": "admin", "password": "adminpass"})
+        code, _, body = admin.post("/idp/admin/users/reset-link",
+                                   {"user_id": "bob1",
+                                    "csrf_token": admin.csrf("/idp/admin")})
+        self.assertEqual(code, 200)
+        self.assertIn(self.ISSUER + "/set-password?token=", body)
 
 
 if __name__ == "__main__":
