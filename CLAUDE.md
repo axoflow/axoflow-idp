@@ -102,9 +102,15 @@ in `tokenstore`.
   lock, so concurrent first registrations still yield exactly one admin. It
   requires a persistent database (`filePath` set) — a memory-only database is
   empty after every restart, which would re-arm the grant each boot. While
-  the database is empty (and self-registration is on and the DB is writable),
+  the database is empty (and registration is open and the DB is writable),
   `GET /login` and the login form of `/oidc/auth` redirect to `/register` —
   there is no account to sign in with yet.
+- `users.allowBootstrap: true` (default false) opens `/register` for the
+  *first user only* when self-registration is off: while the database is
+  empty, registration works (and grants the bootstrap admin), then closes
+  again. The closing is race-free (`user.SelfRegister` checks the policy
+  under the write lock), and config validation requires a persistent,
+  non-static database with it.
 - The deployment can never lose its last admin through the admin panel:
   admins cannot delete themselves (`AdminDelete`) or remove the admin group
   from themselves (`AdminUpdateUserGroups`), so every admin operation leaves

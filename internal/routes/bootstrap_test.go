@@ -17,8 +17,10 @@ package routes
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/session"
@@ -141,5 +143,85 @@ func TestLogin_PostIsNotRedirectedWhenDatabaseIsEmpty(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// With AllowBootstrap alone (self-registration off), the login page redirects
+// to /register only while the database is empty.
+func TestLogin_AllowBootstrapRedirect(t *testing.T) {
+	tests := []struct {
+		name         string
+		users        string
+		wantRedirect bool
+	}{
+		{name: "empty database", users: `[]`, wantRedirect: true},
+		{name: "after the first user", users: `[{"ID":"alice","Username":"alice","Groups":["user"]}]`, wantRedirect: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "users.json")
+			if err := os.WriteFile(path, []byte(tt.users), 0o600); err != nil {
+				t.Fatalf("write users: %v", err)
+			}
+			u, err := user.New(user.Config{FilePath: path, AllowBootstrap: true, UserAdminGroup: "admins"})
+			if err != nil {
+				t.Fatalf("user store: %v", err)
+			}
+			tpl, err := parseTemplates(filepath.Join("..", "..", "templates"), "")
+			if err != nil {
+				t.Fatalf("parse templates: %v", err)
+			}
+			r := &Routes{session: session.New(), user: u, template: tpl, csrfKey: generateCSRFKey()}
+			rec := httptest.NewRecorder()
+
+			r.Login(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+
+			if tt.wantRedirect && (rec.Code != http.StatusFound || rec.Header().Get("Location") != "/register") {
+				t.Errorf("got %d %q, want 302 /register", rec.Code, rec.Header().Get("Location"))
+			}
+			if !tt.wantRedirect && rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200 (login form)", rec.Code)
+			}
+		})
+	}
+}
+
+// A registration that loses the bootstrap race (or arrives after the window
+// closed) gets a 403 from the POST as well, enforced inside user.SelfRegister.
+func TestRegister_BootstrapWindowCloses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.json")
+	if err := os.WriteFile(path, []byte(`[]`), 0o600); err != nil {
+		t.Fatalf("write users: %v", err)
+	}
+	u, err := user.New(user.Config{FilePath: path, AllowBootstrap: true, UserAdminGroup: "admins"})
+	if err != nil {
+		t.Fatalf("user store: %v", err)
+	}
+	tpl, err := parseTemplates(filepath.Join("..", "..", "templates"), "")
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+	r := &Routes{session: session.New(), user: u, template: tpl, csrfKey: generateCSRFKey()}
+
+	post := func(username string) *httptest.ResponseRecorder {
+		form := url.Values{
+			"username":         {username},
+			"email":            {username + "@example.com"},
+			"password":         {"password123"},
+			"password_confirm": {"password123"},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		r.Register(rec, req)
+		return rec
+	}
+
+	if rec := post("first"); rec.Code != http.StatusCreated {
+		t.Fatalf("first registration status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if rec := post("second"); rec.Code != http.StatusForbidden {
+		t.Errorf("second registration status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }

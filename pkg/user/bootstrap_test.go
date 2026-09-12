@@ -15,8 +15,10 @@
 package user
 
 import (
+	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -204,5 +206,123 @@ func TestCount(t *testing.T) {
 	}
 	if got := u.Count(); got != 1 {
 		t.Errorf("Count = %d, want 1", got)
+	}
+}
+
+func TestSelfRegister_Policy(t *testing.T) {
+	tests := []struct {
+		name             string
+		usersFile        string
+		selfRegistration bool
+		allowBootstrap   bool
+		wantErr          error
+		wantAdmin        bool
+	}{
+		{
+			name:      "closed by default",
+			usersFile: `[]`,
+			wantErr:   ErrRegistrationClosed,
+		},
+		{
+			name:           "allowBootstrap opens an empty database",
+			usersFile:      `[]`,
+			allowBootstrap: true,
+			wantAdmin:      true,
+		},
+		{
+			name:           "allowBootstrap does not open a non-empty database",
+			usersFile:      `[{"ID":"alice","Username":"alice","Groups":["user"]}]`,
+			allowBootstrap: true,
+			wantErr:        ErrRegistrationClosed,
+		},
+		{
+			name:             "selfRegistration keeps a non-empty database open",
+			usersFile:        `[{"ID":"alice","Username":"alice","Groups":["user"]}]`,
+			selfRegistration: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := New(Config{
+				FilePath:         writeUsersFile(t, tt.usersFile),
+				UserAdminGroup:   "admins",
+				SelfRegistration: tt.selfRegistration,
+				AllowBootstrap:   tt.allowBootstrap,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			err = u.SelfRegister("carol", "carolpass1", []string{RoleUser}, "carol@example.com")
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("SelfRegister error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				return
+			}
+			carol := find(t, u, "carol")
+			if u.IsAdmin(&carol) != tt.wantAdmin {
+				t.Errorf("IsAdmin = %v, want %v (groups %v)", u.IsAdmin(&carol), tt.wantAdmin, carol.Groups)
+			}
+		})
+	}
+}
+
+// With AllowBootstrap alone, a concurrent burst against an empty database must
+// produce exactly one user: the policy check shares the lock with the append.
+func TestSelfRegister_ConcurrentBootstrapWindowAdmitsOne(t *testing.T) {
+	u, err := New(Config{
+		FilePath:       writeUsersFile(t, `[]`),
+		UserAdminGroup: "admins",
+		AllowBootstrap: true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	var succeeded, closed atomic.Int32
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			username := string(rune('a'+i)) + "user"
+			switch err := u.SelfRegister(username, "password1", []string{RoleUser}, ""); {
+			case err == nil:
+				succeeded.Add(1)
+			case errors.Is(err, ErrRegistrationClosed):
+				closed.Add(1)
+			default:
+				t.Errorf("SelfRegister %s: %v", username, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if succeeded.Load() != 1 || closed.Load() != n-1 {
+		t.Errorf("succeeded = %d, closed = %d; want 1 and %d", succeeded.Load(), closed.Load(), n-1)
+	}
+	if got := u.Count(); got != 1 {
+		t.Errorf("Count = %d, want 1", got)
+	}
+}
+
+// Admin-driven registration is not subject to the self-registration policy.
+func TestRegister_AdminPathsBypassPolicy(t *testing.T) {
+	u, err := New(Config{
+		FilePath:       writeUsersFile(t, `[{"ID":"admin1","Username":"admin","Groups":["admins"]}]`),
+		UserAdminGroup: "admins",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := u.AdminRegister("admin1", "dave", "davepass1", []string{RoleUser}, ""); err != nil {
+		t.Errorf("AdminRegister: %v", err)
+	}
+	if _, err := u.AdminRegisterLocked("admin1", "erin", []string{RoleUser}, ""); err != nil {
+		t.Errorf("AdminRegisterLocked: %v", err)
 	}
 }

@@ -15,6 +15,7 @@
 package routes
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -104,13 +105,14 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 }
 
 // needsBootstrap reports whether the deployment has no users yet and can still
-// grow one through self-registration. In that state the login form is useless
-// (no account can authenticate), so the sign-in paths send the visitor to
+// grow one through self-registration (always open, or open just for the first
+// user via AllowBootstrap). In that state the login form is useless (no
+// account can authenticate), so the sign-in paths send the visitor to
 // /register instead, where the first user is created as an admin. The guard
 // mirrors the condition main.go registers /register under, so it can never
 // redirect to a route that does not exist.
 func (r *Routes) needsBootstrap() bool {
-	return r.user.SelfRegistration && !r.user.Static && r.user.Count() == 0
+	return (r.user.SelfRegistration || r.user.AllowBootstrap) && !r.user.Static && r.user.Count() == 0
 }
 
 func (r *Routes) loginTemplateData(message string) struct {
@@ -198,7 +200,10 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if !r.user.SelfRegistration {
+	// GET-level policy check; the POST is enforced race-free again inside
+	// user.SelfRegister, under the same lock as the append.
+	open := r.user.SelfRegistration || (r.user.AllowBootstrap && r.user.Count() == 0)
+	if !open {
 		http.Error(res, "Self registration is disabled", http.StatusForbidden)
 		return
 	}
@@ -234,8 +239,14 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if err := r.user.Register(username, password, []string{user.RoleUser}, email); err != nil {
-			res.WriteHeader(http.StatusBadRequest)
+		if err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, user.ErrRegistrationClosed) {
+				// Lost the race for the bootstrap window (or the policy
+				// changed): registration is no longer open.
+				status = http.StatusForbidden
+			}
+			res.WriteHeader(status)
 			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{Message: err.Error()}); err != nil {
 				slog.Error("failed to render register template", "error", err)
 			}

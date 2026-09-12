@@ -38,11 +38,17 @@ const (
 )
 
 type Config struct {
-	SelfRegistration bool       `json:"selfRegistration"`
-	UserAdminGroup   string     `json:"userAdminGroup"`
-	Defaults         []UserInfo `json:"users"`
-	FilePath         string     `json:"filePath"`
-	CreateIfMissing  bool       `json:"createIfMissing"`
+	SelfRegistration bool `json:"selfRegistration"`
+	// AllowBootstrap opens self-service registration for the very first user
+	// only: while the database is empty, /register works even with
+	// SelfRegistration off, and the account becomes the bootstrap admin. As
+	// soon as one user exists, registration closes again (enforced under the
+	// write lock, so a concurrent burst cannot slip a second account in).
+	AllowBootstrap  bool       `json:"allowBootstrap"`
+	UserAdminGroup  string     `json:"userAdminGroup"`
+	Defaults        []UserInfo `json:"users"`
+	FilePath        string     `json:"filePath"`
+	CreateIfMissing bool       `json:"createIfMissing"`
 	// Static makes the user database read-only: every mutating operation
 	// (registration, password change/reset, group update, deletion) is
 	// rejected with ErrReadOnly. This lets the database be served from an
@@ -54,6 +60,11 @@ type Config struct {
 // ErrReadOnly is returned by every mutating operation when the user database is
 // configured as static (read-only).
 var ErrReadOnly = errors.New("user database is read-only")
+
+// ErrRegistrationClosed is returned by SelfRegister when neither
+// SelfRegistration nor an AllowBootstrap empty-database window permits
+// creating the account.
+var ErrRegistrationClosed = errors.New("registration is closed")
 
 // ErrWeakPassword is wrapped by validatePassword when a password does not meet
 // the minimum policy. Routes match it with errors.Is to show a friendly,
@@ -146,7 +157,22 @@ func (u *User) Get(id string) (UserInfo, bool) {
 	return u.users[i], true
 }
 
+// Register creates a user without consulting the self-registration policy; it
+// is the entry point for already-authorized callers (the admin paths).
 func (u *User) Register(username string, password string, groups []string, email string) error {
+	return u.registerWithPassword(username, password, groups, email, false)
+}
+
+// SelfRegister creates a user through the public registration form. Unlike
+// Register it enforces the self-registration policy under the write lock: the
+// registration is allowed when SelfRegistration is enabled, or — with
+// AllowBootstrap — while the database is still empty (the account then becomes
+// the bootstrap admin). Otherwise it returns ErrRegistrationClosed.
+func (u *User) SelfRegister(username string, password string, groups []string, email string) error {
+	return u.registerWithPassword(username, password, groups, email, true)
+}
+
+func (u *User) registerWithPassword(username, password string, groups []string, email string, selfService bool) error {
 	if u.Static {
 		return ErrReadOnly
 	}
@@ -156,7 +182,7 @@ func (u *User) Register(username string, password string, groups []string, email
 
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	_, err := u.register(id, username, hash([]byte(id), password), groups, email)
+	_, err := u.register(id, username, hash([]byte(id), password), groups, email, selfService)
 	return err
 }
 
@@ -165,18 +191,30 @@ func (u *User) Register(username string, password string, groups []string, email
 // via a reset link. It returns the new user's ID.
 func (u *User) RegisterLocked(username string, groups []string, email string) (string, error) {
 	id := ulid.Make().String()
-	return u.register(id, username, LockedPasswordHash, groups, email)
+	return u.register(id, username, LockedPasswordHash, groups, email, false)
 }
 
 // register appends a user with an already-computed password hash, returning the
-// user's ID on success.
-func (u *User) register(id, username, hashedPassword string, groups []string, email string) (string, error) {
+// user's ID on success. selfService marks a public-form registration, which is
+// subject to the self-registration policy; authorized (admin) callers pass
+// false.
+func (u *User) register(id, username, hashedPassword string, groups []string, email string, selfService bool) (string, error) {
 	if u.Static {
 		return "", ErrReadOnly
 	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
+
+	// The policy check shares the lock with the append, so with AllowBootstrap
+	// alone the window really closes after the first user: a concurrent burst
+	// cannot register a second account.
+	if selfService {
+		open := u.SelfRegistration || (u.AllowBootstrap && len(u.users) == 0)
+		if !open {
+			return "", ErrRegistrationClosed
+		}
+	}
 
 	// Bootstrap: the very first user in an empty database becomes an admin, so
 	// a fresh deployment is manageable without hand-editing the user file. The
