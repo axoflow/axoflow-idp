@@ -178,6 +178,18 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
+	// Bootstrap: the very first user in an empty database becomes an admin, so
+	// a fresh deployment is manageable without hand-editing the user file. The
+	// check lives under the lock, which makes it race-free: of two concurrent
+	// registrations only the one that appends first sees an empty database.
+	// It requires a persistent database (FilePath set): a memory-only database
+	// starts empty on every boot, which would re-arm the grant on each restart
+	// instead of once per deployment.
+	if len(u.users) == 0 && u.UserAdminGroup != "" && u.FilePath != "" && !slices.Contains(groups, u.UserAdminGroup) {
+		groups = append(slices.Clone(groups), u.UserAdminGroup)
+		slog.Info("first user in an empty database registered as admin", "username", username, "group", u.UserAdminGroup)
+	}
+
 	if slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
 	}) != -1 {
@@ -199,6 +211,16 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 	})
 
 	return id, nil
+}
+
+// Count reports how many users the database holds. An empty database means the
+// deployment has not been bootstrapped yet: the first registration becomes an
+// admin (see register) and the login page points there instead.
+func (u *User) Count() int {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
+	return len(u.users)
 }
 
 func (u *User) KnownGroups() []string {

@@ -75,6 +75,10 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
+		if r.needsBootstrap() {
+			http.Redirect(res, req, r.url("/register"), http.StatusFound)
+			return
+		}
 		data := r.loginTemplateData("")
 		if req.URL.Query().Get("flash") == "password_reset" {
 			data.Success = "Your password has been set. You can now sign in."
@@ -97,6 +101,16 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
+}
+
+// needsBootstrap reports whether the deployment has no users yet and can still
+// grow one through self-registration. In that state the login form is useless
+// (no account can authenticate), so the sign-in paths send the visitor to
+// /register instead, where the first user is created as an admin. The guard
+// mirrors the condition main.go registers /register under, so it can never
+// redirect to a route that does not exist.
+func (r *Routes) needsBootstrap() bool {
+	return r.user.SelfRegistration && !r.user.Static && r.user.Count() == 0
 }
 
 func (r *Routes) loginTemplateData(message string) struct {

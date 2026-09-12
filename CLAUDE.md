@@ -96,6 +96,15 @@ in `tokenstore`.
   operation returns `user.ErrReadOnly`, the write routes are not registered,
   and the admin panel hides its write controls (lets the DB be mounted from a
   read-only source such as a Kubernetes Secret).
+- Bootstrap: registering into an *empty* user database puts the new user in
+  `users.userAdminGroup`, so a fresh deployment has an admin without anyone
+  hand-editing `users.json`. The check sits in `user.register` under the write
+  lock, so concurrent first registrations still yield exactly one admin. It
+  requires a persistent database (`filePath` set) — a memory-only database is
+  empty after every restart, which would re-arm the grant each boot. While
+  the database is empty (and self-registration is on and the DB is writable),
+  `GET /login` and the login form of `/oidc/auth` redirect to `/register` —
+  there is no account to sign in with yet.
 - `baseUrl` may carry a path (e.g. `https://host/idp`). Its path becomes the
   prefix every route, redirect, cookie and template link is scoped to, so a
   reverse proxy must pass the prefix through instead of stripping it.
