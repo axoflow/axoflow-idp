@@ -105,6 +105,10 @@ in `tokenstore`.
   the database is empty (and self-registration is on and the DB is writable),
   `GET /login` and the login form of `/oidc/auth` redirect to `/register` —
   there is no account to sign in with yet.
+- The deployment can never lose its last admin through the admin panel:
+  admins cannot delete themselves (`AdminDelete`) or remove the admin group
+  from themselves (`AdminUpdateUserGroups`), so every admin operation leaves
+  the caller as an admin.
 - `baseUrl` may carry a path (e.g. `https://host/idp`). Its path becomes the
   prefix every route, redirect, cookie and template link is scoped to, so a
   reverse proxy must pass the prefix through instead of stripping it.
