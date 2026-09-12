@@ -204,7 +204,7 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 	// user.SelfRegister, under the same lock as the append.
 	open := r.user.SelfRegistration || (r.user.AllowBootstrap && r.user.Count() == 0)
 	if !open {
-		http.Error(res, "Self registration is disabled", http.StatusForbidden)
+		r.renderError(res, req, http.StatusForbidden, "Registration Closed", "Self registration is disabled.")
 		return
 	}
 

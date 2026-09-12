@@ -332,6 +332,10 @@
 
             <h2>Users</h2>
 
+            {{ if .Message }}
+            <div class="error">{{ .Message }}</div>
+            {{ end }}
+
             {{ if .ResetLink }}
             <div class="reset-link-box">
                 <div class="reset-link-title">
@@ -425,6 +429,7 @@
                 <label for="new_password">New Password:</label>
                 <input type="password" id="new_password" name="new_password" required minlength="8" placeholder="Enter new password" />
             </div>
+            <div class="error" id="reset_error" hidden></div>
             <div class="modal-actions">
                 <button type="button" class="secondary" onclick="closeResetModal()">Cancel</button>
                 <button type="submit">Reset Password</button>
@@ -455,6 +460,7 @@
                     {{ range .KnownGroups }}<option value="{{ . }}">{{ end }}
                 </datalist>
             </div>
+            <div class="error" id="groups_error" hidden></div>
             <div class="modal-actions">
                 <button type="button" class="secondary" onclick="closeUpdateGroupsModal()">Cancel</button>
                 <button type="submit">Update Groups</button>
@@ -515,10 +521,40 @@
         openUpdateGroupsModal(button.getAttribute('data-user-id'), button.getAttribute('data-username'), groups);
     }
 
+    // showModalError / clearModalError toggle the error line inside a modal, so
+    // a rejected operation keeps the modal open with the reason instead of
+    // navigating to an error page.
+    function showModalError(id, message) {
+        const el = document.getElementById(id);
+        el.textContent = message;
+        el.hidden = false;
+    }
+
+    function clearModalError(id) {
+        const el = document.getElementById(id);
+        el.textContent = '';
+        el.hidden = true;
+    }
+
+    // submitModalForm posts the form with fetch; the X-Requested-With header
+    // makes the server answer errors as plain text for the modal's error line.
+    // On success the page reloads to show the updated user table.
+    function submitModalForm(form, errorId) {
+        fetch(form.action, {
+            method: 'POST',
+            body: new URLSearchParams(new FormData(form)),
+            headers: { 'X-Requested-With': 'fetch' },
+        }).then(resp => {
+            if (resp.ok) { window.location.reload(); return; }
+            resp.text().then(text => showModalError(errorId, text.trim() || 'Request failed'));
+        }).catch(() => showModalError(errorId, 'Network error, please try again'));
+    }
+
     function openResetModal(userId, username) {
         document.getElementById('reset_user_id').value = userId;
         document.getElementById('reset_username').value = username;
         document.getElementById('new_password').value = '';
+        clearModalError('reset_error');
         document.getElementById('resetPasswordModal').classList.add('active');
         document.getElementById('new_password').focus();
     }
@@ -531,6 +567,7 @@
         document.getElementById('groups_user_id').value = userId;
         document.getElementById('groups_username').value = username;
         modalGroups.setGroups(groups);
+        clearModalError('groups_error');
         document.getElementById('updateGroupsModal').classList.add('active');
         document.getElementById('modal-groups-wrapper').querySelector('.tag-input-text').focus();
     }
@@ -551,7 +588,12 @@
             input.value = g;
             form.appendChild(input);
         });
-        form.submit();
+        submitModalForm(form, 'groups_error');
+    });
+
+    document.getElementById('resetPasswordForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        submitModalForm(e.target, 'reset_error');
     });
 
     document.querySelectorAll('.delete-form').forEach(form => {

@@ -146,6 +146,48 @@ func TestLogin_PostIsNotRedirectedWhenDatabaseIsEmpty(t *testing.T) {
 	}
 }
 
+// A self-demotion attempt from the admin panel's fetch-based modal gets a
+// plain-text error (shown inside the modal); a plain form post gets the full
+// panel with the error banner.
+func TestAdminUpdateUserGroups_SelfDemotionErrorModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		fetchMode  bool
+		wantInBody string
+	}{
+		{name: "fetch request gets plain text", fetchMode: true, wantInBody: "cannot remove the admin group from yourself"},
+		{name: "form post gets the panel with a banner", fetchMode: false, wantInBody: "<table"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newTestRoutes(t, false)
+			cookie, csrf := r.authed("admin1")
+
+			form := url.Values{"user_id": {"admin1"}, "groups": {"user"}, "csrf_token": {csrf}}
+			req := httptest.NewRequest(http.MethodPost, "/admin/users/update-groups", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if tt.fetchMode {
+				req.Header.Set("X-Requested-With", "fetch")
+			}
+			req.AddCookie(cookie)
+			rec := httptest.NewRecorder()
+
+			r.AdminUpdateUserGroups(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantInBody) {
+				t.Errorf("body does not contain %q", tt.wantInBody)
+			}
+			if !strings.Contains(rec.Body.String(), "cannot remove the admin group from yourself") {
+				t.Errorf("body does not contain the error message")
+			}
+		})
+	}
+}
+
 // With AllowBootstrap alone (self-registration off), the login page redirects
 // to /register only while the database is empty.
 func TestLogin_AllowBootstrapRedirect(t *testing.T) {

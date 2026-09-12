@@ -155,7 +155,7 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 	rootPath := pathPrefix + "/"
 	handle("/", func(res http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != rootPath {
-			http.NotFound(res, req)
+			r.NotFound(res, req)
 			return
 		}
 		r.Index(res, req)

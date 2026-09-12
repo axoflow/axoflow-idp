@@ -128,7 +128,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	// it; an unregistered URI is rejected in place rather than turned into an
 	// open redirect (RFC 6749 §4.1.2.1).
 	if err := r.oidc.ValidateRedirect(authReq.ClientID, authReq.RedirectUri); err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		r.renderError(res, req, http.StatusBadRequest, "Invalid Request", err.Error())
 		return
 	}
 
