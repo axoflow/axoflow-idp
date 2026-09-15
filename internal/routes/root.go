@@ -239,7 +239,8 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email); err != nil {
+		id, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
+		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, user.ErrRegistrationClosed) {
 				// Lost the race for the bootstrap window (or the policy
@@ -261,8 +262,18 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		// The registrant just proved knowledge of the password, so sign them in
+		// right away; the success page can then hand them straight to the
+		// relying party, whose OIDC flow completes silently on this session.
+		r.setSessionCookie(res, r.session.Create(id))
+
+		var data struct{ SiteName, SiteURL string }
+		if client := r.oidc.FirstClient(); client != nil {
+			data.SiteName = client.Name
+			data.SiteURL = client.URL
+		}
 		res.WriteHeader(http.StatusCreated)
-		if err := r.template.ExecuteTemplate(res, "register_success.html", nil); err != nil {
+		if err := r.template.ExecuteTemplate(res, "register_success.html", data); err != nil {
 			slog.Error("failed to render register_success template", "error", err)
 		}
 

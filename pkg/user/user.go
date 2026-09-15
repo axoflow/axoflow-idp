@@ -160,30 +160,31 @@ func (u *User) Get(id string) (UserInfo, bool) {
 // Register creates a user without consulting the self-registration policy; it
 // is the entry point for already-authorized callers (the admin paths).
 func (u *User) Register(username string, password string, groups []string, email string) error {
-	return u.registerWithPassword(username, password, groups, email, false)
+	_, err := u.registerWithPassword(username, password, groups, email, false)
+	return err
 }
 
-// SelfRegister creates a user through the public registration form. Unlike
+// SelfRegister creates a user through the public registration form and returns
+// the new user's ID (so the caller can start a session for it). Unlike
 // Register it enforces the self-registration policy under the write lock: the
 // registration is allowed when SelfRegistration is enabled, or — with
 // AllowBootstrap — while the database is still empty (the account then becomes
 // the bootstrap admin). Otherwise it returns ErrRegistrationClosed.
-func (u *User) SelfRegister(username string, password string, groups []string, email string) error {
+func (u *User) SelfRegister(username string, password string, groups []string, email string) (string, error) {
 	return u.registerWithPassword(username, password, groups, email, true)
 }
 
-func (u *User) registerWithPassword(username, password string, groups []string, email string, selfService bool) error {
+func (u *User) registerWithPassword(username, password string, groups []string, email string, selfService bool) (string, error) {
 	if u.Static {
-		return ErrReadOnly
+		return "", ErrReadOnly
 	}
 	if err := validatePassword(password); err != nil {
-		return err
+		return "", err
 	}
 
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	_, err := u.register(id, username, hash([]byte(id), password), groups, email, selfService)
-	return err
+	return u.register(id, username, hash([]byte(id), password), groups, email, selfService)
 }
 
 // RegisterLocked creates a user whose password cannot be matched (see

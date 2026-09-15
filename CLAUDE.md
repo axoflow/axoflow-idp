@@ -105,6 +105,11 @@ in `tokenstore`.
   the database is empty (and registration is open and the DB is writable),
   `GET /login` and the login form of `/oidc/auth` redirect to `/register` —
   there is no account to sign in with yet.
+- A successful registration signs the new user in (the 201 response sets the
+  session cookie) and the success page links to the first client's site
+  (`FirstClient`), so the bootstrap admin reaches the app with a single
+  password entry — the relying party's OIDC flow completes silently on the
+  fresh session.
 - `users.allowBootstrap: true` (default false) opens `/register` for the
   *first user only* when self-registration is off: while the database is
   empty, registration works (and grants the bootstrap admin), then closes

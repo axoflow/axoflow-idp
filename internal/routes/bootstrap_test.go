@@ -267,3 +267,55 @@ func TestRegister_BootstrapWindowCloses(t *testing.T) {
 		t.Errorf("second registration status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
+
+// A successful registration signs the new user in: the response carries a
+// session cookie that authenticates subsequent requests, so the success page
+// can hand the user straight to the relying party without a login stop.
+func TestRegister_AutoLogin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.json")
+	if err := os.WriteFile(path, []byte(`[]`), 0o600); err != nil {
+		t.Fatalf("write users: %v", err)
+	}
+	u, err := user.New(user.Config{FilePath: path, AllowBootstrap: true, UserAdminGroup: "admins"})
+	if err != nil {
+		t.Fatalf("user store: %v", err)
+	}
+	tpl, err := parseTemplates(filepath.Join("..", "..", "templates"), "")
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+	r := &Routes{session: session.New(), user: u, template: tpl, csrfKey: generateCSRFKey()}
+
+	form := url.Values{
+		"username":         {"first"},
+		"email":            {"first@example.com"},
+		"password":         {"password123"},
+		"password_confirm": {"password123"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.Register(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("registration status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatal("registration response did not set a session cookie")
+	}
+
+	// The session must authenticate: /login with it redirects to the profile.
+	req = httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.AddCookie(sessionCookie)
+	rec = httptest.NewRecorder()
+	r.Login(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
+		t.Errorf("GET /login with session = %d %q, want 302 /", rec.Code, rec.Header().Get("Location"))
+	}
+}

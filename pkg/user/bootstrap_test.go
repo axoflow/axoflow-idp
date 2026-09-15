@@ -254,9 +254,12 @@ func TestSelfRegister_Policy(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 
-			err = u.SelfRegister("carol", "carolpass1", []string{RoleUser}, "carol@example.com")
+			id, err := u.SelfRegister("carol", "carolpass1", []string{RoleUser}, "carol@example.com")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("SelfRegister error = %v, want %v", err, tt.wantErr)
+			}
+			if err == nil && id == "" {
+				t.Error("SelfRegister returned an empty id")
 			}
 			if tt.wantErr != nil {
 				return
@@ -289,7 +292,7 @@ func TestSelfRegister_ConcurrentBootstrapWindowAdmitsOne(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			username := string(rune('a'+i)) + "user"
-			switch err := u.SelfRegister(username, "password1", []string{RoleUser}, ""); {
+			switch _, err := u.SelfRegister(username, "password1", []string{RoleUser}, ""); {
 			case err == nil:
 				succeeded.Add(1)
 			case errors.Is(err, ErrRegistrationClosed):
