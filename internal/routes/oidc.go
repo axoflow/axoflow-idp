@@ -128,7 +128,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	// it; an unregistered URI is rejected in place rather than turned into an
 	// open redirect (RFC 6749 §4.1.2.1).
 	if err := r.oidc.ValidateRedirect(authReq.ClientID, authReq.RedirectUri); err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		r.renderError(res, req, http.StatusBadRequest, "Invalid Request", err.Error())
 		return
 	}
 
@@ -141,6 +141,13 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		var err error
 		user, err = r.getUserFromSession(req)
 		if err != nil {
+			// Nobody can sign in yet; send the visitor to create the first
+			// (admin) account. The OIDC flow is abandoned, and the relying
+			// party restarts it once the user has an account to log in with.
+			if r.needsBootstrap() {
+				http.Redirect(res, req, r.url("/register"), http.StatusFound)
+				return
+			}
 			if err := r.template.ExecuteTemplate(res, "login.html", nil); err != nil {
 				slog.Error("failed to render login template", "error", err)
 			}

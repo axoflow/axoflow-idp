@@ -46,7 +46,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if !r.validateCSRF(req, sessionCookie.Value) {
-			http.Error(res, "Invalid CSRF token", http.StatusForbidden)
+			r.renderError(res, req, http.StatusForbidden, "Invalid Request", "The form has expired. Please go back and try again.")
 			return
 		}
 
@@ -110,11 +110,11 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Error(res, "Unauthorized", http.StatusUnauthorized)
+		r.renderError(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.")
 		return
 	}
 	if !r.user.IsAdmin(admin) {
-		http.Error(res, "Forbidden: Admin access required", http.StatusForbidden)
+		r.renderError(res, req, http.StatusForbidden, "Access Denied", "Admin access is required for this page.")
 		return
 	}
 
@@ -124,23 +124,23 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 		return
 	}
 	if !r.validateCSRF(req, sessionCookie.Value) {
-		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
+		r.renderError(res, req, http.StatusForbidden, "Invalid Request", "The form has expired. Please go back and try again.")
 		return
 	}
 
 	userID := req.Form.Get("user_id")
 	if userID == "" {
-		http.Error(res, "Invalid user ID", http.StatusBadRequest)
+		r.renderError(res, req, http.StatusBadRequest, "Invalid Request", "Invalid user ID.")
 		return
 	}
 	if userID == admin.ID {
-		http.Error(res, "Cannot create a reset link for yourself; use Change Password instead", http.StatusBadRequest)
+		r.renderAdminPanel(res, req, admin, "", "", "Cannot create a reset link for yourself; use Change Password instead")
 		return
 	}
 
 	target, ok := r.user.Get(userID)
 	if !ok {
-		http.Error(res, "Target user not found", http.StatusBadRequest)
+		r.renderAdminPanel(res, req, admin, "", "", "Target user not found")
 		return
 	}
 
@@ -153,7 +153,7 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 
 	slog.Info("admin created password reset link", "admin", admin.Username, "target_user_id", userID)
 
-	r.renderAdminPanel(res, req, admin, r.resetLinkURL(token), target.Username)
+	r.renderAdminPanel(res, req, admin, r.resetLinkURL(token), target.Username, "")
 }
 
 // resetLinkURL builds the absolute password-reset URL from the configured base
