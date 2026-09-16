@@ -130,11 +130,8 @@ func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []s
 		return errors.New("user is not an admin")
 	}
 
-	// An admin cannot remove the admin group from themselves. Demoting another
-	// admin always leaves the caller as an admin, so together with the
-	// self-delete guard in AdminDelete this keeps at least one admin around:
-	// the last admin demoting themselves would leave the deployment with no
-	// admin at all, with no way back short of hand-editing the user file.
+	// With the self-delete guard in AdminDelete this keeps at least one admin:
+	// the caller is still one after every operation.
 	if adminID == targetID && !slices.Contains(groups, u.UserAdminGroup) {
 		return errors.New("cannot remove the admin group from yourself")
 	}

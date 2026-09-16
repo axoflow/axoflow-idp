@@ -82,9 +82,8 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 	}
 }
 
-// wantsInlineError reports whether the request came from the admin panel's
-// fetch-based modal forms, which show the error inside the modal instead of a
-// full page render. Plain form posts (no JS) keep the panel-banner fallback.
+// wantsInlineError reports whether the request came from one of the admin
+// panel's fetch-based modal forms, which show the error inside the modal.
 func wantsInlineError(req *http.Request) bool {
 	return req.Header.Get("X-Requested-With") == "fetch"
 }

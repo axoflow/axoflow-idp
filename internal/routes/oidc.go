@@ -141,9 +141,8 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		var err error
 		user, err = r.getUserFromSession(req)
 		if err != nil {
-			// Nobody can sign in yet; send the visitor to create the first
-			// (admin) account. The OIDC flow is abandoned, and the relying
-			// party restarts it once the user has an account to log in with.
+			// The OIDC request is dropped; the relying party restarts it once
+			// the first account exists.
 			if r.needsBootstrap() {
 				http.Redirect(res, req, r.url("/register"), http.StatusFound)
 				return

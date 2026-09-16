@@ -29,8 +29,7 @@ import (
 )
 
 // newBootstrapRoutes builds a Routes over a user database with the given
-// contents and policy, so the empty-database ("not bootstrapped yet") paths
-// can be exercised. cfg.FilePath is filled in by the helper.
+// contents and policy. cfg.FilePath is filled in by the helper.
 func newBootstrapRoutes(t *testing.T, users string, cfg user.Config) *Routes {
 	t.Helper()
 	cfg.FilePath = filepath.Join(t.TempDir(), "users.json")
@@ -167,9 +166,6 @@ func TestLogin_PostIsNotRedirectedWhenDatabaseIsEmpty(t *testing.T) {
 	}
 }
 
-// A self-demotion attempt from the admin panel's fetch-based modal gets a
-// plain-text error (shown inside the modal); a plain form post gets the full
-// panel with the error banner.
 func TestAdminUpdateUserGroups_SelfDemotionErrorModes(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -210,8 +206,6 @@ func TestAdminUpdateUserGroups_SelfDemotionErrorModes(t *testing.T) {
 	}
 }
 
-// A registration that loses the bootstrap race (or arrives after the window
-// closed) gets a 403 from the POST as well, enforced inside user.SelfRegister.
 func TestRegister_BootstrapWindowCloses(t *testing.T) {
 	r := newBootstrapRoutes(t, `[]`, user.Config{AllowBootstrap: true, UserAdminGroup: "admins"})
 
@@ -223,9 +217,6 @@ func TestRegister_BootstrapWindowCloses(t *testing.T) {
 	}
 }
 
-// A successful registration signs the new user in: the response carries a
-// session cookie that authenticates subsequent requests, so the success page
-// can hand the user straight to the relying party without a login stop.
 func TestRegister_AutoLogin(t *testing.T) {
 	r := newBootstrapRoutes(t, `[]`, user.Config{AllowBootstrap: true, UserAdminGroup: "admins"})
 

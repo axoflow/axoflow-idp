@@ -19,11 +19,8 @@ import (
 	"net/http"
 )
 
-// renderError renders the styled error page for browser-facing failures.
-// Requests from the admin panel's fetch-based modal forms get plain text
-// instead (the message is shown inline in the modal). Protocol endpoints
-// (/token, /revoke, userinfo) answer machine clients with plain http.Error
-// and never come here.
+// renderError renders the error page; the admin panel's fetch-based modal
+// forms get the message as plain text instead.
 func (r *Routes) renderError(res http.ResponseWriter, req *http.Request, status int, title, message string) {
 	if wantsInlineError(req) {
 		http.Error(res, message, status)
@@ -40,8 +37,6 @@ func (r *Routes) renderError(res http.ResponseWriter, req *http.Request, status 
 	}
 }
 
-// renderSessionExpired, renderAdminRequired, renderFormExpired and
-// renderInvalidUserID are the guard failures every admin write handler shares.
 func (r *Routes) renderSessionExpired(res http.ResponseWriter, req *http.Request) {
 	r.renderError(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.")
 }

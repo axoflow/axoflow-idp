@@ -22,7 +22,8 @@ library: the `unittest` framework manages/runs the scenarios and `urllib` +
 
 Each scenario is a TestCase; the server (and a fresh users DB) is started per
 class via setUpClass, so cases are isolated. Read-write cases run against a
-normal config, the static case against `static: true`.
+normal config, the static case against `static: true`, the bootstrap case
+against `allowBootstrap: true` and an empty users file.
 
 Usage:
     python3 scripts/e2e.py            # run all scenarios

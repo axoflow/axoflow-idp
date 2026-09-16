@@ -521,9 +521,6 @@
         openUpdateGroupsModal(button.getAttribute('data-user-id'), button.getAttribute('data-username'), groups);
     }
 
-    // showModalError / clearModalError toggle the error line inside a modal, so
-    // a rejected operation keeps the modal open with the reason instead of
-    // navigating to an error page.
     function showModalError(id, message) {
         const el = document.getElementById(id);
         el.textContent = message;
@@ -536,9 +533,8 @@
         el.hidden = true;
     }
 
-    // submitModalForm posts the form with fetch; the X-Requested-With header
-    // makes the server answer errors as plain text for the modal's error line.
-    // On success the page reloads to show the updated user table.
+    // The X-Requested-With header makes the server answer errors as plain
+    // text for the modal's error line.
     function submitModalForm(form, errorId) {
         fetch(form.action, {
             method: 'POST',

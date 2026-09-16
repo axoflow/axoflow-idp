@@ -104,8 +104,6 @@ func TestRegister_FirstUserBecomesAdmin(t *testing.T) {
 	}
 }
 
-// A memory-only database (no FilePath) starts empty on every boot, so the
-// bootstrap admin grant must not arm there: it would repeat on each restart.
 func TestRegister_MemoryOnlyDatabaseDoesNotBootstrapAdmin(t *testing.T) {
 	u, err := New(Config{UserAdminGroup: "admins"})
 	if err != nil {

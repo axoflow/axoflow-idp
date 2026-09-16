@@ -65,7 +65,7 @@ scripts/e2e.py           # stdlib-only end-to-end tests
 ## Endpoints
 
 - **OIDC**: `/.well-known/openid-configuration`, `/oidc/auth`, `/token`, `/oidc/jwks`, `/oidc/userinfo`, `/revoke`
-- **Auth / session**: `/` (profile), `/login`, `/logout`, `/register` (if self-registration is enabled)
+- **Auth / session**: `/` (profile), `/login`, `/logout`, `/register` (with `selfRegistration` or `allowBootstrap`)
 - **Self-service**: `/password` (change), `/set-password?token=…` (admin-issued reset link)
 - **Admin** (`userAdminGroup` members): `/admin`, `/admin/users/api`, plus writes `/admin/register` and `/admin/users/{delete,reset-password,update-groups,reset-link}`
 
@@ -96,30 +96,20 @@ in `tokenstore`.
   operation returns `user.ErrReadOnly`, the write routes are not registered,
   and the admin panel hides its write controls (lets the DB be mounted from a
   read-only source such as a Kubernetes Secret).
-- Bootstrap: registering into an *empty* user database puts the new user in
+- Bootstrap: the first user registered into an *empty* database joins
   `users.userAdminGroup`, so a fresh deployment has an admin without anyone
-  hand-editing `users.json`. The check sits in `user.register` under the write
-  lock, so concurrent first registrations still yield exactly one admin. It
-  requires a persistent database (`filePath` set) — a memory-only database is
-  empty after every restart, which would re-arm the grant each boot. While
-  the database is empty (and registration is open and the DB is writable),
-  `GET /login` and the login form of `/oidc/auth` redirect to `/register` —
-  there is no account to sign in with yet.
-- A successful registration signs the new user in (the 201 response sets the
-  session cookie) and the success page links to the first client's site
-  (`FirstClient`), so the bootstrap admin reaches the app with a single
-  password entry — the relying party's OIDC flow completes silently on the
-  fresh session.
+  hand-editing `users.json`. It needs a persistent database (`filePath`);
+  a memory-only one is empty after every restart. While the database is
+  empty and `/register` can create a user, `GET /login` and the login form
+  of `/oidc/auth` redirect to `/register`.
+- A successful registration sets the session cookie and the success page
+  links to the first client's site, so the bootstrap admin reaches the app
+  with a single password entry.
 - `users.allowBootstrap: true` (default false) opens `/register` for the
-  *first user only* when self-registration is off: while the database is
-  empty, registration works (and grants the bootstrap admin), then closes
-  again. The closing is race-free (`user.SelfRegister` checks the policy
-  under the write lock), and config validation requires a persistent,
-  non-static database with it.
-- The deployment can never lose its last admin through the admin panel:
-  admins cannot delete themselves (`AdminDelete`) or remove the admin group
-  from themselves (`AdminUpdateUserGroups`), so every admin operation leaves
-  the caller as an admin.
+  first user only when self-registration is off. Config validation requires
+  a persistent, non-static database with it.
+- Admins cannot delete themselves or remove their own admin group, so the
+  admin panel can never lose the last admin.
 - `baseUrl` may carry a path (e.g. `https://host/idp`). Its path becomes the
   prefix every route, redirect, cookie and template link is scoped to, so a
   reverse proxy must pass the prefix through instead of stripping it.

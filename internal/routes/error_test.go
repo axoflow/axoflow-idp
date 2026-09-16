@@ -23,9 +23,6 @@ import (
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
-// Browser-facing failures render the styled error page; requests from the
-// admin panel's fetch-based modals keep getting plain text for the inline
-// error line.
 func TestRenderError_Modes(t *testing.T) {
 	r := newTestRoutes(t, false)
 
@@ -76,7 +73,6 @@ func TestNotFound_RendersStyledPage(t *testing.T) {
 	}
 }
 
-// GET /register with registration closed renders the styled page too.
 func TestRegister_DisabledRendersStyledPage(t *testing.T) {
 	r := newBootstrapRoutes(t, `[{"ID":"alice","Username":"alice"}]`, user.Config{UserAdminGroup: "admins"})
 	rec := httptest.NewRecorder()

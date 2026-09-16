@@ -39,10 +39,9 @@ const (
 
 type Config struct {
 	SelfRegistration bool `json:"selfRegistration"`
-	// AllowBootstrap opens self-service registration for the very first user
-	// only: while the database is empty, /register works even with
-	// SelfRegistration off, and the account becomes the bootstrap admin. As
-	// soon as one user exists, registration closes again.
+	// AllowBootstrap opens /register for the first user only: while the
+	// database is empty, registration works with SelfRegistration off, and
+	// that account becomes the bootstrap admin.
 	AllowBootstrap  bool       `json:"allowBootstrap"`
 	UserAdminGroup  string     `json:"userAdminGroup"`
 	Defaults        []UserInfo `json:"users"`
@@ -60,9 +59,8 @@ type Config struct {
 // configured as static (read-only).
 var ErrReadOnly = errors.New("user database is read-only")
 
-// ErrRegistrationClosed is returned by SelfRegister when neither
-// SelfRegistration nor an AllowBootstrap empty-database window permits
-// creating the account.
+// ErrRegistrationClosed is returned by SelfRegister when RegistrationOpen is
+// false.
 var ErrRegistrationClosed = errors.New("registration is closed")
 
 // ErrWeakPassword is wrapped by validatePassword when a password does not meet
@@ -156,19 +154,16 @@ func (u *User) Get(id string) (UserInfo, bool) {
 	return u.users[i], true
 }
 
-// Register creates a user without consulting the self-registration policy; it
-// is the entry point for already-authorized callers (the admin paths).
+// Register creates a user for an already-authorized caller (the admin paths);
+// it does not consult RegistrationOpen.
 func (u *User) Register(username string, password string, groups []string, email string) error {
 	_, err := u.registerWithPassword(username, password, groups, email, false)
 	return err
 }
 
 // SelfRegister creates a user through the public registration form and returns
-// the new user's ID (so the caller can start a session for it). Unlike
-// Register it enforces the self-registration policy under the write lock: the
-// registration is allowed when SelfRegistration is enabled, or — with
-// AllowBootstrap — while the database is still empty (the account then becomes
-// the bootstrap admin). Otherwise it returns ErrRegistrationClosed.
+// the new user's ID. It checks RegistrationOpen under the write lock and
+// returns ErrRegistrationClosed when the form is closed.
 func (u *User) SelfRegister(username string, password string, groups []string, email string) (string, error) {
 	return u.registerWithPassword(username, password, groups, email, true)
 }
@@ -195,9 +190,8 @@ func (u *User) RegisterLocked(username string, groups []string, email string) (s
 }
 
 // register appends a user with an already-computed password hash, returning the
-// user's ID on success. selfService marks a public-form registration, which is
-// subject to the self-registration policy; authorized (admin) callers pass
-// false.
+// user's ID on success. selfService marks a public-form registration, which
+// RegistrationOpen governs.
 func (u *User) register(id, username, hashedPassword string, groups []string, email string, selfService bool) (string, error) {
 	if u.Static {
 		return "", ErrReadOnly
@@ -206,20 +200,15 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	// The policy check shares the lock with the append, so with AllowBootstrap
-	// alone the window really closes after the first user: a concurrent burst
-	// cannot register a second account.
+	// Checked under the lock, so a concurrent burst cannot slip a second
+	// account through the bootstrap window.
 	if selfService && !u.registrationOpen() {
 		return "", ErrRegistrationClosed
 	}
 
-	// Bootstrap: the very first user in an empty database becomes an admin, so
-	// a fresh deployment is manageable without hand-editing the user file. The
-	// check lives under the lock, which makes it race-free: of two concurrent
-	// registrations only the one that appends first sees an empty database.
-	// It requires a persistent database (FilePath set): a memory-only database
-	// starts empty on every boot, which would re-arm the grant on each restart
-	// instead of once per deployment.
+	// The first user becomes an admin, so a fresh deployment is manageable
+	// without hand-editing the user file. A memory-only database is empty on
+	// every boot and would re-arm the grant each restart, hence FilePath.
 	if len(u.users) == 0 && u.UserAdminGroup != "" && u.FilePath != "" && !slices.Contains(groups, u.UserAdminGroup) {
 		groups = append(slices.Clone(groups), u.UserAdminGroup)
 		slog.Info("first user in an empty database registered as admin", "username", username, "group", u.UserAdminGroup)
@@ -248,9 +237,7 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 	return id, nil
 }
 
-// Count reports how many users the database holds. An empty database means the
-// deployment has not been bootstrapped yet: the first registration becomes an
-// admin (see register) and the login page points there instead.
+// Count reports how many users the database holds.
 func (u *User) Count() int {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -260,8 +247,7 @@ func (u *User) Count() int {
 
 // RegistrationOpen reports whether the public registration form may create an
 // account: always with SelfRegistration, or with AllowBootstrap while the
-// database is still empty. Pages use it to pick what to render; the binding
-// check is the one register makes under the write lock.
+// database is empty. register makes the binding check under the write lock.
 func (u *User) RegistrationOpen() bool {
 	u.mu.RLock()
 	defer u.mu.RUnlock()

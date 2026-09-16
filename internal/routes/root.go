@@ -104,11 +104,8 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// needsBootstrap reports whether the deployment has no users yet and the
-// registration form can create the first one. The login form is useless in
-// that state, so the sign-in paths send the visitor to /register, where the
-// first user becomes an admin. main.go registers /register under a superset
-// of this condition, so the redirect never points at a missing route.
+// needsBootstrap reports whether there is no user yet and the registration
+// form can create the first one. The sign-in paths then redirect to /register.
 func (r *Routes) needsBootstrap() bool {
 	return !r.user.Static && r.user.Count() == 0 && r.user.RegistrationOpen()
 }
@@ -240,8 +237,6 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, user.ErrRegistrationClosed) {
-				// Lost the race for the bootstrap window (or the policy
-				// changed): registration is no longer open.
 				status = http.StatusForbidden
 			}
 			res.WriteHeader(status)
@@ -259,9 +254,8 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		// The registrant just proved knowledge of the password, so sign them in
-		// right away; the success page can then hand them straight to the
-		// relying party, whose OIDC flow completes silently on this session.
+		// The registrant just proved the password, so the success page can
+		// hand them to the relying party without a login stop.
 		r.setSessionCookie(res, r.session.Create(id))
 
 		var data struct{ SiteName, SiteURL string }
