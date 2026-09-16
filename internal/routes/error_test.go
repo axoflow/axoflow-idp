@@ -53,7 +53,7 @@ func TestRenderError_Modes(t *testing.T) {
 			}
 			isHTML := strings.Contains(rec.Body.String(), "<!doctype html>")
 			if isHTML != tt.wantHTML {
-				t.Errorf("html = %v, want %v (body %q)", isHTML, tt.wantHTML, rec.Body.String()[:80])
+				t.Errorf("html = %v, want %v (body %q)", isHTML, tt.wantHTML, head(rec.Body.String(), 80))
 			}
 			if !strings.Contains(rec.Body.String(), "Admin access is required") {
 				t.Errorf("body does not contain the message")
@@ -87,6 +87,11 @@ func TestRegister_DisabledRendersStyledPage(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 	if !strings.Contains(rec.Body.String(), "Registration Closed") {
-		t.Errorf("body does not contain the styled title, got %q", rec.Body.String()[:120])
+		t.Errorf("body does not contain the styled title, got %q", head(rec.Body.String(), 120))
 	}
+}
+
+// head returns the first n bytes of s for a failure message.
+func head(s string, n int) string {
+	return s[:min(len(s), n)]
 }
