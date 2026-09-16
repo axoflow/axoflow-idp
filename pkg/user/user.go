@@ -209,11 +209,8 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 	// The policy check shares the lock with the append, so with AllowBootstrap
 	// alone the window really closes after the first user: a concurrent burst
 	// cannot register a second account.
-	if selfService {
-		open := u.SelfRegistration || (u.AllowBootstrap && len(u.users) == 0)
-		if !open {
-			return "", ErrRegistrationClosed
-		}
+	if selfService && !u.registrationOpen() {
+		return "", ErrRegistrationClosed
 	}
 
 	// Bootstrap: the very first user in an empty database becomes an admin, so
@@ -259,6 +256,22 @@ func (u *User) Count() int {
 	defer u.mu.RUnlock()
 
 	return len(u.users)
+}
+
+// RegistrationOpen reports whether the public registration form may create an
+// account: always with SelfRegistration, or with AllowBootstrap while the
+// database is still empty. Pages use it to pick what to render; the binding
+// check is the one register makes under the write lock.
+func (u *User) RegistrationOpen() bool {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
+	return u.registrationOpen()
+}
+
+// registrationOpen is RegistrationOpen for callers that already hold u.mu.
+func (u *User) registrationOpen() bool {
+	return u.SelfRegistration || (u.AllowBootstrap && len(u.users) == 0)
 }
 
 func (u *User) KnownGroups() []string {

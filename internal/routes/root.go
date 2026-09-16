@@ -104,15 +104,13 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// needsBootstrap reports whether the deployment has no users yet and can still
-// grow one through self-registration (always open, or open just for the first
-// user via AllowBootstrap). In that state the login form is useless (no
-// account can authenticate), so the sign-in paths send the visitor to
-// /register instead, where the first user is created as an admin. The guard
-// mirrors the condition main.go registers /register under, so it can never
-// redirect to a route that does not exist.
+// needsBootstrap reports whether the deployment has no users yet and the
+// registration form can create the first one. The login form is useless in
+// that state, so the sign-in paths send the visitor to /register, where the
+// first user becomes an admin. main.go registers /register under a superset
+// of this condition, so the redirect never points at a missing route.
 func (r *Routes) needsBootstrap() bool {
-	return (r.user.SelfRegistration || r.user.AllowBootstrap) && !r.user.Static && r.user.Count() == 0
+	return !r.user.Static && r.user.Count() == 0 && r.user.RegistrationOpen()
 }
 
 func (r *Routes) loginTemplateData(message string) struct {
@@ -200,10 +198,9 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// GET-level policy check; the POST is enforced race-free again inside
-	// user.SelfRegister, under the same lock as the append.
-	open := r.user.SelfRegistration || (r.user.AllowBootstrap && r.user.Count() == 0)
-	if !open {
+	// Picks the page; the binding check is in user.SelfRegister, under the
+	// same lock as the append.
+	if !r.user.RegistrationOpen() {
 		r.renderError(res, req, http.StatusForbidden, "Registration Closed", "Self registration is disabled.")
 		return
 	}
