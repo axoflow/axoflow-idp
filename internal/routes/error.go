@@ -19,11 +19,11 @@ import (
 	"net/http"
 )
 
-// renderError renders the styled error page for browser-facing failures, so a
-// visitor gets a proper page instead of bare plain text. Requests from the
-// admin panel's fetch-based modal forms still get plain text (the message is
-// shown inline in the modal). Protocol endpoints (/token, /revoke, userinfo)
-// keep answering machine clients with plain http.Error and never come here.
+// renderError renders the styled error page for browser-facing failures.
+// Requests from the admin panel's fetch-based modal forms get plain text
+// instead (the message is shown inline in the modal). Protocol endpoints
+// (/token, /revoke, userinfo) answer machine clients with plain http.Error
+// and never come here.
 func (r *Routes) renderError(res http.ResponseWriter, req *http.Request, status int, title, message string) {
 	if wantsInlineError(req) {
 		http.Error(res, message, status)
@@ -38,6 +38,24 @@ func (r *Routes) renderError(res http.ResponseWriter, req *http.Request, status 
 	}{Status: status, Title: title, Message: message}); err != nil {
 		slog.Error("failed to render error template", "error", err)
 	}
+}
+
+// renderSessionExpired, renderAdminRequired, renderFormExpired and
+// renderInvalidUserID are the guard failures every admin write handler shares.
+func (r *Routes) renderSessionExpired(res http.ResponseWriter, req *http.Request) {
+	r.renderError(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.")
+}
+
+func (r *Routes) renderAdminRequired(res http.ResponseWriter, req *http.Request) {
+	r.renderError(res, req, http.StatusForbidden, "Access Denied", "Admin access is required for this page.")
+}
+
+func (r *Routes) renderFormExpired(res http.ResponseWriter, req *http.Request) {
+	r.renderError(res, req, http.StatusForbidden, "Invalid Request", "The form has expired. Please go back and try again.")
+}
+
+func (r *Routes) renderInvalidUserID(res http.ResponseWriter, req *http.Request) {
+	r.renderError(res, req, http.StatusBadRequest, "Invalid Request", "Invalid user ID.")
 }
 
 // NotFound is the styled 404 page; the mux routes unknown paths here.

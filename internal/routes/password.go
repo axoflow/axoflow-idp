@@ -46,7 +46,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if !r.validateCSRF(req, sessionCookie.Value) {
-			r.renderError(res, req, http.StatusForbidden, "Invalid Request", "The form has expired. Please go back and try again.")
+			r.renderFormExpired(res, req)
 			return
 		}
 
@@ -110,11 +110,11 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		r.renderError(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.")
+		r.renderSessionExpired(res, req)
 		return
 	}
 	if !r.user.IsAdmin(admin) {
-		r.renderError(res, req, http.StatusForbidden, "Access Denied", "Admin access is required for this page.")
+		r.renderAdminRequired(res, req)
 		return
 	}
 
@@ -124,13 +124,13 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 		return
 	}
 	if !r.validateCSRF(req, sessionCookie.Value) {
-		r.renderError(res, req, http.StatusForbidden, "Invalid Request", "The form has expired. Please go back and try again.")
+		r.renderFormExpired(res, req)
 		return
 	}
 
 	userID := req.Form.Get("user_id")
 	if userID == "" {
-		r.renderError(res, req, http.StatusBadRequest, "Invalid Request", "Invalid user ID.")
+		r.renderInvalidUserID(res, req)
 		return
 	}
 	if userID == admin.ID {

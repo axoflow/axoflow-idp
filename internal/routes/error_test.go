@@ -19,6 +19,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 // Browser-facing failures render the styled error page; requests from the
@@ -76,7 +78,7 @@ func TestNotFound_RendersStyledPage(t *testing.T) {
 
 // GET /register with registration closed renders the styled page too.
 func TestRegister_DisabledRendersStyledPage(t *testing.T) {
-	r := newBootstrapRoutes(t, `[{"ID":"alice","Username":"alice"}]`, false, false)
+	r := newBootstrapRoutes(t, `[{"ID":"alice","Username":"alice"}]`, user.Config{UserAdminGroup: "admins"})
 	rec := httptest.NewRecorder()
 
 	r.Register(rec, httptest.NewRequest(http.MethodGet, "/register", nil))

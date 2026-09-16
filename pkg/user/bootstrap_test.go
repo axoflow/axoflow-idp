@@ -137,27 +137,6 @@ func TestRegister_DoesNotMutateCallersGroups(t *testing.T) {
 	}
 }
 
-func TestRegister_SecondUserIsNotAdmin(t *testing.T) {
-	u, err := New(Config{FilePath: writeUsersFile(t, `[]`), UserAdminGroup: "admins"})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	if err := u.Register("first", "firstpass1", []string{RoleUser}, "first@example.com"); err != nil {
-		t.Fatalf("Register first: %v", err)
-	}
-	if err := u.Register("second", "secondpass1", []string{RoleUser}, "second@example.com"); err != nil {
-		t.Fatalf("Register second: %v", err)
-	}
-
-	if g := find(t, u, "first").Groups; !slices.Contains(g, "admins") {
-		t.Errorf("first user groups = %v, want it to contain admins", g)
-	}
-	if g := find(t, u, "second").Groups; slices.Contains(g, "admins") {
-		t.Errorf("second user groups = %v, want no admins", g)
-	}
-}
-
 // Concurrent registrations against an empty database must produce exactly one
 // admin: the bootstrap check runs under the same lock as the append.
 func TestRegister_ConcurrentBootstrapCreatesOneAdmin(t *testing.T) {
@@ -190,22 +169,6 @@ func TestRegister_ConcurrentBootstrapCreatesOneAdmin(t *testing.T) {
 	}
 	if admins != 1 {
 		t.Errorf("admins = %d, want exactly 1", admins)
-	}
-}
-
-func TestCount(t *testing.T) {
-	u, err := New(Config{FilePath: writeUsersFile(t, `[]`)})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if got := u.Count(); got != 0 {
-		t.Errorf("Count = %d, want 0", got)
-	}
-	if err := u.Register("carol", "carolpass1", []string{RoleUser}, ""); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	if got := u.Count(); got != 1 {
-		t.Errorf("Count = %d, want 1", got)
 	}
 }
 

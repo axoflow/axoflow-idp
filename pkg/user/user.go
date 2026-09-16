@@ -42,8 +42,7 @@ type Config struct {
 	// AllowBootstrap opens self-service registration for the very first user
 	// only: while the database is empty, /register works even with
 	// SelfRegistration off, and the account becomes the bootstrap admin. As
-	// soon as one user exists, registration closes again (enforced under the
-	// write lock, so a concurrent burst cannot slip a second account in).
+	// soon as one user exists, registration closes again.
 	AllowBootstrap  bool       `json:"allowBootstrap"`
 	UserAdminGroup  string     `json:"userAdminGroup"`
 	Defaults        []UserInfo `json:"users"`

@@ -24,25 +24,21 @@ import (
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/session"
+	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 // newBootstrapRoutes builds a Routes over a user database with the given
-// contents and self-registration setting, so the empty-database ("not
-// bootstrapped yet") paths can be exercised.
-func newBootstrapRoutes(t *testing.T, users string, selfRegistration, static bool) *Routes {
+// contents and policy, so the empty-database ("not bootstrapped yet") paths
+// can be exercised. cfg.FilePath is filled in by the helper.
+func newBootstrapRoutes(t *testing.T, users string, cfg user.Config) *Routes {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "users.json")
-	if err := os.WriteFile(path, []byte(users), 0o600); err != nil {
+	cfg.FilePath = filepath.Join(t.TempDir(), "users.json")
+	if err := os.WriteFile(cfg.FilePath, []byte(users), 0o600); err != nil {
 		t.Fatalf("write users: %v", err)
 	}
 
-	u, err := user.New(user.Config{
-		FilePath:         path,
-		Static:           static,
-		SelfRegistration: selfRegistration,
-		UserAdminGroup:   "admins",
-	})
+	u, err := user.New(cfg)
 	if err != nil {
 		t.Fatalf("user store: %v", err)
 	}
@@ -55,50 +51,75 @@ func newBootstrapRoutes(t *testing.T, users string, selfRegistration, static boo
 	return &Routes{
 		session:  session.New(),
 		user:     u,
+		oidc:     &oidc.Oidc{},
 		template: tpl,
 		baseURL:  "https://idp.example.com",
 		csrfKey:  generateCSRFKey(),
 	}
 }
 
+// postRegister submits the public registration form for username.
+func postRegister(t *testing.T, r *Routes, username string) *httptest.ResponseRecorder {
+	t.Helper()
+	form := url.Values{
+		"username":         {username},
+		"email":            {username + "@example.com"},
+		"password":         {"password123"},
+		"password_confirm": {"password123"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.Register(rec, req)
+	return rec
+}
+
 func TestLogin_RedirectsToRegisterWhenDatabaseIsEmpty(t *testing.T) {
+	const withUser = `[{"ID":"alice","Username":"alice","Groups":["user"]}]`
+
 	tests := []struct {
-		name             string
-		users            string
-		selfRegistration bool
-		static           bool
-		wantRedirect     bool
+		name         string
+		users        string
+		cfg          user.Config
+		wantRedirect bool
 	}{
 		{
-			name:             "empty database with self-registration",
-			users:            `[]`,
-			selfRegistration: true,
-			wantRedirect:     true,
+			name:         "empty database with self-registration",
+			users:        `[]`,
+			cfg:          user.Config{SelfRegistration: true},
+			wantRedirect: true,
 		},
 		{
-			name:             "empty database without self-registration",
-			users:            `[]`,
-			selfRegistration: false,
-			wantRedirect:     false,
+			name:         "empty database with allowBootstrap only",
+			users:        `[]`,
+			cfg:          user.Config{AllowBootstrap: true},
+			wantRedirect: true,
 		},
 		{
-			name:             "empty but static database",
-			users:            `[]`,
-			selfRegistration: true,
-			static:           true,
-			wantRedirect:     false,
+			name:  "empty database with registration closed",
+			users: `[]`,
 		},
 		{
-			name:             "database with a user",
-			users:            `[{"ID":"alice","Username":"alice","Groups":["user"]}]`,
-			selfRegistration: true,
-			wantRedirect:     false,
+			name:  "empty but static database",
+			users: `[]`,
+			cfg:   user.Config{SelfRegistration: true, Static: true},
+		},
+		{
+			name:  "database with a user and self-registration",
+			users: withUser,
+			cfg:   user.Config{SelfRegistration: true},
+		},
+		{
+			name:  "database with a user and allowBootstrap only",
+			users: withUser,
+			cfg:   user.Config{AllowBootstrap: true},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := newBootstrapRoutes(t, tt.users, tt.selfRegistration, tt.static)
+			tt.cfg.UserAdminGroup = "admins"
+			r := newBootstrapRoutes(t, tt.users, tt.cfg)
 			rec := httptest.NewRecorder()
 
 			r.Login(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
@@ -121,7 +142,7 @@ func TestLogin_RedirectsToRegisterWhenDatabaseIsEmpty(t *testing.T) {
 
 // The bootstrap redirect is scoped to the path prefix the IdP is served under.
 func TestLogin_BootstrapRedirectHonorsPrefix(t *testing.T) {
-	r := newBootstrapRoutes(t, `[]`, true, false)
+	r := newBootstrapRoutes(t, `[]`, user.Config{SelfRegistration: true, UserAdminGroup: "admins"})
 	r.prefix = "/idp"
 	rec := httptest.NewRecorder()
 
@@ -134,7 +155,7 @@ func TestLogin_BootstrapRedirectHonorsPrefix(t *testing.T) {
 
 // POST /login is left alone: Authenticate fails safely on an empty database.
 func TestLogin_PostIsNotRedirectedWhenDatabaseIsEmpty(t *testing.T) {
-	r := newBootstrapRoutes(t, `[]`, true, false)
+	r := newBootstrapRoutes(t, `[]`, user.Config{SelfRegistration: true, UserAdminGroup: "admins"})
 	req := httptest.NewRequest(http.MethodPost, "/login", nil)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -151,12 +172,12 @@ func TestLogin_PostIsNotRedirectedWhenDatabaseIsEmpty(t *testing.T) {
 // panel with the error banner.
 func TestAdminUpdateUserGroups_SelfDemotionErrorModes(t *testing.T) {
 	tests := []struct {
-		name       string
-		fetchMode  bool
-		wantInBody string
+		name      string
+		fetchMode bool
+		wantPanel bool
 	}{
-		{name: "fetch request gets plain text", fetchMode: true, wantInBody: "cannot remove the admin group from yourself"},
-		{name: "form post gets the panel with a banner", fetchMode: false, wantInBody: "<table"},
+		{name: "fetch request gets plain text", fetchMode: true, wantPanel: false},
+		{name: "form post gets the panel with a banner", fetchMode: false, wantPanel: true},
 	}
 
 	for _, tt := range tests {
@@ -178,52 +199,12 @@ func TestAdminUpdateUserGroups_SelfDemotionErrorModes(t *testing.T) {
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 			}
-			if !strings.Contains(rec.Body.String(), tt.wantInBody) {
-				t.Errorf("body does not contain %q", tt.wantInBody)
-			}
-			if !strings.Contains(rec.Body.String(), "cannot remove the admin group from yourself") {
+			body := rec.Body.String()
+			if !strings.Contains(body, "cannot remove the admin group from yourself") {
 				t.Errorf("body does not contain the error message")
 			}
-		})
-	}
-}
-
-// With AllowBootstrap alone (self-registration off), the login page redirects
-// to /register only while the database is empty.
-func TestLogin_AllowBootstrapRedirect(t *testing.T) {
-	tests := []struct {
-		name         string
-		users        string
-		wantRedirect bool
-	}{
-		{name: "empty database", users: `[]`, wantRedirect: true},
-		{name: "after the first user", users: `[{"ID":"alice","Username":"alice","Groups":["user"]}]`, wantRedirect: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "users.json")
-			if err := os.WriteFile(path, []byte(tt.users), 0o600); err != nil {
-				t.Fatalf("write users: %v", err)
-			}
-			u, err := user.New(user.Config{FilePath: path, AllowBootstrap: true, UserAdminGroup: "admins"})
-			if err != nil {
-				t.Fatalf("user store: %v", err)
-			}
-			tpl, err := parseTemplates(filepath.Join("..", "..", "templates"), "")
-			if err != nil {
-				t.Fatalf("parse templates: %v", err)
-			}
-			r := &Routes{session: session.New(), user: u, template: tpl, csrfKey: generateCSRFKey()}
-			rec := httptest.NewRecorder()
-
-			r.Login(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
-
-			if tt.wantRedirect && (rec.Code != http.StatusFound || rec.Header().Get("Location") != "/register") {
-				t.Errorf("got %d %q, want 302 /register", rec.Code, rec.Header().Get("Location"))
-			}
-			if !tt.wantRedirect && rec.Code != http.StatusOK {
-				t.Errorf("status = %d, want 200 (login form)", rec.Code)
+			if gotPanel := strings.Contains(body, "<table"); gotPanel != tt.wantPanel {
+				t.Errorf("body is the admin panel = %v, want %v", gotPanel, tt.wantPanel)
 			}
 		})
 	}
@@ -232,38 +213,12 @@ func TestLogin_AllowBootstrapRedirect(t *testing.T) {
 // A registration that loses the bootstrap race (or arrives after the window
 // closed) gets a 403 from the POST as well, enforced inside user.SelfRegister.
 func TestRegister_BootstrapWindowCloses(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "users.json")
-	if err := os.WriteFile(path, []byte(`[]`), 0o600); err != nil {
-		t.Fatalf("write users: %v", err)
-	}
-	u, err := user.New(user.Config{FilePath: path, AllowBootstrap: true, UserAdminGroup: "admins"})
-	if err != nil {
-		t.Fatalf("user store: %v", err)
-	}
-	tpl, err := parseTemplates(filepath.Join("..", "..", "templates"), "")
-	if err != nil {
-		t.Fatalf("parse templates: %v", err)
-	}
-	r := &Routes{session: session.New(), user: u, template: tpl, csrfKey: generateCSRFKey()}
+	r := newBootstrapRoutes(t, `[]`, user.Config{AllowBootstrap: true, UserAdminGroup: "admins"})
 
-	post := func(username string) *httptest.ResponseRecorder {
-		form := url.Values{
-			"username":         {username},
-			"email":            {username + "@example.com"},
-			"password":         {"password123"},
-			"password_confirm": {"password123"},
-		}
-		req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		rec := httptest.NewRecorder()
-		r.Register(rec, req)
-		return rec
-	}
-
-	if rec := post("first"); rec.Code != http.StatusCreated {
+	if rec := postRegister(t, r, "first"); rec.Code != http.StatusCreated {
 		t.Fatalf("first registration status = %d, want %d", rec.Code, http.StatusCreated)
 	}
-	if rec := post("second"); rec.Code != http.StatusForbidden {
+	if rec := postRegister(t, r, "second"); rec.Code != http.StatusForbidden {
 		t.Errorf("second registration status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
@@ -272,30 +227,9 @@ func TestRegister_BootstrapWindowCloses(t *testing.T) {
 // session cookie that authenticates subsequent requests, so the success page
 // can hand the user straight to the relying party without a login stop.
 func TestRegister_AutoLogin(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "users.json")
-	if err := os.WriteFile(path, []byte(`[]`), 0o600); err != nil {
-		t.Fatalf("write users: %v", err)
-	}
-	u, err := user.New(user.Config{FilePath: path, AllowBootstrap: true, UserAdminGroup: "admins"})
-	if err != nil {
-		t.Fatalf("user store: %v", err)
-	}
-	tpl, err := parseTemplates(filepath.Join("..", "..", "templates"), "")
-	if err != nil {
-		t.Fatalf("parse templates: %v", err)
-	}
-	r := &Routes{session: session.New(), user: u, template: tpl, csrfKey: generateCSRFKey()}
+	r := newBootstrapRoutes(t, `[]`, user.Config{AllowBootstrap: true, UserAdminGroup: "admins"})
 
-	form := url.Values{
-		"username":         {"first"},
-		"email":            {"first@example.com"},
-		"password":         {"password123"},
-		"password_confirm": {"password123"},
-	}
-	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	r.Register(rec, req)
+	rec := postRegister(t, r, "first")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("registration status = %d, want %d", rec.Code, http.StatusCreated)
 	}
@@ -311,7 +245,7 @@ func TestRegister_AutoLogin(t *testing.T) {
 	}
 
 	// The session must authenticate: /login with it redirects to the profile.
-	req = httptest.NewRequest(http.MethodGet, "/login", nil)
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
 	req.AddCookie(sessionCookie)
 	rec = httptest.NewRecorder()
 	r.Login(rec, req)

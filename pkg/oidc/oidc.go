@@ -169,7 +169,7 @@ type ClientInfo struct {
 }
 
 func (o *Oidc) FirstClient() *ClientInfo {
-	if o == nil || len(o.clients) == 0 {
+	if len(o.clients) == 0 {
 		return nil
 	}
 	uris := o.clients[0].registeredRedirectUris()
