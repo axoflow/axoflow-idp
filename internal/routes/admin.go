@@ -30,22 +30,28 @@ func (r *Routes) AdminPanel(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if !r.user.IsAdmin(admin) {
-		http.Error(res, "Forbidden: Admin access required", http.StatusForbidden)
+		r.renderAdminRequired(res, req)
 		return
 	}
 
-	r.renderAdminPanel(res, req, admin, "", "")
+	r.renderAdminPanel(res, req, admin, "", "", "")
 }
 
 // renderAdminPanel renders the admin panel. resetLink, when non-empty, surfaces
 // a freshly minted password-reset link for resetLinkUser so the admin can copy
 // it (the link is the secret, so it is shown once and never logged).
-func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, admin *user.UserInfo, resetLink, resetLinkUser string) {
+// errorMsg, when non-empty, is shown as an error banner and the response is a
+// 400, so a failed admin operation lands back on the panel.
+func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, admin *user.UserInfo, resetLink, resetLinkUser, errorMsg string) {
 	users, err := r.user.AdminList(admin.ID)
 	if err != nil {
 		slog.Error("failed to list users for admin panel", "admin", admin.Username, "error", err)
 		http.Error(res, "Failed to load user list", http.StatusInternalServerError)
 		return
+	}
+
+	if errorMsg != "" {
+		res.WriteHeader(http.StatusBadRequest)
 	}
 
 	sessionCookie, _ := req.Cookie("session")
@@ -59,6 +65,7 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 		Static        bool
 		ResetLink     string
 		ResetLinkUser string
+		Message       string
 	}{
 		Username:      admin.Username,
 		AdminID:       admin.ID,
@@ -69,9 +76,16 @@ func (r *Routes) renderAdminPanel(res http.ResponseWriter, req *http.Request, ad
 		Static:        r.user.Static,
 		ResetLink:     resetLink,
 		ResetLinkUser: resetLinkUser,
+		Message:       errorMsg,
 	}); err != nil {
 		slog.Error("failed to render admin template", "error", err)
 	}
+}
+
+// wantsInlineError reports whether the request came from one of the admin
+// panel's fetch-based modal forms, which show the error inside the modal.
+func wantsInlineError(req *http.Request) bool {
+	return req.Header.Get("X-Requested-With") == "fetch"
 }
 
 func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
@@ -82,7 +96,7 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if !r.user.IsAdmin(admin) {
-		http.Error(res, "Forbidden: Admin access required", http.StatusForbidden)
+		r.renderAdminRequired(res, req)
 		return
 	}
 
@@ -98,7 +112,7 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if !r.validateCSRF(req, sessionCookie.Value) {
-			http.Error(res, "Invalid CSRF token", http.StatusForbidden)
+			r.renderFormExpired(res, req)
 			return
 		}
 		username := req.Form.Get("username")
@@ -179,7 +193,7 @@ func (r *Routes) adminRegisterWithResetLink(res http.ResponseWriter, req *http.R
 	}
 
 	slog.Info("admin registered new user with reset link", "admin", admin.Username, "new_user", username)
-	r.renderAdminPanel(res, req, admin, r.resetLinkURL(token), username)
+	r.renderAdminPanel(res, req, admin, r.resetLinkURL(token), username, "")
 }
 
 func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
@@ -190,12 +204,12 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Error(res, "Unauthorized", http.StatusUnauthorized)
+		r.renderSessionExpired(res, req)
 		return
 	}
 
 	if !r.user.IsAdmin(admin) {
-		http.Error(res, "Forbidden: Admin access required", http.StatusForbidden)
+		r.renderAdminRequired(res, req)
 		return
 	}
 
@@ -205,17 +219,17 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if !r.validateCSRF(req, sessionCookie.Value) {
-		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
+		r.renderFormExpired(res, req)
 		return
 	}
 	userId := req.Form.Get("user_id")
 	if userId == "" {
-		http.Error(res, "Invalid user ID", http.StatusBadRequest)
+		r.renderInvalidUserID(res, req)
 		return
 	}
 
 	if err := r.user.AdminDelete(admin.ID, userId); err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		r.renderAdminPanel(res, req, admin, "", "", err.Error())
 		return
 	}
 
@@ -238,12 +252,12 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Error(res, "Unauthorized", http.StatusUnauthorized)
+		r.renderSessionExpired(res, req)
 		return
 	}
 
 	if !r.user.IsAdmin(admin) {
-		http.Error(res, "Forbidden: Admin access required", http.StatusForbidden)
+		r.renderAdminRequired(res, req)
 		return
 	}
 
@@ -253,12 +267,12 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 		return
 	}
 	if !r.validateCSRF(req, sessionCookie.Value) {
-		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
+		r.renderFormExpired(res, req)
 		return
 	}
 	userId := req.Form.Get("user_id")
 	if userId == "" {
-		http.Error(res, "Invalid user ID", http.StatusBadRequest)
+		r.renderInvalidUserID(res, req)
 		return
 	}
 
@@ -269,7 +283,11 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 	}
 
 	if err := r.user.AdminResetPassword(admin.ID, userId, newPassword); err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		if wantsInlineError(req) {
+			http.Error(res, err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.renderAdminPanel(res, req, admin, "", "", err.Error())
 		return
 	}
 
@@ -296,12 +314,12 @@ func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Reques
 
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Error(res, "Unauthorized", http.StatusUnauthorized)
+		r.renderSessionExpired(res, req)
 		return
 	}
 
 	if !r.user.IsAdmin(admin) {
-		http.Error(res, "Forbidden: Admin access required", http.StatusForbidden)
+		r.renderAdminRequired(res, req)
 		return
 	}
 
@@ -311,18 +329,22 @@ func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Reques
 		return
 	}
 	if !r.validateCSRF(req, sessionCookie.Value) {
-		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
+		r.renderFormExpired(res, req)
 		return
 	}
 	userId := req.Form.Get("user_id")
 	if userId == "" {
-		http.Error(res, "Invalid user ID", http.StatusBadRequest)
+		r.renderInvalidUserID(res, req)
 		return
 	}
 
 	groups := req.Form["groups"]
 	if err := r.user.AdminUpdateUserGroups(admin.ID, userId, groups); err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
+		if wantsInlineError(req) {
+			http.Error(res, err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.renderAdminPanel(res, req, admin, "", "", err.Error())
 		return
 	}
 
@@ -343,14 +365,15 @@ func (r *Routes) AdminUsersAPI(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// JSON endpoint: errors stay plain text so machine clients never get HTML.
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Error(res, "Unauthorized", http.StatusUnauthorized)
+		http.Error(res, "session expired", http.StatusUnauthorized)
 		return
 	}
 
 	if !r.user.IsAdmin(admin) {
-		http.Error(res, "Forbidden: Admin access required", http.StatusForbidden)
+		http.Error(res, "admin access required", http.StatusForbidden)
 		return
 	}
 

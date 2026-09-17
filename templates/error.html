@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>{{ .Title }}</title>
+    {{template "layout-head" .}}
+</head>
+<body>
+<div class="layout">
+    {{template "layout-logo" .}}
+
+    <div class="layout-right">
+        <div class="login-container">
+            <h1>{{ .Title }}</h1>
+            <div class="error">{{ .Status }} — {{ .Message }}</div>
+            <div class="account"><a href="{{ url .LinkURL }}">{{ .LinkText }}</a></div>
+        </div>
+    </div>
+</div>
+</body>
+</html>

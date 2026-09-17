@@ -131,6 +131,15 @@ func (c *config) Validate() error {
 		return errors.New("signingKey.filePath is required when generateIfMissing is false")
 	}
 
+	if c.Users != nil && c.Users.AllowBootstrap {
+		if c.Users.Static {
+			return errors.New("users.allowBootstrap cannot be combined with users.static (read-only database)")
+		}
+		if c.Users.FilePath == "" {
+			return errors.New("users.allowBootstrap requires users.filePath: without a persistent database the bootstrap window would reopen on every restart")
+		}
+	}
+
 	return nil
 }
 
@@ -146,7 +155,7 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 	rootPath := pathPrefix + "/"
 	handle("/", func(res http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != rootPath {
-			http.NotFound(res, req)
+			r.NotFound(res, req)
 			return
 		}
 		r.Index(res, req)
@@ -167,8 +176,12 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 		slog.Info("user database is static (read-only); user-mutating routes are disabled")
 	}
 
-	if u.SelfRegistration && !u.Static {
-		slog.Info("self-registration is enabled")
+	if (u.SelfRegistration || u.AllowBootstrap) && !u.Static {
+		if u.SelfRegistration {
+			slog.Info("self-registration is enabled")
+		} else {
+			slog.Info("bootstrap registration is enabled while the user database is empty")
+		}
 		handle("/register", r.Register)
 	}
 

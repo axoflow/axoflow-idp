@@ -46,7 +46,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if !r.validateCSRF(req, sessionCookie.Value) {
-			http.Error(res, "Invalid CSRF token", http.StatusForbidden)
+			r.renderFormExpired(res, req)
 			return
 		}
 
@@ -110,11 +110,11 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		http.Error(res, "Unauthorized", http.StatusUnauthorized)
+		r.renderSessionExpired(res, req)
 		return
 	}
 	if !r.user.IsAdmin(admin) {
-		http.Error(res, "Forbidden: Admin access required", http.StatusForbidden)
+		r.renderAdminRequired(res, req)
 		return
 	}
 
@@ -124,23 +124,23 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 		return
 	}
 	if !r.validateCSRF(req, sessionCookie.Value) {
-		http.Error(res, "Invalid CSRF token", http.StatusForbidden)
+		r.renderFormExpired(res, req)
 		return
 	}
 
 	userID := req.Form.Get("user_id")
 	if userID == "" {
-		http.Error(res, "Invalid user ID", http.StatusBadRequest)
+		r.renderInvalidUserID(res, req)
 		return
 	}
 	if userID == admin.ID {
-		http.Error(res, "Cannot create a reset link for yourself; use Change Password instead", http.StatusBadRequest)
+		r.renderAdminPanel(res, req, admin, "", "", "Cannot create a reset link for yourself; use Change Password instead")
 		return
 	}
 
 	target, ok := r.user.Get(userID)
 	if !ok {
-		http.Error(res, "Target user not found", http.StatusBadRequest)
+		r.renderAdminPanel(res, req, admin, "", "", "Target user not found")
 		return
 	}
 
@@ -153,7 +153,7 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 
 	slog.Info("admin created password reset link", "admin", admin.Username, "target_user_id", userID)
 
-	r.renderAdminPanel(res, req, admin, r.resetLinkURL(token), target.Username)
+	r.renderAdminPanel(res, req, admin, r.resetLinkURL(token), target.Username, "")
 }
 
 // resetLinkURL builds the absolute password-reset URL from the configured base

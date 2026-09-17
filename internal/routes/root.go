@@ -15,6 +15,7 @@
 package routes
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -75,6 +76,10 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
+		if r.needsBootstrap() {
+			http.Redirect(res, req, r.url("/register"), http.StatusFound)
+			return
+		}
 		data := r.loginTemplateData("")
 		if req.URL.Query().Get("flash") == "password_reset" {
 			data.Success = "Your password has been set. You can now sign in."
@@ -97,6 +102,12 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
+}
+
+// needsBootstrap reports whether there is no user yet and the registration
+// form can create the first one. The sign-in paths then redirect to /register.
+func (r *Routes) needsBootstrap() bool {
+	return !r.user.Static && r.user.Count() == 0 && r.user.RegistrationOpen()
 }
 
 func (r *Routes) loginTemplateData(message string) struct {
@@ -184,8 +195,10 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if !r.user.SelfRegistration {
-		http.Error(res, "Self registration is disabled", http.StatusForbidden)
+	// Picks the page; the binding check is in user.SelfRegister, under the
+	// same lock as the append.
+	if !r.user.RegistrationOpen() {
+		r.renderError(res, req, http.StatusForbidden, "Registration Closed", "Self registration is disabled.")
 		return
 	}
 
@@ -220,8 +233,13 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if err := r.user.Register(username, password, []string{user.RoleUser}, email); err != nil {
-			res.WriteHeader(http.StatusBadRequest)
+		id, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, user.ErrRegistrationClosed) {
+				status = http.StatusForbidden
+			}
+			res.WriteHeader(status)
 			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{Message: err.Error()}); err != nil {
 				slog.Error("failed to render register template", "error", err)
 			}
@@ -236,8 +254,17 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		// The registrant just proved the password, so the success page can
+		// hand them to the relying party without a login stop.
+		r.setSessionCookie(res, r.session.Create(id))
+
+		var data struct{ SiteName, SiteURL string }
+		if client := r.oidc.FirstClient(); client != nil {
+			data.SiteName = client.Name
+			data.SiteURL = client.URL
+		}
 		res.WriteHeader(http.StatusCreated)
-		if err := r.template.ExecuteTemplate(res, "register_success.html", nil); err != nil {
+		if err := r.template.ExecuteTemplate(res, "register_success.html", data); err != nil {
 			slog.Error("failed to render register_success template", "error", err)
 		}
 

@@ -12,8 +12,12 @@
     <div class="layout-right">
         <div class="login-container">
             <h1>Welcome!</h1>
-            <div class="account">Your account has been created successfully.</div>
-            <a class="button" href="{{ url "/login" }}">Continue to Login</a>
+            <div class="account">Your account has been created and you are now signed in.</div>
+            {{ if .SiteURL }}
+            <a class="button" href="{{ .SiteURL }}">Continue to {{ if .SiteName }}{{ .SiteName }}{{ else }}App{{ end }}</a>
+            {{ else }}
+            <a class="button" href="{{ url "/" }}">Continue</a>
+            {{ end }}
         </div>
     </div>
 </div>

@@ -22,7 +22,8 @@ library: the `unittest` framework manages/runs the scenarios and `urllib` +
 
 Each scenario is a TestCase; the server (and a fresh users DB) is started per
 class via setUpClass, so cases are isolated. Read-write cases run against a
-normal config, the static case against `static: true`.
+normal config, the static case against `static: true`, the bootstrap case
+against `allowBootstrap: true` and an empty users file.
 
 Usage:
     python3 scripts/e2e.py            # run all scenarios
@@ -123,7 +124,13 @@ def _write_seed_users(path):
         ], f)
 
 
-def _write_config(path, users_path, signing_path, static, base=BASE):
+def _write_empty_users(path):
+    with open(path, "w") as f:
+        json.dump([], f)
+
+
+def _write_config(path, users_path, signing_path, static, base=BASE,
+                  allow_bootstrap=False):
     with open(path, "w") as f:
         json.dump({
             "baseUrl": base,
@@ -136,6 +143,7 @@ def _write_config(path, users_path, signing_path, static, base=BASE):
                 # legacy key intentionally left in to prove it is tolerated:
                 "passwordChangeable": True,
                 "static": static,
+                "allowBootstrap": allow_bootstrap,
             },
             "signingKey": {"filePath": signing_path, "generateIfMissing": True},
         }, f)
@@ -162,6 +170,7 @@ def setUpModule():
     _ENV["cfg_rw"] = os.path.join(workdir, "config_rw.json")
     _ENV["cfg_static"] = os.path.join(workdir, "config_static.json")
     _ENV["cfg_prefix"] = os.path.join(workdir, "config_prefix.json")
+    _ENV["cfg_bootstrap"] = os.path.join(workdir, "config_bootstrap.json")
     _ENV["binary"] = os.path.join(workdir, "idp")
 
     subprocess.run(["go", "build", "-o", _ENV["binary"], "."],
@@ -170,6 +179,8 @@ def setUpModule():
     _write_config(_ENV["cfg_static"], _ENV["users"], _ENV["signing"], static=True)
     _write_config(_ENV["cfg_prefix"], _ENV["users"], _ENV["signing"],
                   static=False, base=BASE + "/idp")
+    _write_config(_ENV["cfg_bootstrap"], _ENV["users"], _ENV["signing"],
+                  static=False, allow_bootstrap=True)
 
 
 def tearDownModule():
@@ -190,9 +201,10 @@ class ServerCase(unittest.TestCase):
     """
 
     CONFIG_KEY = "cfg_rw"
+    SEED_USERS = staticmethod(_write_seed_users)
 
     def setUp(self):
-        _write_seed_users(_ENV["users"])
+        self.SEED_USERS(_ENV["users"])
         config = _ENV[self.CONFIG_KEY]
         env = dict(os.environ)
         env["CONFIG"] = config
@@ -517,6 +529,39 @@ class PathPrefixTest(ServerCase):
                                     "csrf_token": admin.csrf("/idp/admin")})
         self.assertEqual(code, 200)
         self.assertIn(self.ISSUER + "/set-password?token=", body)
+
+
+class BootstrapTest(ServerCase):
+    """users.allowBootstrap against an empty database: the first registration
+    creates a signed-in admin, then registration closes."""
+
+    CONFIG_KEY = "cfg_bootstrap"
+    SEED_USERS = staticmethod(_write_empty_users)
+
+    @staticmethod
+    def _register(client, username):
+        return client.post("/register", {
+            "username": username, "email": username + "@test.local",
+            "password": "password123", "password_confirm": "password123"})
+
+    def test_first_registration_becomes_admin_then_closes(self):
+        first = Client()
+        code, hdrs, _ = first.get("/login")
+        self.assertEqual((code, hdrs.get("Location")), (302, "/register"),
+                         "with no users the login page hands over to /register")
+
+        code, _, body = self._register(first, "first")
+        self.assertEqual(code, 201)
+        self.assertIn("Continue to Dev", body,
+                      "the success page links to the first client")
+        self.assertEqual(first.get("/admin")[0], 200,
+                         "the first user is signed in and is an admin")
+
+        self.assertEqual(Client().get("/register")[0], 403,
+                         "registration closes after the first user")
+        self.assertEqual(self._register(Client(), "second")[0], 403)
+        self.assertEqual(Client().get("/login")[0], 200,
+                         "the login form is back")
 
 
 if __name__ == "__main__":

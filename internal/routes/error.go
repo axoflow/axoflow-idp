@@ -1,0 +1,67 @@
+// Copyright © 2026 Axoflow
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package routes
+
+import (
+	"log/slog"
+	"net/http"
+)
+
+// renderError renders the error page; the admin panel's fetch-based modal
+// forms get the message as plain text instead.
+func (r *Routes) renderError(res http.ResponseWriter, req *http.Request, status int, title, message string) {
+	r.renderErrorPage(res, req, status, title, message, "/", "Back to Home")
+}
+
+// renderErrorPage is renderError with the page's footer link spelled out, for
+// errors whose natural next step is not the home page.
+func (r *Routes) renderErrorPage(res http.ResponseWriter, req *http.Request, status int, title, message, linkURL, linkText string) {
+	if wantsInlineError(req) {
+		http.Error(res, message, status)
+		return
+	}
+
+	res.WriteHeader(status)
+	if err := r.template.ExecuteTemplate(res, "error.html", struct {
+		Status   int
+		Title    string
+		Message  string
+		LinkURL  string
+		LinkText string
+	}{Status: status, Title: title, Message: message, LinkURL: linkURL, LinkText: linkText}); err != nil {
+		slog.Error("failed to render error template", "error", err)
+	}
+}
+
+func (r *Routes) renderSessionExpired(res http.ResponseWriter, req *http.Request) {
+	r.renderErrorPage(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.", "/login", "Sign in")
+}
+
+func (r *Routes) renderAdminRequired(res http.ResponseWriter, req *http.Request) {
+	r.renderError(res, req, http.StatusForbidden, "Access Denied", "Admin access is required for this page.")
+}
+
+func (r *Routes) renderFormExpired(res http.ResponseWriter, req *http.Request) {
+	r.renderError(res, req, http.StatusForbidden, "Invalid Request", "The form has expired. Please go back and try again.")
+}
+
+func (r *Routes) renderInvalidUserID(res http.ResponseWriter, req *http.Request) {
+	r.renderError(res, req, http.StatusBadRequest, "Invalid Request", "Invalid user ID.")
+}
+
+// NotFound is the styled 404 page; the mux routes unknown paths here.
+func (r *Routes) NotFound(res http.ResponseWriter, req *http.Request) {
+	r.renderError(res, req, http.StatusNotFound, "Page Not Found", "The page you are looking for does not exist.")
+}

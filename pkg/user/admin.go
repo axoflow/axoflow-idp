@@ -130,6 +130,12 @@ func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []s
 		return errors.New("user is not an admin")
 	}
 
+	// With the self-delete guard in AdminDelete this keeps at least one admin:
+	// the caller is still one after every operation.
+	if adminID == targetID && !slices.Contains(groups, u.UserAdminGroup) {
+		return errors.New("cannot remove the admin group from yourself")
+	}
+
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
