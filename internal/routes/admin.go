@@ -365,14 +365,15 @@ func (r *Routes) AdminUsersAPI(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// JSON endpoint: errors stay plain text so machine clients never get HTML.
 	admin, err := r.getUserFromSession(req)
 	if err != nil {
-		r.renderSessionExpired(res, req)
+		http.Error(res, "session expired", http.StatusUnauthorized)
 		return
 	}
 
 	if !r.user.IsAdmin(admin) {
-		r.renderAdminRequired(res, req)
+		http.Error(res, "admin access required", http.StatusForbidden)
 		return
 	}
 

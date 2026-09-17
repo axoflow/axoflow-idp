@@ -22,6 +22,12 @@ import (
 // renderError renders the error page; the admin panel's fetch-based modal
 // forms get the message as plain text instead.
 func (r *Routes) renderError(res http.ResponseWriter, req *http.Request, status int, title, message string) {
+	r.renderErrorPage(res, req, status, title, message, "/", "Back to Home")
+}
+
+// renderErrorPage is renderError with the page's footer link spelled out, for
+// errors whose natural next step is not the home page.
+func (r *Routes) renderErrorPage(res http.ResponseWriter, req *http.Request, status int, title, message, linkURL, linkText string) {
 	if wantsInlineError(req) {
 		http.Error(res, message, status)
 		return
@@ -29,16 +35,18 @@ func (r *Routes) renderError(res http.ResponseWriter, req *http.Request, status 
 
 	res.WriteHeader(status)
 	if err := r.template.ExecuteTemplate(res, "error.html", struct {
-		Status  int
-		Title   string
-		Message string
-	}{Status: status, Title: title, Message: message}); err != nil {
+		Status   int
+		Title    string
+		Message  string
+		LinkURL  string
+		LinkText string
+	}{Status: status, Title: title, Message: message, LinkURL: linkURL, LinkText: linkText}); err != nil {
 		slog.Error("failed to render error template", "error", err)
 	}
 }
 
 func (r *Routes) renderSessionExpired(res http.ResponseWriter, req *http.Request) {
-	r.renderError(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.")
+	r.renderErrorPage(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.", "/login", "Sign in")
 }
 
 func (r *Routes) renderAdminRequired(res http.ResponseWriter, req *http.Request) {

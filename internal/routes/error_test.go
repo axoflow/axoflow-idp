@@ -87,6 +87,57 @@ func TestRegister_DisabledRendersStyledPage(t *testing.T) {
 	}
 }
 
+// The expired-session page sends the user to sign in again, not to the home
+// page (which would just bounce an unauthenticated visitor around).
+func TestSessionExpired_LinksToLogin(t *testing.T) {
+	r := newTestRoutes(t, false)
+	rec := httptest.NewRecorder()
+
+	r.renderSessionExpired(rec, httptest.NewRequest(http.MethodGet, "/admin", nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if !strings.Contains(rec.Body.String(), `href="/login"`) {
+		t.Errorf("body does not link to /login, got %q", head(rec.Body.String(), 400))
+	}
+}
+
+// The users API is a JSON endpoint, so its errors must stay plain text even
+// for browser-shaped requests — a machine client must never get an HTML page.
+func TestAdminUsersAPI_ErrorsStayPlainText(t *testing.T) {
+	r := newTestRoutes(t, false)
+
+	tests := []struct {
+		name       string
+		userID     string
+		wantStatus int
+	}{
+		{name: "no session", userID: "", wantStatus: http.StatusUnauthorized},
+		{name: "not an admin", userID: "bob", wantStatus: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/admin/users/api", nil)
+			if tt.userID != "" {
+				cookie, _ := r.authed(tt.userID)
+				req.AddCookie(cookie)
+			}
+			rec := httptest.NewRecorder()
+
+			r.AdminUsersAPI(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if strings.Contains(rec.Body.String(), "<!doctype html>") {
+				t.Errorf("body is HTML, want plain text, got %q", head(rec.Body.String(), 80))
+			}
+		})
+	}
+}
+
 // head returns the first n bytes of s for a failure message.
 func head(s string, n int) string {
 	return s[:min(len(s), n)]
