@@ -49,6 +49,29 @@ go run main.go
 > `redirectUri`; any request whose `redirect_uri` is not an exact match is
 > rejected.
 
+## Seeding the user database
+
+With `users.createIfMissing: true`, the IdP writes `users.users` to
+`users.filePath` at startup **only if the file does not exist**. An existing
+database is never reseeded, so accounts added or edited via the admin panel
+survive restarts and upgrades; conversely, an entry added to the list later
+reaches new deployments only.
+
+```json
+"users": {
+    "filePath": "/users/users.json",
+    "createIfMissing": true,
+    "userAdminGroup": "admin",
+    "users": [
+        { "Username": "admin", "Password": "$2y$10$…", "Groups": ["admin"], "Email": "admin@example.com" }
+    ]
+}
+```
+
+`Password` must already be an argon2id or bcrypt hash — the value is stored as
+given. `ID` is optional (a ULID is generated). Duplicate usernames or ids are
+rejected before anything is written.
+
 ## Contributing
 
 If you find this project useful, help us:
