@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -91,13 +92,15 @@ type User struct {
 }
 
 func ensureUserID(users []UserInfo) []UserInfo {
-	for i, u := range users {
-		if u.ID == "" {
-			users[i].ID = ulid.Make().String()
+	out := make([]UserInfo, len(users))
+	copy(out, users)
+	for i := range out {
+		if out[i].ID == "" {
+			out[i].ID = ulid.Make().String()
 		}
 	}
 
-	return users
+	return out
 }
 
 func New(config Config) (*User, error) {
@@ -107,23 +110,28 @@ func New(config Config) (*User, error) {
 	}
 
 	if !config.Static && config.FilePath != "" && config.CreateIfMissing {
-		_, err := os.Stat(config.FilePath)
-		if err != nil {
-			if u.Defaults != nil {
-				u.users = ensureUserID(u.Defaults)
+		switch _, err := os.Stat(config.FilePath); {
+		case err == nil:
+		case errors.Is(err, fs.ErrNotExist):
+			seed := ensureUserID(u.Defaults)
+			// loadUsersFromFile applies the same rules, so a bad seed on disk would fail every start.
+			if err := validateUsers(seed); err != nil {
+				return nil, fmt.Errorf("invalid seed users: %w", err)
 			}
-
+			u.users = seed
 			if err := u.SaveUsers(); err != nil {
-				return nil, fmt.Errorf("failed to create empty user db: %w", err)
+				return nil, fmt.Errorf("failed to create user db: %w", err)
 			}
+			slog.Info("seeded new user database", "path", config.FilePath, "count", len(seed))
+		default:
+			return nil, fmt.Errorf("failed to stat user db %q: %w", config.FilePath, err)
 		}
 	}
 
 	if err := u.loadUsersFromFile(); err != nil {
 		return nil, fmt.Errorf("failed to load users: %w", err)
-	} else {
-		slog.Info("users loaded", "count", len(u.users))
 	}
+	slog.Info("users loaded", "count", len(u.users))
 
 	return &u, nil
 }
@@ -409,10 +417,15 @@ func (u *User) loadUsersFromFile() error {
 		return err
 	}
 
+	return validateUsers(u.users)
+}
+
+func validateUsers(users []UserInfo) error {
 	var errs []error
 	seenIDs := map[string]struct{}{}
 	seenUsernames := map[string]struct{}{}
-	for _, user := range u.users {
+
+	for _, user := range users {
 		if user.ID == "" {
 			errs = append(errs, fmt.Errorf("user %q has no id", user.Username))
 		} else if _, dup := seenIDs[user.ID]; dup {
