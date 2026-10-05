@@ -15,6 +15,8 @@
 package user
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +56,10 @@ type Config struct {
 	// immutable source such as a Kubernetes Secret instead of a writable
 	// volume.
 	Static bool `json:"static"`
+	// UpdateSeedPasswords sets a seed user's configured password hash on the
+	// existing account whenever that hash changes. Leave it off when the hash
+	// is regenerated at every deploy: each deploy would reset the password.
+	UpdateSeedPasswords bool `json:"updateSeedPasswords"`
 }
 
 // ErrReadOnly is returned by every mutating operation when the user database is
@@ -82,6 +88,8 @@ type UserInfo struct {
 	Password string
 	Groups   []string
 	Email    string
+	// SeedDigest is the SHA-256 of the seed password hash last applied to this user.
+	SeedDigest string `json:",omitempty"`
 }
 
 type User struct {
@@ -109,14 +117,14 @@ func New(config Config) (*User, error) {
 		users:  []UserInfo{},
 	}
 
-	if !config.Static && config.FilePath != "" && config.CreateIfMissing {
+	seeding := !config.Static && config.FilePath != "" && config.CreateIfMissing
+	if seeding {
 		switch _, err := os.Stat(config.FilePath); {
 		case err == nil:
 		case errors.Is(err, fs.ErrNotExist):
-			seed := ensureUserID(u.Defaults)
-			// loadUsersFromFile applies the same rules, so a bad seed on disk would fail every start.
-			if err := validateUsers(seed); err != nil {
-				return nil, fmt.Errorf("invalid seed users: %w", err)
+			seed, err := u.seedUsers()
+			if err != nil {
+				return nil, err
 			}
 			u.users = seed
 			if err := u.SaveUsers(); err != nil {
@@ -133,7 +141,65 @@ func New(config Config) (*User, error) {
 	}
 	slog.Info("users loaded", "count", len(u.users))
 
+	if seeding && config.UpdateSeedPasswords {
+		if err := u.applySeedPasswords(); err != nil {
+			return nil, fmt.Errorf("failed to apply seed passwords: %w", err)
+		}
+	}
+
 	return &u, nil
+}
+
+// seedUsers is the configured seed with ids and digests.
+func (u *User) seedUsers() ([]UserInfo, error) {
+	seed := ensureUserID(u.Defaults)
+	// loadUsersFromFile applies the same rules, so a bad seed on disk would fail every start.
+	if err := validateUsers(seed); err != nil {
+		return nil, fmt.Errorf("invalid seed users: %w", err)
+	}
+	for i := range seed {
+		seed[i].SeedDigest = seedDigest(seed[i].Password)
+	}
+	return seed, nil
+}
+
+// applySeedPasswords sets a seed user's configured password hash when it
+// differs from the hash applied last.
+func (u *User) applySeedPasswords() error {
+	seed, err := u.seedUsers()
+	if err != nil {
+		return err
+	}
+
+	changed := false
+	for _, s := range seed {
+		i := slices.IndexFunc(u.users, func(ui UserInfo) bool { return ui.Username == s.Username })
+		missing := i == -1
+		// An empty hash would lock the account.
+		if missing || s.Password == "" || u.users[i].SeedDigest == s.SeedDigest {
+			continue
+		}
+
+		if u.users[i].SeedDigest == "" {
+			// A version without digests seeded it, so a change of the hash since then cannot be told.
+			slog.Info("seed user's password hash recorded, the password is unchanged", "username", s.Username)
+		} else {
+			u.users[i].Password = s.Password
+			slog.Info("seed user's password set from the configuration", "username", s.Username)
+		}
+		u.users[i].SeedDigest = s.SeedDigest
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+	return u.SaveUsers()
+}
+
+func seedDigest(passwordHash string) string {
+	sum := sha256.Sum256([]byte(passwordHash))
+	return hex.EncodeToString(sum[:])
 }
 
 func (u *User) getIndex(id string) (int, bool) {

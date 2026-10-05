@@ -57,6 +57,19 @@ database is never reseeded, so accounts added or edited via the admin panel
 survive restarts and upgrades; conversely, an entry added to the list later
 reaches new deployments only.
 
+With `users.updateSeedPasswords: true`, a seed user's `Password` is the
+exception. When its configured hash changes, the next start sets the new hash
+on the existing account, so a deployment can reset a seeded password through
+its configuration. A password changed in the IdP stays until the configured
+hash changes again. The IdP compares hashes, not passwords: a new salt for the
+same password counts as a change, so leave the option off when the hash is
+regenerated at every deploy.
+
+The IdP keeps a SHA-256 digest of the hash it last applied on the account
+(`SeedDigest`). An account seeded before the digest existed gets the digest of
+the current hash and keeps its password. An empty configured hash is not
+applied, and a seed user deleted from the database is not recreated.
+
 ```json
 "users": {
     "filePath": "/users/users.json",
