@@ -96,6 +96,10 @@ in `tokenstore`.
   operation returns `user.ErrReadOnly`, the write routes are not registered,
   and the admin panel hides its write controls (lets the DB be mounted from a
   read-only source such as a Kubernetes Secret).
+- Seed users (`users.users`) reach a new database only. With
+  `users.updateSeedPasswords`, a seed user's password is the exception: every
+  start sets the configured hash on the existing account (see README "Seeding
+  the user database").
 - Bootstrap: the first user registered into an *empty* database joins
   `users.userAdminGroup`, so a fresh deployment has an admin without anyone
   hand-editing `users.json`. It needs a persistent database (`filePath`);
