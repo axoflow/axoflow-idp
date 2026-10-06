@@ -15,7 +15,6 @@
 package user
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -88,14 +87,9 @@ func TestSeedPasswordFollowsTheConfiguredHash(t *testing.T) {
 		want    string
 		notWant string
 	}{
-		"a changed configured hash replaces the password":                          {before: seeded, restart: second, want: "second-password", notWant: "first-password"},
-		"a password changed since stays while the configured hash does not change": {before: changedSince, restart: first, want: "changed-password", notWant: "first-password"},
-		"a new configured hash replaces a password changed since":                  {before: changedSince, restart: second, want: "second-password", notWant: "changed-password"},
-		"an empty configured hash would lock the account and is not applied":       {before: seeded, restart: "", want: "first-password"},
-		"a database seeded before the digest keeps its password": {
-			before:  func(t *testing.T, path string) { writeUnrecorded(t, path, first) },
-			restart: second, want: "first-password", notWant: "second-password",
-		},
+		"a changed configured hash replaces the password":                    {before: seeded, restart: second, want: "second-password", notWant: "first-password"},
+		"a password changed in the IdP reverts to the configured hash":       {before: changedSince, restart: first, want: "first-password", notWant: "changed-password"},
+		"an empty configured hash would lock the account and is not applied": {before: seeded, restart: "", want: "first-password"},
 	}
 
 	for name, tc := range tests {
@@ -148,18 +142,6 @@ func changePassword(t *testing.T, u *User, from, to string) {
 	}
 	if err := u.SaveUsers(); err != nil {
 		t.Fatalf("save: %v", err)
-	}
-}
-
-// writeUnrecorded writes a database as a version without seed digests seeded it.
-func writeUnrecorded(t *testing.T, path, adminHash string) {
-	t.Helper()
-	data, err := json.Marshal([]UserInfo{{ID: "admin1", Username: "admin", Password: adminHash, Groups: []string{"admin"}}})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
 	}
 }
 

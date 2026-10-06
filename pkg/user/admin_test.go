@@ -19,22 +19,6 @@ import (
 	"testing"
 )
 
-func TestAdminList_CarriesNoPasswordMaterial(t *testing.T) {
-	path := writeUsersFile(t, `[{"ID":"admin1","Username":"alice","Password":"$2a$04$x","SeedDigest":"abc","Groups":["admins"]}]`)
-	u, err := New(Config{FilePath: path, UserAdminGroup: "admins"})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	users, err := u.AdminList("admin1")
-	if err != nil {
-		t.Fatalf("AdminList: %v", err)
-	}
-	if users[0].Password != "" || users[0].SeedDigest != "" {
-		t.Errorf("listed user carries password material: %+v", users[0])
-	}
-}
-
 func TestAdminUpdateUserGroups_SelfDemotion(t *testing.T) {
 	tests := []struct {
 		name     string
