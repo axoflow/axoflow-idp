@@ -130,11 +130,11 @@ func TestOidcAuth_ErrorRedirectEchoesState(t *testing.T) {
 	r, cookie := newOidcTestRoutes(t)
 	state := "s t&u"
 
-	// Missing "openid" scope: a valid client/redirect_uri, so the error is
-	// redirected back with the state echoed.
+	// An id_token response without the "openid" scope: a valid client/redirect_uri,
+	// so the error is redirected back with the state echoed.
 	rec := authGet(t, r, cookie, url.Values{
 		"scope":         {"profile"},
-		"response_type": {"code"},
+		"response_type": {"id_token"},
 		"client_id":     {"app"},
 		"redirect_uri":  {testRedirectURI},
 		"state":         {state},
@@ -252,7 +252,7 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
-	code := r.store.Create("the-id-token")
+	code := r.store.Create(codestore.Issued{IDToken: "the-id-token", AccessToken: "the-id-token"}, "app", testRedirectURI)
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {"app"},

@@ -22,9 +22,18 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// Issued is what a code redeems to.
+type Issued struct {
+	IDToken       string
+	AccessToken   string
+	CodeChallenge string
+}
+
 type code struct {
-	ID       ulid.ULID
-	id_token string
+	ID          ulid.ULID
+	issued      Issued
+	clientID    string
+	redirectURI string
 }
 
 type CodeStore struct {
@@ -32,6 +41,12 @@ type CodeStore struct {
 	mu    sync.RWMutex
 	ttl   time.Duration
 }
+
+var (
+	ErrNotFound         = errors.New("code not found")
+	ErrClientMismatch   = errors.New("code issued to another client")
+	ErrRedirectMismatch = errors.New("code issued for another redirect_uri")
+)
 
 func New() *CodeStore {
 	return &CodeStore{
@@ -59,29 +74,39 @@ func (s *CodeStore) cleanUp() {
 	}
 }
 
-func (s *CodeStore) Create(id_token string) string {
+// Create stores the issued tokens under a new code bound to clientID and redirectURI.
+func (s *CodeStore) Create(issued Issued, clientID, redirectURI string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.cleanUp()
 	code := code{
-		ID:       ulid.Make(),
-		id_token: id_token,
+		ID:          ulid.Make(),
+		issued:      issued,
+		clientID:    clientID,
+		redirectURI: redirectURI,
 	}
 	s.codes[code.ID.String()] = code
 
 	return code.ID.String()
 }
 
-func (s *CodeStore) Pop(code string) (string, error) {
+// Pop consumes the code even when the binding fails: single use per RFC 6749 §4.1.2.
+func (s *CodeStore) Pop(code, clientID, redirectURI string) (Issued, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	session, ok := s.codes[code]
 	if !ok {
-		return "", errors.New("code not found")
+		return Issued{}, ErrNotFound
 	}
 
 	delete(s.codes, code)
-	return session.id_token, nil
+	if session.clientID != clientID {
+		return Issued{}, ErrClientMismatch
+	}
+	if session.redirectURI != redirectURI {
+		return Issued{}, ErrRedirectMismatch
+	}
+	return session.issued, nil
 }
