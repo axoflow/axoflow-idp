@@ -392,15 +392,38 @@ class AuthorizeRedirectTest(ServerCase):
         bob = Client()
         bob.login("bob", "bobpass")
         state = "s t&u"
-        # Missing "openid" scope: valid client/redirect_uri, so the error is
-        # redirected back with the state echoed (RFC 6749 §4.1.2.1).
+        # An id_token request without the "openid" scope: valid client and
+        # redirect_uri, so the error is redirected back with the state echoed
+        # (RFC 6749 §4.1.2.1).
         code, hdrs, _ = self._authorize(
-            bob, scope="profile", response_type="code",
+            bob, scope="profile", response_type="id_token",
             client_id="dev", redirect_uri=self.CB, state=state)
         self.assertEqual(code, 302)
         q = self._location_query(hdrs)
         self.assertEqual(q.get("error"), ["invalid_scope"])
         self.assertEqual(q.get("state"), [state])
+
+    def test_scope_free_code_flow_issues_access_token_only(self):
+        bob = Client()
+        bob.login("bob", "bobpass")
+        # Plain OAuth code flow: no "openid" scope, so the token endpoint
+        # returns an access token and no ID token.
+        code, hdrs, _ = self._authorize(
+            bob, response_type="code", client_id="dev",
+            redirect_uri=self.CB, state="s")
+        self.assertEqual(code, 302)
+        q = self._location_query(hdrs)
+        self.assertIsNone(q.get("error"))
+        self.assertTrue(q.get("code"), "authorization code must be present")
+
+        code, _, body = Client().post("/token", {
+            "grant_type": "authorization_code", "client_id": "dev",
+            "client_secret": "s", "redirect_uri": self.CB,
+            "code": q["code"][0]})
+        self.assertEqual(code, 200)
+        tokens = json.loads(body)
+        self.assertTrue(tokens.get("access_token"), "access token must be issued")
+        self.assertNotIn("id_token", tokens, "no openid scope: no ID token")
 
     def test_suffix_bypass_rejected(self):
         bob = Client()
@@ -483,6 +506,18 @@ class PathPrefixTest(ServerCase):
         self.assertEqual(meta["authorization_endpoint"], self.ISSUER + "/oidc/auth")
         self.assertEqual(meta["token_endpoint"], self.ISSUER + "/token")
         self.assertEqual(meta["jwks_uri"], self.ISSUER + "/oidc/jwks")
+
+    def test_root_level_discovery_for_the_prefixed_issuer(self):
+        # RFC 8414 3.1: the issuer path follows the well-known segment at the
+        # host root; MCP clients ask there before trying the prefixed form.
+        c = Client()
+        for path in ("/.well-known/oauth-authorization-server/idp",
+                     "/.well-known/openid-configuration/idp"):
+            code, hdrs, body = c.get(path)
+            self.assertEqual(code, 200, path)
+            self.assertEqual(hdrs.get("Content-Type"), "application/json", path)
+            self.assertEqual(json.loads(body)["issuer"], self.ISSUER, path)
+        self.assertEqual(c.get("/.well-known/oauth-authorization-server")[0], 404)
 
     def test_auth_code_flow_issues_prefixed_iss(self):
         bob = Client()
