@@ -80,7 +80,7 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 			http.Redirect(res, req, r.url("/register"), http.StatusFound)
 			return
 		}
-		data := r.loginTemplateData("")
+		data := r.loginTemplateData("", "")
 		if req.URL.Query().Get("flash") == "password_reset" {
 			data.Success = "Your password has been set. You can now sign in."
 		}
@@ -90,14 +90,14 @@ func (r *Routes) Login(res http.ResponseWriter, req *http.Request) {
 		return
 
 	case http.MethodPost:
-		if user := r.login(res, req); user != nil {
+		if user := r.login(res, req, ""); user != nil {
 			http.Redirect(res, req, r.url("/?flash=login"), http.StatusFound)
 		}
 		return
 
 	default:
 		res.WriteHeader(http.StatusMethodNotAllowed)
-		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("")); err != nil {
+		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("", "")); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return
@@ -110,22 +110,24 @@ func (r *Routes) needsBootstrap() bool {
 	return !r.user.Static && r.user.Count() == 0 && r.user.RegistrationOpen()
 }
 
-func (r *Routes) loginTemplateData(message string) struct {
+type loginTemplateData struct {
 	Message          string
 	Success          string
 	SelfRegistration bool
-} {
-	return struct {
-		Message          string
-		Success          string
-		SelfRegistration bool
-	}{
+	// ClientName is the application the person is signing in to, "" on the plain login page.
+	ClientName string
+}
+
+func (r *Routes) loginTemplateData(message, clientName string) loginTemplateData {
+	return loginTemplateData{
 		Message:          message,
 		SelfRegistration: r.user.SelfRegistration,
+		ClientName:       clientName,
 	}
 }
 
-func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInfo {
+// clientName is shown on the failure page, so it must come from a validated authorization request.
+func (r *Routes) login(res http.ResponseWriter, req *http.Request, clientName string) *user.UserInfo {
 	if err := req.ParseForm(); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
 		return nil
@@ -136,7 +138,7 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	user, ok := r.user.Authenticate(username, password)
 	if !ok {
 		res.WriteHeader(http.StatusUnauthorized)
-		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
+		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password", clientName)); err != nil {
 			slog.Error("failed to render login template", "error", err)
 		}
 		return nil
