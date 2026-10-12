@@ -113,10 +113,17 @@ func TestValidateAuthenticationRequest(t *testing.T) {
 		t.Fatalf("valid request rejected: %v", err)
 	}
 
+	plain := base
+	plain.Scope = "profile"
+	if err := o.ValidateAuthenticationRequest(plain); err != nil {
+		t.Errorf("a code request without openid is plain OAuth and must be accepted: %v", err)
+	}
+
 	bad := base
 	bad.Scope = "profile"
+	bad.ResponseType = "id_token"
 	if err := o.ValidateAuthenticationRequest(bad); err == nil {
-		t.Error("missing openid scope should be rejected")
+		t.Error("an id_token response without the openid scope should be rejected")
 	}
 
 	bad = base
@@ -205,6 +212,9 @@ func TestGenerateIDTokenClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateIDToken: %v", err)
 	}
+	if got := tokenType(t, idToken); got != "JWT" {
+		t.Errorf("typ = %q, want JWT", got)
+	}
 	claims := decodeIDToken(t, o, idToken)
 
 	if got := claims.Expiration - claims.IssuedAt; got < 3598 || got > 3600 {
@@ -233,10 +243,11 @@ func TestValidateAuthenticationRequestScope(t *testing.T) {
 		RedirectUri:  "https://app.example.com/cb",
 		ClientSecret: "s3cret",
 	}})
+	// id_token is the only response type that needs the openid scope
 	base := func(scope string) AuthenticationRequest {
 		return AuthenticationRequest{
 			Scope:        scope,
-			ResponseType: "code",
+			ResponseType: "id_token",
 			ClientID:     "app",
 			RedirectUri:  "https://app.example.com/cb",
 		}

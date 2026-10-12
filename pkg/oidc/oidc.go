@@ -15,6 +15,7 @@
 package oidc
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,10 @@ type Client struct {
 	RedirectUri  string   `json:"redirectUri"`
 	RedirectUris []string `json:"redirectUris,omitempty"`
 	ClientSecret string   `json:"clientSecret"`
+	// Public clients (RFC 8252) send no secret and must use PKCE.
+	Public bool `json:"public,omitempty"`
+	// Resources are the RFC 8707 resource indicators allowed; none means no resource may be sent.
+	Resources []string `json:"resources,omitempty"`
 }
 
 // registeredRedirectUris returns every redirect URI registered for the client:
@@ -55,19 +60,55 @@ func (c Client) registeredRedirectUris() []string {
 	return append(uris, c.RedirectUris...)
 }
 
-// allowsRedirect reports whether uri exactly matches one of the client's
-// registered redirect URIs. Matching is an exact string comparison per
-// RFC 6749 §3.1.2.3 / RFC 9700 §4.1.1 — no prefix or pattern matching.
+// allowsRedirect matches exactly (RFC 6749 §3.1.2.3, RFC 9700 §4.1.1).
+// A registered loopback redirect matches on any port (RFC 8252 §7.3).
 func (c Client) allowsRedirect(uri string) bool {
-	return slices.Contains(c.registeredRedirectUris(), uri)
+	registered := c.registeredRedirectUris()
+	if slices.Contains(registered, uri) {
+		return true
+	}
+	return slices.ContainsFunc(registered, func(r string) bool { return loopbackRedirectMatches(r, uri) })
+}
+
+// Only the port may differ; even an empty "?" or "#" fails the match.
+func loopbackRedirectMatches(registered, uri string) bool {
+	if strings.ContainsAny(registered, "?#") || strings.ContainsAny(uri, "?#") {
+		return false
+	}
+	r, err := url.Parse(registered)
+	if err != nil || r.Scheme != "http" || !isLoopbackHost(r.Hostname()) || r.User != nil {
+		return false
+	}
+	u, err := url.Parse(uri)
+	if err != nil || u.Scheme != "http" || u.User != nil {
+		return false
+	}
+	return u.Hostname() == r.Hostname() && u.EscapedPath() == r.EscapedPath()
+}
+
+func isLoopbackHost(host string) bool {
+	return host == "127.0.0.1" || host == "::1" || host == "localhost"
+}
+
+// ClientName returns the client's display name, its id when unnamed, "" when unknown.
+func (o *Oidc) ClientName(clientID string) string {
+	client, ok := o.getClient(clientID)
+	if !ok {
+		return ""
+	}
+	if client.Name == "" {
+		return client.Id
+	}
+	return client.Name
 }
 
 type Oidc struct {
-	baseUrl    string
-	clients    []Client
-	keychain   *keychain.Keychain
-	signer     jose.Signer
-	idTokenTTL time.Duration
+	baseUrl      string
+	clients      []Client
+	keychain     *keychain.Keychain
+	signer       jose.Signer
+	accessSigner jose.Signer
+	idTokenTTL   time.Duration
 }
 
 type Config struct {
@@ -121,20 +162,24 @@ func New(cfg Config) (*Oidc, error) {
 
 	cfg.Keychain.Add(*signingKey)
 
-	signer, err := jose.NewSigner(jose.SigningKey{
-		Algorithm: jose.RS256,
-		Key:       signingKey,
-	}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", SigningKeyKid))
+	key := jose.SigningKey{Algorithm: jose.RS256, Key: signingKey}
+	signer, err := jose.NewSigner(key, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", SigningKeyKid))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create signer: %w", err)
 	}
+	// RFC 9068 section 2.1: access tokens carry typ "at+jwt", so they cannot pass as ID tokens
+	accessSigner, err := jose.NewSigner(key, (&jose.SignerOptions{}).WithType("at+jwt").WithHeader("kid", SigningKeyKid))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create access token signer: %w", err)
+	}
 
 	return &Oidc{
-		baseUrl:    cfg.BaseUrl,
-		clients:    cfg.Clients,
-		keychain:   cfg.Keychain,
-		signer:     signer,
-		idTokenTTL: defaultIDTokenTTL,
+		baseUrl:      cfg.BaseUrl,
+		clients:      cfg.Clients,
+		keychain:     cfg.Keychain,
+		signer:       signer,
+		accessSigner: accessSigner,
+		idTokenTTL:   defaultIDTokenTTL,
 	}, nil
 }
 
@@ -193,6 +238,16 @@ type AuthenticationRequest struct {
 	RedirectUri  string
 	Nonce        string
 	State        string
+	// CodeChallenge and CodeChallengeMethod are PKCE (RFC 7636); only S256 is accepted.
+	CodeChallenge       string
+	CodeChallengeMethod string
+	// Resource (RFC 8707) becomes the access token's audience.
+	Resource string
+}
+
+// WantsIDToken reports whether the openid scope was requested.
+func (r AuthenticationRequest) WantsIDToken() bool {
+	return slices.Contains(strings.Fields(r.Scope), "openid")
 }
 
 type IDTokenPayload struct {
@@ -207,10 +262,27 @@ type IDTokenPayload struct {
 	Email      string   `json:"email"`
 }
 
+// AccessTokenPayload is the RFC 9068 access token, with the ID token's identity claims.
+type AccessTokenPayload struct {
+	Issuer     string   `json:"iss"`
+	Subject    string   `json:"sub"`
+	Audience   string   `json:"aud"`
+	Expiration int64    `json:"exp"`
+	IssuedAt   int64    `json:"iat"`
+	JWTID      string   `json:"jti"`
+	ClientID   string   `json:"client_id"`
+	Name       string   `json:"name"`
+	Groups     []string `json:"groups"`
+	Email      string   `json:"email"`
+}
+
 type authMethod string
 
 const (
 	AuthMethodClientSecretPost authMethod = "client_secret_post"
+	AuthMethodNone             authMethod = "none"
+
+	CodeChallengeMethodS256 = "S256"
 )
 
 type OpenIDProviderMetadata struct {
@@ -226,6 +298,8 @@ type OpenIDProviderMetadata struct {
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
 	UserinfoEndpoint                  string   `json:"userinfo_endpoint,omitempty"`
 	RevocationEndpoint                string   `json:"revocation_endpoint,omitempty"`
+	GrantTypesSupported               []string `json:"grant_types_supported,omitempty"`
+	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
 func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
@@ -252,9 +326,12 @@ func (o *Oidc) GetOpenIDProviderMetadata() OpenIDProviderMetadata {
 		},
 		TokenEndpointAuthMethodsSupported: []string{
 			string(AuthMethodClientSecretPost),
+			string(AuthMethodNone),
 		},
-		EndSessionEndpoint: o.baseUrl + "/logout",
-		RevocationEndpoint: o.baseUrl + "/revoke",
+		GrantTypesSupported:           []string{"authorization_code"},
+		CodeChallengeMethodsSupported: []string{CodeChallengeMethodS256},
+		EndSessionEndpoint:            o.baseUrl + "/logout",
+		RevocationEndpoint:            o.baseUrl + "/revoke",
 	}
 }
 
@@ -296,20 +373,47 @@ func (o *Oidc) ValidateRedirect(clientID, redirectUri string) error {
 	return nil
 }
 
+// ValidateAuthenticationRequest accepts PKCE S256 only (RFC 7636 §4.6); openid is optional for plain OAuth.
 func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
-	if !slices.Contains(strings.Fields(req.Scope), "openid") {
-		return errors.New("invalid_scope")
+	client, ok := o.getClient(req.ClientID)
+	if !ok {
+		return errors.New("access_denied")
 	}
 
 	if req.ResponseType != "id_token" && req.ResponseType != "code" {
 		return errors.New("unsupported_response_type")
+	}
+	// a public client proves PKCE at the token endpoint, so only the code flow works
+	if client.Public && req.ResponseType != "code" {
+		return errors.New("unsupported_response_type")
+	}
+	if req.ResponseType == "id_token" && !req.WantsIDToken() {
+		return errors.New("invalid_scope")
+	}
+
+	if req.CodeChallenge != "" || req.CodeChallengeMethod != "" {
+		if req.CodeChallengeMethod != CodeChallengeMethodS256 || !validCodeChallenge(req.CodeChallenge) {
+			return errors.New("invalid_request")
+		}
+	} else if client.Public {
+		return errors.New("invalid_request")
+	}
+
+	if req.Resource != "" {
+		u, err := url.Parse(req.Resource)
+		if err != nil || !u.IsAbs() || strings.Contains(req.Resource, "#") {
+			return errors.New("invalid_target")
+		}
+		if !slices.Contains(client.Resources, req.Resource) {
+			return errors.New("invalid_target")
+		}
 	}
 
 	return o.ValidateRedirect(req.ClientID, req.RedirectUri)
 }
 
 func (o *Oidc) GenerateIDToken(user user.UserInfo, clientID string, nonce string) (string, error) {
-	payload, err := json.Marshal(IDTokenPayload{
+	return sign(o.signer, IDTokenPayload{
 		Issuer:     o.baseUrl,
 		Subject:    user.ID,
 		Audience:   clientID,
@@ -320,16 +424,40 @@ func (o *Oidc) GenerateIDToken(user user.UserInfo, clientID string, nonce string
 		Groups:     user.Groups,
 		Email:      user.Email,
 	})
+}
+
+func sign(signer jose.Signer, claims any) (string, error) {
+	payload, err := json.Marshal(claims)
 	if err != nil {
 		return "", err
 	}
 
-	jws, err := o.signer.Sign(payload)
+	jws, err := signer.Sign(payload)
 	if err != nil {
 		return "", err
 	}
 
 	return jws.CompactSerialize()
+}
+
+// GenerateAccessToken signs an access token for resource, or for clientID when resource is "".
+func (o *Oidc) GenerateAccessToken(user user.UserInfo, clientID string, resource string) (string, error) {
+	audience := resource
+	if audience == "" {
+		audience = clientID
+	}
+	return sign(o.accessSigner, AccessTokenPayload{
+		Issuer:     o.baseUrl,
+		Subject:    user.ID,
+		Audience:   audience,
+		Expiration: time.Now().Add(o.idTokenTTL).Unix(),
+		IssuedAt:   time.Now().Unix(),
+		JWTID:      rand.Text(),
+		ClientID:   clientID,
+		Name:       user.Username,
+		Groups:     user.Groups,
+		Email:      user.Email,
+	})
 }
 
 type TokenRequest struct {
@@ -338,6 +466,7 @@ type TokenRequest struct {
 	ClientSecret string
 	RedirectUri  string
 	Code         string
+	CodeVerifier string
 }
 
 type RevocationRequest struct {
@@ -361,6 +490,7 @@ var (
 	ErrUnsupportedGrantType = errors.New("unsupported_grant_type")
 )
 
+// ValidateTokenRequest authenticates the client; a public client has no secret, so it must send a code_verifier.
 func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 	if req.GrantType != "authorization_code" {
 		return ErrUnsupportedGrantType
@@ -371,7 +501,11 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return ErrInvalidClient
 	}
 
-	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
+	if client.Public {
+		if req.ClientSecret != "" || req.CodeVerifier == "" {
+			return ErrInvalidRequest
+		}
+	} else if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
 		return ErrInvalidClient
 	}
 
@@ -379,6 +513,19 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return ErrInvalidGrant
 	}
 
+	return nil
+}
+
+// VerifyCodeExchange requires a verifier exactly when the code was issued with a challenge (RFC 7636 §4.6).
+func VerifyCodeExchange(codeChallenge, codeVerifier string) error {
+	switch {
+	case codeChallenge == "" && codeVerifier == "":
+		return nil
+	case codeChallenge == "" || codeVerifier == "":
+		return ErrInvalidGrant
+	case !VerifyPKCE(codeChallenge, codeVerifier):
+		return ErrInvalidGrant
+	}
 	return nil
 }
 

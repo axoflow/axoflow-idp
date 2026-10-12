@@ -12,6 +12,9 @@
     <div class="layout-right">
         <form class="login-container" id="form" action="" method="post">
             <h1>Login</h1>
+            {{ if .ClientName }}
+            <div class="client">Sign in to continue to <strong>{{ .ClientName }}</strong></div>
+            {{ end }}
 
             <label class="label">
                 Username

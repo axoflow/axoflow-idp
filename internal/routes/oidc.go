@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 	"github.com/go-jose/go-jose/v3"
@@ -64,6 +65,10 @@ func authRequest(getter interface{ Get(string) string }) oidc.AuthenticationRequ
 		RedirectUri:  getter.Get("redirect_uri"),
 		Nonce:        getter.Get("nonce"),
 		State:        getter.Get("state"),
+
+		CodeChallenge:       getter.Get("code_challenge"),
+		CodeChallengeMethod: getter.Get("code_challenge_method"),
+		Resource:            getter.Get("resource"),
 	}
 }
 
@@ -99,6 +104,7 @@ func authError(res http.ResponseWriter, req *http.Request, authReq oidc.Authenti
 func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	var user *user.UserInfo
 	var authReq oidc.AuthenticationRequest
+	var loginAttempt bool
 	switch req.Method {
 	case http.MethodGet:
 		authReq = authRequest(req.URL.Query())
@@ -110,10 +116,8 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 
 		if req.Form.Has("username") {
 			// GET -> login form
-			if user = r.login(res, req); user == nil {
-				return // failure, handled in r.login
-			}
 			authReq = authRequest(req.URL.Query())
+			loginAttempt = true
 		} else {
 			// POST based auth flow
 			authReq = authRequest(req.Form)
@@ -127,13 +131,30 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	// Validate the client and redirect_uri before redirecting anything back to
 	// it; an unregistered URI is rejected in place rather than turned into an
 	// open redirect (RFC 6749 §4.1.2.1).
-	if err := r.oidc.ValidateRedirect(authReq.ClientID, authReq.RedirectUri); err != nil {
-		r.renderError(res, req, http.StatusBadRequest, "Invalid Request", err.Error())
+	redirectErr := r.oidc.ValidateRedirect(authReq.ClientID, authReq.RedirectUri)
+	var requestErr error
+	if redirectErr == nil {
+		requestErr = r.oidc.ValidateAuthenticationRequest(authReq)
+	}
+
+	if loginAttempt {
+		// name the client on the failure page only for a request that validated
+		var clientName string
+		if redirectErr == nil && requestErr == nil {
+			clientName = r.oidc.ClientName(authReq.ClientID)
+		}
+		if user = r.login(res, req, clientName); user == nil {
+			return // failure, handled in r.login
+		}
+	}
+
+	if redirectErr != nil {
+		r.renderError(res, req, http.StatusBadRequest, "Invalid Request", redirectErr.Error())
 		return
 	}
 
-	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
-		authError(res, req, authReq, err.Error())
+	if requestErr != nil {
+		authError(res, req, authReq, requestErr.Error())
 		return
 	}
 
@@ -147,20 +168,32 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 				http.Redirect(res, req, r.url("/register"), http.StatusFound)
 				return
 			}
-			if err := r.template.ExecuteTemplate(res, "login.html", nil); err != nil {
+			if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("", r.oidc.ClientName(authReq.ClientID))); err != nil {
 				slog.Error("failed to render login template", "error", err)
 			}
 			return
 		}
 	}
 
-	idToken, err := r.oidc.GenerateIDToken(*user, authReq.ClientID, authReq.Nonce)
+	var issued codestore.Issued
+	if authReq.WantsIDToken() {
+		idToken, err := r.oidc.GenerateIDToken(*user, authReq.ClientID, authReq.Nonce)
+		if err != nil {
+			authError(res, req, authReq, "server_error")
+			return
+		}
+		issued.IDToken = idToken
+	}
+	accessToken, err := r.oidc.GenerateAccessToken(*user, authReq.ClientID, authReq.Resource)
 	if err != nil {
 		authError(res, req, authReq, "server_error")
 		return
 	}
+	issued.AccessToken = accessToken
+	issued.CodeChallenge = authReq.CodeChallenge
 
 	if authReq.ResponseType == "id_token" {
+		idToken := issued.IDToken
 		params := url.Values{"id_token": {idToken}}
 		if authReq.State != "" {
 			params.Set("state", authReq.State)
@@ -169,7 +202,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	code := r.store.Create(idToken)
+	code := r.store.Create(issued, authReq.ClientID, authReq.RedirectUri)
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
@@ -210,6 +243,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			ClientSecret: req.Form.Get("client_secret"),
 			RedirectUri:  req.Form.Get("redirect_uri"),
 			Code:         req.Form.Get("code"),
+			CodeVerifier: req.Form.Get("code_verifier"),
 		}
 	default:
 		res.Header().Add("allow", http.MethodPost)
@@ -222,20 +256,25 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	id_token, err := r.store.Pop(tokenRequest.Code)
+	// the code is consumed first, so a failed verifier still spends it (RFC 9700 §4.8.1)
+	issued, err := r.store.Pop(tokenRequest.Code, tokenRequest.ClientID, tokenRequest.RedirectUri)
 	if err != nil {
 		writeTokenError(res, oidc.ErrInvalidGrant)
 		return
 	}
+	if err := oidc.VerifyCodeExchange(issued.CodeChallenge, tokenRequest.CodeVerifier); err != nil {
+		writeTokenError(res, err)
+		return
+	}
 
 	body := struct {
-		IDToken     string `json:"id_token"`
+		IDToken     string `json:"id_token,omitempty"`
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
 		TokenType   string `json:"token_type"`
 	}{
-		IDToken:     id_token,
-		AccessToken: id_token,
+		IDToken:     issued.IDToken,
+		AccessToken: issued.AccessToken,
 		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
 		TokenType:   "Bearer",
 	}

@@ -48,6 +48,37 @@ go run main.go
 > callbacks with a `redirectUris` array alongside (or instead of) the singular
 > `redirectUri`; any request whose `redirect_uri` is not an exact match is
 > rejected.
+>
+> The one exception is a loopback callback for a native client (RFC 8252 §7.3).
+> A registered `http://localhost/...`, `http://127.0.0.1/...` or
+> `http://[::1]/...` URI also matches the same URI on any port, because the
+> client binds whatever port is free when it runs. Only the port may differ:
+> the scheme (`http`), host and escaped path must match exactly, and neither URI
+> may carry userinfo, a query or a fragment (not even an empty `?` or `#`).
+> Every other callback is still compared exactly.
+
+### Public clients
+
+A client that cannot keep a secret, such as a CLI or an MCP client, is
+registered with `"public": true` and no `clientSecret`. It must use the
+authorization code flow with a PKCE `S256` challenge (`plain` is refused) and
+sends its `code_verifier` instead of a secret at `/token`. The `openid` scope is
+optional: without it only an access token is issued. A `resource` parameter
+(RFC 8707) becomes the access token's audience; it must be one of the client's
+`resources`, and a client without that list may not send one (`invalid_target`).
+Without a `resource`, the audience is the client id.
+
+```json
+{
+    "id": "mcp-cli",
+    "name": "MCP CLI",
+    "public": true,
+    "redirectUris": ["http://127.0.0.1/callback", "http://localhost/callback"],
+    "resources": ["https://console.example.com/mcp"]
+}
+```
+
+A client that is not public must have a `clientSecret`.
 
 ## Seeding the user database
 

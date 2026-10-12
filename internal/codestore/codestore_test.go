@@ -15,19 +15,38 @@
 package codestore
 
 import (
+	"errors"
 	"sync"
 	"testing"
 )
 
+const cb = "https://app.example.com/cb"
+
 func TestCodeIsSingleUse(t *testing.T) {
 	s := New()
 
-	code := s.Create("id-token-1")
-	if _, err := s.Pop(code); err != nil {
+	code := s.Create(Issued{IDToken: "id-token-1"}, "app", cb)
+	if _, err := s.Pop(code, "app", cb); err != nil {
 		t.Fatalf("Pop returned error: %v", err)
 	}
-	if _, err := s.Pop(code); err == nil {
+	if _, err := s.Pop(code, "app", cb); err == nil {
 		t.Error("an authorization code must not be redeemable twice (RFC 6749 §10.5)")
+	}
+}
+
+func TestPop_WrongClientIsRejectedAndSpendsTheCode(t *testing.T) {
+	s := New()
+	code := s.Create(Issued{IDToken: "id-token"}, "app", cb)
+
+	got, err := s.Pop(code, "other", cb)
+	if !errors.Is(err, ErrClientMismatch) {
+		t.Fatalf("Pop err = %v, want %v", err, ErrClientMismatch)
+	}
+	if got != (Issued{}) {
+		t.Errorf("Pop returned tokens %+v on failure", got)
+	}
+	if _, err := s.Pop(code, "app", cb); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Pop after failure err = %v, want %v", err, ErrNotFound)
 	}
 }
 
@@ -43,9 +62,9 @@ func TestConcurrentAccess(_ *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				code := s.Create("id-token")
+				code := s.Create(Issued{IDToken: "id-token"}, "app", cb)
 				s.CleanUp()
-				_, _ = s.Pop(code)
+				_, _ = s.Pop(code, "app", cb)
 			}
 		}()
 	}

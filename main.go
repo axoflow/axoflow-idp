@@ -119,11 +119,23 @@ func (c *config) Validate() error {
 		if client.Id == "" {
 			return fmt.Errorf("client %d: id is required", i)
 		}
-		if client.RedirectUri == "" {
-			return fmt.Errorf("client %d (%s): redirectUri is required", i, client.Id)
+		uris := append([]string{}, client.RedirectUris...)
+		if client.RedirectUri != "" {
+			uris = append(uris, client.RedirectUri)
 		}
-		if !strings.HasPrefix(client.RedirectUri, "http://") && !strings.HasPrefix(client.RedirectUri, "https://") {
-			return fmt.Errorf("client %d (%s): redirectUri must start with http:// or https://", i, client.Id)
+		if len(uris) == 0 {
+			return fmt.Errorf("client %d (%s): redirectUri or redirectUris is required", i, client.Id)
+		}
+		for _, uri := range uris {
+			if !strings.HasPrefix(uri, "http://") && !strings.HasPrefix(uri, "https://") {
+				return fmt.Errorf("client %d (%s): redirect URI %q must start with http:// or https://", i, client.Id, uri)
+			}
+		}
+		if client.Public && client.ClientSecret != "" {
+			return fmt.Errorf("client %d (%s): a public client has no clientSecret", i, client.Id)
+		}
+		if !client.Public && client.ClientSecret == "" {
+			return fmt.Errorf("client %d (%s): clientSecret is required unless the client is public", i, client.Id)
 		}
 	}
 
@@ -146,10 +158,17 @@ func (c *config) Validate() error {
 // newMux registers every route under pathPrefix, so the same binary can be
 // served from the host root or from a prefix such as /idp. A reverse proxy in
 // front of it must pass the prefix through rather than strip it.
+// Discovery is the exception: RFC 8414 §3.1 serves it at the host root with the path
+// appended, so the proxy must route those paths here too.
 func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 	mux := http.NewServeMux()
 	handle := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pathPrefix+pattern, handler)
+	}
+
+	mux.HandleFunc("/.well-known/oauth-authorization-server"+pathPrefix, r.WellKnownOpenIdConfiguration)
+	if pathPrefix != "" {
+		mux.HandleFunc("/.well-known/openid-configuration"+pathPrefix, r.WellKnownOpenIdConfiguration)
 	}
 
 	rootPath := pathPrefix + "/"
