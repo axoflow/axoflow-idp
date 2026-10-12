@@ -265,3 +265,51 @@ func TestDiscoveryDocumentUnderPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestRootLevelDiscovery(t *testing.T) {
+	tests := []struct {
+		name       string
+		baseUrl    string
+		path       string
+		wantIssuer string // empty means the path must 404
+	}{
+		{name: "AS metadata at the root for a prefixed issuer", baseUrl: "https://host/idp", path: "/.well-known/oauth-authorization-server/idp", wantIssuer: "https://host/idp"},
+		{name: "bare AS metadata is not served for a prefixed issuer", baseUrl: "https://host/idp", path: "/.well-known/oauth-authorization-server"},
+		{name: "OpenID discovery at the root for a root issuer", baseUrl: "https://host", path: "/.well-known/openid-configuration", wantIssuer: "https://host"},
+	}
+
+	muxes := map[string]*http.ServeMux{}
+	for _, tc := range tests {
+		if muxes[tc.baseUrl] == nil {
+			muxes[tc.baseUrl] = newTestMux(t, tc.baseUrl)
+		}
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			muxes[tc.baseUrl].ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			if tc.wantIssuer == "" {
+				if rec.Code != http.StatusNotFound {
+					t.Errorf("GET %s = %d, want 404", tc.path, rec.Code)
+				}
+				return
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s = %d, want 200", tc.path, rec.Code)
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("GET %s Content-Type = %q, want application/json", tc.path, ct)
+			}
+			var meta struct {
+				Issuer string `json:"issuer"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &meta); err != nil {
+				t.Fatalf("unmarshal %s: %v", tc.path, err)
+			}
+			if meta.Issuer != tc.wantIssuer {
+				t.Errorf("GET %s issuer = %q, want %q", tc.path, meta.Issuer, tc.wantIssuer)
+			}
+		})
+	}
+}

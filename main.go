@@ -158,10 +158,17 @@ func (c *config) Validate() error {
 // newMux registers every route under pathPrefix, so the same binary can be
 // served from the host root or from a prefix such as /idp. A reverse proxy in
 // front of it must pass the prefix through rather than strip it.
+// Discovery is the exception: RFC 8414 §3.1 serves it at the host root with the path
+// appended, so the proxy must route those paths here too.
 func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 	mux := http.NewServeMux()
 	handle := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pathPrefix+pattern, handler)
+	}
+
+	mux.HandleFunc("/.well-known/oauth-authorization-server"+pathPrefix, r.WellKnownOpenIdConfiguration)
+	if pathPrefix != "" {
+		mux.HandleFunc("/.well-known/openid-configuration"+pathPrefix, r.WellKnownOpenIdConfiguration)
 	}
 
 	rootPath := pathPrefix + "/"
