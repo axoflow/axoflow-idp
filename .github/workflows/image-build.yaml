@@ -69,6 +69,7 @@ jobs:
             latest = false
           tags: |
             type=ref,event=branch
+            type=sha,format=long,enable=${{ github.ref == 'refs/heads/gitops' }}
             type=ref,event=pr,prefix=pr-
             type=semver,pattern={{raw}}
             type=raw,value=latest,enable={{is_default_branch}}
