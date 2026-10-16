@@ -310,3 +310,55 @@ func TestFirstClient_RedirectUrisOnly(t *testing.T) {
 		t.Errorf("URL = %q, want %q", info.URL, "https://app.example.com")
 	}
 }
+
+func TestAccessTokenTTLPerClient(t *testing.T) {
+	o := newSignedOidc(t, Config{Clients: []Client{
+		{Id: "atlantis", RedirectUris: []string{"http://127.0.0.1/callback"}, Public: true, TokenTTL: "720h"},
+		{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret"},
+	}})
+	u := user.UserInfo{ID: "u1", Username: "alice"}
+
+	lifetime := func(token string) int64 {
+		c := decodeIDToken(t, o, token)
+		return c.Expiration - c.IssuedAt
+	}
+	accessToken, err := o.GenerateAccessToken(u, "atlantis", "")
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	if got := lifetime(accessToken); got < 720*3600-2 || got > 720*3600 {
+		t.Errorf("atlantis access token exp-iat = %ds, want ~%d (its tokenTTL)", got, 720*3600)
+	}
+	idToken, err := o.GenerateIDToken(u, "atlantis", "")
+	if err != nil {
+		t.Fatalf("GenerateIDToken: %v", err)
+	}
+	if got := lifetime(idToken); got < 24*3600-2 || got > 24*3600 {
+		t.Errorf("atlantis id token exp-iat = %ds, want the default ~%d", got, 24*3600)
+	}
+	accessToken, err = o.GenerateAccessToken(u, "app", "")
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	if got := lifetime(accessToken); got < 24*3600-2 || got > 24*3600 {
+		t.Errorf("app access token exp-iat = %ds, want the default ~%d", got, 24*3600)
+	}
+	if got := o.AccessTokenTTL("unknown"); got != o.IDTokenTTL() {
+		t.Errorf("AccessTokenTTL(unknown) = %v, want the default %v", got, o.IDTokenTTL())
+	}
+}
+
+func TestNewRefusesBadTokenTTL(t *testing.T) {
+	for _, ttl := range []string{"soon", "-1h", "0s"} {
+		cfg := Config{
+			Clients:           []Client{{Id: "c", RedirectUri: "https://rp/cb", ClientSecret: "s", TokenTTL: ttl}},
+			Keychain:          keychain.New(),
+			SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+			GenerateIfMissing: true,
+			BaseUrl:           "https://idp.example.com",
+		}
+		if _, err := New(cfg); err == nil {
+			t.Errorf("New with tokenTTL %q: want an error", ttl)
+		}
+	}
+}
