@@ -131,6 +131,11 @@ func (c *config) Validate() error {
 				return fmt.Errorf("client %d (%s): redirect URI %q must start with http:// or https://", i, client.Id, uri)
 			}
 		}
+		if client.TokenTTL != "" {
+			if d, err := time.ParseDuration(client.TokenTTL); err != nil || d <= 0 {
+				return fmt.Errorf("client %d (%s): tokenTTL must be a positive Go duration such as \"720h\", got %q", i, client.Id, client.TokenTTL)
+			}
+		}
 		if client.Public && client.ClientSecret != "" {
 			return fmt.Errorf("client %d (%s): a public client has no clientSecret", i, client.Id)
 		}

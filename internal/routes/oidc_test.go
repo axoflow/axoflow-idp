@@ -15,6 +15,8 @@
 package routes
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -317,4 +319,46 @@ func TestOidcRevokeBadClientCredentials(t *testing.T) {
 	if body.Error != "invalid_client" {
 		t.Errorf("error = %q, want %q", body.Error, "invalid_client")
 	}
+}
+
+func TestOidcToken_ExpiresInFollowsClientTTL(t *testing.T) {
+	o, err := oidc.New(oidc.Config{
+		BaseUrl: "https://idp.example.com",
+		Clients: []oidc.Client{
+			{Id: "atlantis", RedirectUris: []string{"http://127.0.0.1/callback"}, Public: true, TokenTTL: "720h"},
+		},
+		Keychain:          keychain.New(),
+		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		GenerateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+	r := &Routes{oidc: o, store: codestore.New()}
+	verifier := strings.Repeat("v", 43)
+	code := r.store.Create(codestore.Issued{AccessToken: "the-access-token", CodeChallenge: s256(verifier)}, "atlantis", "http://127.0.0.1:18100/callback")
+	rec := postToken(t, r, url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"atlantis"},
+		"redirect_uri":  {"http://127.0.0.1:18100/callback"},
+		"code":          {code},
+		"code_verifier": {verifier},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		ExpiresIn int `json:"expires_in"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if body.ExpiresIn != 720*3600 {
+		t.Errorf("expires_in = %d, want %d (the client's tokenTTL)", body.ExpiresIn, 720*3600)
+	}
+}
+
+func s256(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

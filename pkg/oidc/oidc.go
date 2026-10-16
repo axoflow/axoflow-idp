@@ -48,6 +48,22 @@ type Client struct {
 	Public bool `json:"public,omitempty"`
 	// Resources are the RFC 8707 resource indicators allowed; none means no resource may be sent.
 	Resources []string `json:"resources,omitempty"`
+	// TokenTTL is the lifetime of this client's access tokens as a Go duration such as "720h";
+	// empty means the default. ID tokens keep the default: a long-lived access token for an
+	// automation account should not come with a long-lived identity assertion.
+	TokenTTL string `json:"tokenTTL,omitempty"`
+}
+
+// tokenTTL parses TokenTTL; zero means the default applies.
+func (c Client) tokenTTL() (time.Duration, error) {
+	if c.TokenTTL == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.TokenTTL)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("client %s: tokenTTL must be a positive Go duration such as \"720h\", got %q", c.Id, c.TokenTTL)
+	}
+	return d, nil
 }
 
 // registeredRedirectUris returns every redirect URI registered for the client:
@@ -160,6 +176,12 @@ func New(cfg Config) (*Oidc, error) {
 		return nil, errors.New("no signing key available")
 	}
 
+	for _, c := range cfg.Clients {
+		if _, err := c.tokenTTL(); err != nil {
+			return nil, err
+		}
+	}
+
 	cfg.Keychain.Add(*signingKey)
 
 	key := jose.SigningKey{Algorithm: jose.RS256, Key: signingKey}
@@ -184,6 +206,17 @@ func New(cfg Config) (*Oidc, error) {
 }
 
 func (o *Oidc) IDTokenTTL() time.Duration {
+	return o.idTokenTTL
+}
+
+// AccessTokenTTL is the lifetime of the access tokens issued to clientID: its tokenTTL when
+// set, the ID token lifetime otherwise.
+func (o *Oidc) AccessTokenTTL(clientID string) time.Duration {
+	if c, ok := o.getClient(clientID); ok {
+		if d, err := c.tokenTTL(); err == nil && d > 0 {
+			return d
+		}
+	}
 	return o.idTokenTTL
 }
 
@@ -450,7 +483,7 @@ func (o *Oidc) GenerateAccessToken(user user.UserInfo, clientID string, resource
 		Issuer:     o.baseUrl,
 		Subject:    user.ID,
 		Audience:   audience,
-		Expiration: time.Now().Add(o.idTokenTTL).Unix(),
+		Expiration: time.Now().Add(o.AccessTokenTTL(clientID)).Unix(),
 		IssuedAt:   time.Now().Unix(),
 		JWTID:      rand.Text(),
 		ClientID:   clientID,

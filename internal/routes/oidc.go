@@ -275,7 +275,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	}{
 		IDToken:     issued.IDToken,
 		AccessToken: issued.AccessToken,
-		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
+		ExpiresIn:   int(r.oidc.AccessTokenTTL(tokenRequest.ClientID).Seconds()),
 		TokenType:   "Bearer",
 	}
 

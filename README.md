@@ -80,6 +80,25 @@ Without a `resource`, the audience is the client id.
 
 A client that is not public must have a `clientSecret`.
 
+### Access token lifetime
+
+Access tokens live 24 hours by default. A client whose tokens must outlive that,
+such as an automation account whose token is stored in a Secret, sets
+`tokenTTL` to a Go duration (`"720h"`). It applies to that client's access tokens
+only: ID tokens keep the default, and the token response's `expires_in` follows
+it. The server refuses to start on a value that is not a positive duration.
+
+```json
+{
+    "id": "atlantis",
+    "name": "Atlantis",
+    "public": true,
+    "redirectUris": ["http://127.0.0.1/callback"],
+    "resources": ["https://console.example.com/api/terraform/v1"],
+    "tokenTTL": "720h"
+}
+```
+
 ## Seeding the user database
 
 With `users.createIfMissing: true`, the IdP writes `users.users` to

@@ -16,6 +16,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -309,6 +310,18 @@ func TestRootLevelDiscovery(t *testing.T) {
 			}
 			if meta.Issuer != tc.wantIssuer {
 				t.Errorf("GET %s issuer = %q, want %q", tc.path, meta.Issuer, tc.wantIssuer)
+			}
+		})
+	}
+}
+
+func TestValidateTokenTTL(t *testing.T) {
+	for ttl, wantErr := range map[string]bool{"720h": false, "": false, "soon": true, "-1h": true} {
+		t.Run(fmt.Sprintf("tokenTTL %q", ttl), func(t *testing.T) {
+			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{{Id: "c", RedirectUri: "https://rp/cb", ClientSecret: "s", TokenTTL: ttl}}}
+			cfg.SigningKey.GenerateIfMissing = true
+			if err := cfg.Validate(); (err != nil) != wantErr {
+				t.Errorf("Validate() = %v, wantErr %v", err, wantErr)
 			}
 		})
 	}
