@@ -15,8 +15,10 @@
 package codestore
 
 import (
+	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCreateReturnsDistinctCodes(t *testing.T) {
@@ -35,6 +37,24 @@ func TestCodeIsSingleUse(t *testing.T) {
 	}
 	if _, err := s.Pop(code); err == nil {
 		t.Error("an authorization code must not be redeemable twice (RFC 6749 §10.5)")
+	}
+}
+
+// The entry goes straight into the map, so no Create runs cleanUp before Pop.
+func TestPop_ExpiredCodeIsRejectedAndSpent(t *testing.T) {
+	s := New()
+	id := "expired"
+	s.codes[id] = code{createdAt: time.Now().Add(-2 * time.Minute), id_token: "id-token"}
+
+	got, err := s.Pop(id)
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("Pop err = %v, want %v", err, ErrExpired)
+	}
+	if got != "" {
+		t.Errorf("Pop returned token %q for an expired code", got)
+	}
+	if _, err := s.Pop(id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Pop after expiry err = %v, want %v", err, ErrNotFound)
 	}
 }
 
