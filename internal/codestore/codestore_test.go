@@ -24,15 +24,33 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+const cb = "https://app.example.com/cb"
+
 func TestCodeIsSingleUse(t *testing.T) {
 	s := New()
 
-	code := s.Create("id-token-1")
-	if _, err := s.Pop(code); err != nil {
+	code := s.Create(Issued{IDToken: "id-token-1"}, "app", cb)
+	if _, err := s.Pop(code, "app", cb); err != nil {
 		t.Fatalf("Pop returned error: %v", err)
 	}
-	if _, err := s.Pop(code); err == nil {
+	if _, err := s.Pop(code, "app", cb); err == nil {
 		t.Error("an authorization code must not be redeemable twice (RFC 6749 §10.5)")
+	}
+}
+
+func TestPop_WrongClientIsRejectedAndSpendsTheCode(t *testing.T) {
+	s := New()
+	code := s.Create(Issued{IDToken: "id-token"}, "app", cb)
+
+	got, err := s.Pop(code, "other", cb)
+	if !errors.Is(err, ErrClientMismatch) {
+		t.Fatalf("Pop err = %v, want %v", err, ErrClientMismatch)
+	}
+	if got != (Issued{}) {
+		t.Errorf("Pop returned tokens %+v on failure", got)
+	}
+	if _, err := s.Pop(code, "app", cb); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Pop after failure err = %v, want %v", err, ErrNotFound)
 	}
 }
 
@@ -40,16 +58,16 @@ func TestCodeIsSingleUse(t *testing.T) {
 func TestPop_ExpiredCodeIsRejectedAndSpent(t *testing.T) {
 	s := New()
 	id := ulid.MustNew(ulid.Timestamp(time.Now().Add(-2*time.Minute)), rand.Reader)
-	s.codes[id.String()] = code{ID: id, id_token: "id-token"}
+	s.codes[id.String()] = code{ID: id, issued: Issued{IDToken: "id-token"}, clientID: "app", redirectURI: cb}
 
-	got, err := s.Pop(id.String())
+	got, err := s.Pop(id.String(), "app", cb)
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("Pop err = %v, want %v", err, ErrExpired)
 	}
-	if got != "" {
-		t.Errorf("Pop returned token %q for an expired code", got)
+	if got != (Issued{}) {
+		t.Errorf("Pop returned tokens %+v for an expired code", got)
 	}
-	if _, err := s.Pop(id.String()); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Pop(id.String(), "app", cb); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Pop after expiry err = %v, want %v", err, ErrNotFound)
 	}
 }
@@ -66,9 +84,9 @@ func TestConcurrentAccess(_ *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				code := s.Create("id-token")
+				code := s.Create(Issued{IDToken: "id-token"}, "app", cb)
 				s.CleanUp()
-				_, _ = s.Pop(code)
+				_, _ = s.Pop(code, "app", cb)
 			}
 		}()
 	}

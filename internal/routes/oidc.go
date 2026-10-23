@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 	"github.com/go-jose/go-jose/v3"
@@ -56,14 +57,18 @@ func (r *Routes) WellKnownOpenIdConfiguration(res http.ResponseWriter, _ *http.R
 	}
 }
 
-func authRequest(getter interface{ Get(string) string }) oidc.AuthenticationRequest {
+func authRequest(values url.Values) oidc.AuthenticationRequest {
 	return oidc.AuthenticationRequest{
-		Scope:        getter.Get("scope"),
-		ResponseType: getter.Get("response_type"),
-		ClientID:     getter.Get("client_id"),
-		RedirectUri:  getter.Get("redirect_uri"),
-		Nonce:        getter.Get("nonce"),
-		State:        getter.Get("state"),
+		Scope:        values.Get("scope"),
+		ResponseType: values.Get("response_type"),
+		ClientID:     values.Get("client_id"),
+		RedirectUri:  values.Get("redirect_uri"),
+		Nonce:        values.Get("nonce"),
+		State:        values.Get("state"),
+
+		CodeChallenge:       values.Get("code_challenge"),
+		CodeChallengeMethod: values.Get("code_challenge_method"),
+		Resources:           values["resource"],
 	}
 }
 
@@ -169,7 +174,17 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	code := r.store.Create(idToken)
+	accessToken, err := r.oidc.GenerateAccessToken(*user, authReq.ClientID, authReq.Resource())
+	if err != nil {
+		authError(res, req, authReq, "server_error")
+		return
+	}
+
+	code := r.store.Create(codestore.Issued{
+		IDToken:       idToken,
+		AccessToken:   accessToken,
+		CodeChallenge: authReq.CodeChallenge,
+	}, authReq.ClientID, authReq.RedirectUri)
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
@@ -210,6 +225,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			ClientSecret: req.Form.Get("client_secret"),
 			RedirectUri:  req.Form.Get("redirect_uri"),
 			Code:         req.Form.Get("code"),
+			CodeVerifier: req.Form.Get("code_verifier"),
 		}
 	default:
 		res.Header().Add("allow", http.MethodPost)
@@ -222,9 +238,14 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	id_token, err := r.store.Pop(tokenRequest.Code)
+	// the code is consumed first, so a failed verifier still spends it (RFC 9700 §4.8.1)
+	issued, err := r.store.Pop(tokenRequest.Code, tokenRequest.ClientID, tokenRequest.RedirectUri)
 	if err != nil {
 		writeTokenError(res, oidc.ErrInvalidGrant)
+		return
+	}
+	if err := oidc.VerifyCodeExchange(issued.CodeChallenge, tokenRequest.CodeVerifier); err != nil {
+		writeTokenError(res, err)
 		return
 	}
 
@@ -234,8 +255,8 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		ExpiresIn   int    `json:"expires_in"`
 		TokenType   string `json:"token_type"`
 	}{
-		IDToken:     id_token,
-		AccessToken: id_token,
+		IDToken:     issued.IDToken,
+		AccessToken: issued.AccessToken,
 		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
 		TokenType:   "Bearer",
 	}
