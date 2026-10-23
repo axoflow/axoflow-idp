@@ -63,7 +63,7 @@ func TestBaseUrlPrefixDerivation(t *testing.T) {
 		t.Run(tc.baseUrl, func(t *testing.T) {
 			raw, err := json.Marshal(map[string]any{
 				"baseUrl":    tc.baseUrl,
-				"clients":    []map[string]string{{"id": "c", "redirectUri": "https://rp/cb"}},
+				"clients":    []map[string]string{{"id": "c", "redirectUri": "https://rp/cb", "clientSecret": "s"}},
 				"signingKey": map[string]any{"generateIfMissing": true},
 			})
 			if err != nil {
@@ -97,6 +97,59 @@ func TestBaseUrlPrefixDerivation(t *testing.T) {
 			}
 			if parsed.Path != tc.prefix {
 				t.Errorf("derived prefix = %q, want %q", parsed.Path, tc.prefix)
+			}
+		})
+	}
+}
+
+func TestValidateClientSecret(t *testing.T) {
+	tests := []struct {
+		name    string
+		client  oidc.Client
+		wantErr bool
+	}{
+		{name: "confidential client without a secret", client: oidc.Client{Id: "c", RedirectUri: "https://rp/cb"}, wantErr: true},
+		{name: "public client with a secret", client: oidc.Client{Id: "c", RedirectUris: []string{"http://127.0.0.1/cb"}, Public: true, ClientSecret: "s"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{tc.client}}
+			cfg.SigningKey.GenerateIfMissing = true
+			if err := cfg.Validate(); (err != nil) != tc.wantErr {
+				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateClientUrisAndResources covers every redirect URI, singular and
+// list, and every resource indicator: one bad entry refuses the client.
+func TestValidateClientUrisAndResources(t *testing.T) {
+	const cb = "http://127.0.0.1/callback"
+	tests := []struct {
+		name         string
+		redirectUri  string
+		redirectUris []string
+		resources    []string
+		wantErr      bool
+	}{
+		{name: "redirectUris only", redirectUris: []string{cb}},
+		{name: "neither redirectUri nor redirectUris", wantErr: true},
+		{name: "invalid later list entry", redirectUris: []string{cb, "https://"}, wantErr: true},
+		{name: "invalid singular beside a valid list", redirectUri: "https://rp/cb#x", redirectUris: []string{cb}, wantErr: true},
+		{name: "non-http redirect scheme", redirectUris: []string{"myapp://callback"}, wantErr: true},
+		{name: "relative resource", redirectUris: []string{cb}, resources: []string{"api/v1"}, wantErr: true},
+		{name: "resource with an empty fragment", redirectUris: []string{cb}, resources: []string{"https://h/p#"}, wantErr: true},
+		{name: "invalid later resource", redirectUris: []string{cb}, resources: []string{"https://h/p", "bad"}, wantErr: true},
+		{name: "urn resource", redirectUris: []string{cb}, resources: []string{"urn:example:api"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := oidc.Client{Id: "cli", Public: true, RedirectUri: tc.redirectUri, RedirectUris: tc.redirectUris, Resources: tc.resources}
+			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{client}}
+			cfg.SigningKey.GenerateIfMissing = true
+			if err := cfg.Validate(); (err != nil) != tc.wantErr {
+				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
 	}
