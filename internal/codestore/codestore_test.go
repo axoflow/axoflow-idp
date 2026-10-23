@@ -15,8 +15,13 @@
 package codestore
 
 import (
+	"crypto/rand"
+	"errors"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 )
 
 func TestCodeIsSingleUse(t *testing.T) {
@@ -28,6 +33,24 @@ func TestCodeIsSingleUse(t *testing.T) {
 	}
 	if _, err := s.Pop(code); err == nil {
 		t.Error("an authorization code must not be redeemable twice (RFC 6749 §10.5)")
+	}
+}
+
+// The entry goes straight into the map, so no Create runs cleanUp before Pop.
+func TestPop_ExpiredCodeIsRejectedAndSpent(t *testing.T) {
+	s := New()
+	id := ulid.MustNew(ulid.Timestamp(time.Now().Add(-2*time.Minute)), rand.Reader)
+	s.codes[id.String()] = code{ID: id, id_token: "id-token"}
+
+	got, err := s.Pop(id.String())
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("Pop err = %v, want %v", err, ErrExpired)
+	}
+	if got != "" {
+		t.Errorf("Pop returned token %q for an expired code", got)
+	}
+	if _, err := s.Pop(id.String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Pop after expiry err = %v, want %v", err, ErrNotFound)
 	}
 }
 

@@ -33,6 +33,11 @@ type CodeStore struct {
 	ttl   time.Duration
 }
 
+var (
+	ErrNotFound = errors.New("code not found")
+	ErrExpired  = errors.New("code expired")
+)
+
 func New() *CodeStore {
 	return &CodeStore{
 		codes: map[string]code{},
@@ -73,15 +78,19 @@ func (s *CodeStore) Create(id_token string) string {
 	return code.ID.String()
 }
 
+// Pop consumes the code and refuses an expired one, whether or not cleanUp has run since it expired.
 func (s *CodeStore) Pop(code string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	session, ok := s.codes[code]
 	if !ok {
-		return "", errors.New("code not found")
+		return "", ErrNotFound
 	}
 
 	delete(s.codes, code)
+	if s.ttl != 0 && ulid.Time(session.ID.Time()).Before(time.Now().Add(-s.ttl)) {
+		return "", ErrExpired
+	}
 	return session.id_token, nil
 }
