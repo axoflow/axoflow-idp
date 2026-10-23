@@ -55,7 +55,7 @@ func newPublicClientRoutes(t *testing.T) (*Routes, *http.Cookie) {
 		BaseUrl: "https://idp.example.com",
 		Clients: []oidc.Client{
 			{Id: "cli", RedirectUris: []string{loopbackCallback, localhostCallback}, Public: true, Resources: []string{cliResource}},
-			{Id: "cli2", RedirectUris: []string{loopbackCallback}, Public: true, Resources: []string{cliResource}},
+			{Id: "cli2", RedirectUris: []string{loopbackCallback}, Public: true, Resources: []string{cliResource}, TokenTTL: "1h"},
 			{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s3cret"},
 		},
 		Keychain:          keychain.New(),
@@ -219,6 +219,31 @@ func TestPublicClient_PKCEFlow(t *testing.T) {
 	}
 	if claims["aud"] != "cli" {
 		t.Errorf("id_token aud = %v, want cli", claims["aud"])
+	}
+}
+
+// A client's tokenTTL reaches the wire: expires_in and both tokens' exp follow it.
+func TestPublicClient_TokenTTL(t *testing.T) {
+	r, cookie := newPublicClientRoutes(t)
+	q := cliAuthQuery()
+	q.Set("client_id", "cli2")
+	form := tfTokenForm(issueCode(t, r, cookie, q))
+	form.Set("client_id", "cli2")
+
+	tok := postToken(t, r, form)
+	if tok.Code != http.StatusOK {
+		t.Fatalf("token status = %d: %s", tok.Code, tok.Body.String())
+	}
+	body := tokenBody(t, tok)
+	if body["expires_in"] != float64(3600) {
+		t.Errorf("expires_in = %v, want 3600 (the client's tokenTTL)", body["expires_in"])
+	}
+	for _, name := range []string{"access_token", "id_token"} {
+		token, _ := body[name].(string)
+		_, claims := verifiedClaims(t, r, token)
+		if got := claims["exp"].(float64) - claims["iat"].(float64); got != 3600 {
+			t.Errorf("%s exp-iat = %v, want 3600", name, got)
+		}
 	}
 }
 

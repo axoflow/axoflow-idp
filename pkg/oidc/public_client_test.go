@@ -423,6 +423,38 @@ func TestGenerateAccessTokenClaims(t *testing.T) {
 	}
 }
 
+// TestClientTokenTTL covers the effective lifetime: a client's tokenTTL, the default without one or for
+// an unknown client, and both tokens of a client sharing it.
+func TestClientTokenTTL(t *testing.T) {
+	o := newTestOidc(t, []Client{
+		{Id: "short", RedirectUri: "http://127.0.0.1/callback", Public: true, TokenTTL: "1h"},
+		{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret"},
+	})
+	for clientID, want := range map[string]time.Duration{"short": time.Hour, "app": DefaultTokenTTL, "nobody": DefaultTokenTTL} {
+		if got := o.ClientTokenTTL(clientID); got != want {
+			t.Errorf("ClientTokenTTL(%q) = %v, want %v", clientID, got, want)
+		}
+	}
+
+	u := user.UserInfo{ID: "u1", Username: "alice"}
+	for clientID, want := range map[string]float64{"short": 3600, "app": 86400} {
+		id, err := o.GenerateIDToken(u, clientID, "")
+		if err != nil {
+			t.Fatalf("GenerateIDToken(%s): %v", clientID, err)
+		}
+		access, err := o.GenerateAccessToken(u, clientID, "")
+		if err != nil {
+			t.Fatalf("GenerateAccessToken(%s): %v", clientID, err)
+		}
+		for name, token := range map[string]string{"id_token": id, "access_token": access} {
+			claims := accessTokenClaims(t, o, token)
+			if got := claims["exp"].(float64) - claims["iat"].(float64); got != want {
+				t.Errorf("%s of %s: exp-iat = %v, want %v", name, clientID, got, want)
+			}
+		}
+	}
+}
+
 func TestOpenIDProviderMetadata_AdvertisesPublicClientSupport(t *testing.T) {
 	o := newTestOidc(t, publicClients())
 	meta := o.GetOpenIDProviderMetadata()

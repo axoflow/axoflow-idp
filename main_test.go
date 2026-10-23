@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +153,48 @@ func TestValidateClientUrisAndResources(t *testing.T) {
 				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateClientTokenTTL: a tokenTTL is a positive duration of at most the default; the error names the
+// client. A JSON number is refused by the decoder before validation.
+func TestValidateClientTokenTTL(t *testing.T) {
+	for _, tc := range []struct {
+		ttl     string
+		wantErr bool
+	}{
+		{ttl: ""}, {ttl: "1h"}, {ttl: "24h"},
+		{ttl: "25h", wantErr: true}, {ttl: "0s", wantErr: true}, {ttl: "-1h", wantErr: true},
+		{ttl: "3600", wantErr: true}, {ttl: "abc", wantErr: true},
+	} {
+		t.Run(tc.ttl, func(t *testing.T) {
+			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{{Id: "cli", Public: true, RedirectUris: []string{"http://127.0.0.1/callback"}, TokenTTL: tc.ttl}}}
+			cfg.SigningKey.GenerateIfMissing = true
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "(cli)") {
+				t.Errorf("error %q does not name the client", err)
+			}
+		})
+	}
+
+	raw, err := json.Marshal(map[string]any{
+		"baseUrl":    "https://host",
+		"clients":    []map[string]any{{"id": "cli", "public": true, "redirectUris": []string{"http://127.0.0.1/callback"}, "tokenTTL": 3600}},
+		"signingKey": map[string]any{"generateIfMissing": true},
+	})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG", cfgPath)
+	if _, err := LoadConfig(); err == nil {
+		t.Error("LoadConfig accepted a JSON number for tokenTTL; it must be a duration string")
 	}
 }
 
