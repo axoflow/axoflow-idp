@@ -205,6 +205,9 @@ func TestGenerateIDTokenClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateIDToken: %v", err)
 	}
+	if got := tokenType(t, idToken); got != "JWT" {
+		t.Errorf("typ = %q, want JWT", got)
+	}
 	claims := decodeIDToken(t, o, idToken)
 
 	if got := claims.Expiration - claims.IssuedAt; got < 3598 || got > 3600 {
