@@ -76,13 +76,19 @@ A public client cannot call `/revoke` (`401 invalid_client`); its tokens expire
 instead. A revocation is kept for the token lifetime (24 hours) and dropped on
 a later `/revoke`.
 
+`tokenTTL` sets the lifetime of a client's ID and access tokens as a Go
+duration string such as `"1h"`; `expires_in` follows it. The default is 24
+hours, and a longer value is refused at start: a revocation is kept for 24
+hours, and a token must not outlive its revocation record.
+
 ```json
 {
     "id": "example-cli",
     "name": "Example CLI",
     "public": true,
     "redirectUris": ["http://127.0.0.1/callback"],
-    "resources": ["https://api.example.com/v1"]
+    "resources": ["https://api.example.com/v1"],
+    "tokenTTL": "1h"
 }
 ```
 

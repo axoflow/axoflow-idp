@@ -90,6 +90,9 @@ whose `aud` is the requested RFC 8707 `resource`, or the client id without one.
   when adding one.
 - Table-driven tests; run `go test -race` for anything touching concurrency.
 - Keep it stdlib-first and small; match the surrounding code.
+- A duration in the JSON config is a string parsed with `time.ParseDuration`
+  (`"tokenTTL": "1h"`), never a bare `time.Duration` field: a JSON number would
+  decode as nanoseconds.
 
 ## Notes
 
