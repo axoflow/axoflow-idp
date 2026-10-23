@@ -139,7 +139,8 @@ def _write_config(path, users_path, signing_path, static, base=BASE,
                          "redirectUri": BASE + "/cb"},
                         {"id": "cli", "name": "Example CLI", "public": True,
                          "redirectUris": ["http://127.0.0.1/callback"],
-                         "resources": [BASE + "/api/v1"]}],
+                         "resources": [BASE + "/api/v1"],
+                         "tokenTTL": "1h"}],
             "users": {
                 "createIfMissing": False,
                 "filePath": users_path,
@@ -497,6 +498,10 @@ class PublicClientTest(ServerCase):
         self.assertIn("id_token", body)
         self.assertEqual(self._jwt_part(body["id_token"], 1)["aud"], "cli",
                          "the ID token stays bound to the client")
+        self.assertEqual(body["expires_in"], 3600, "the client's tokenTTL")
+        for name in ("access_token", "id_token"):
+            c = self._jwt_part(body[name], 1)
+            self.assertEqual(c["exp"] - c["iat"], 3600, f"{name} follows tokenTTL")
 
     def test_refusals(self):
         bob = Client()
