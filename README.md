@@ -77,7 +77,8 @@ instead. A revocation is kept for the token lifetime (24 hours) and dropped on
 a later `/revoke`.
 
 `tokenTTL` sets the lifetime of a client's ID and access tokens as a Go
-duration string such as `"1h"`; `expires_in` follows it. The default is 24
+duration string such as `"1h"`; the tokens are signed when the code is
+redeemed at `/token`, so `expires_in` is this lifetime. The default is 24
 hours, and a longer value is refused at start: a revocation is kept for 24
 hours, and a token must not outlive its revocation record.
 

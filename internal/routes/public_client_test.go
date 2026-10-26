@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
@@ -598,5 +599,35 @@ func TestConfidentialClient_CodeFlow(t *testing.T) {
 				t.Errorf("access_token aud = %v, want app", claims["aud"])
 			}
 		})
+	}
+}
+
+// TestPublicClient_TokensMintedAtRedemption: the tokens are signed when the code is redeemed, not when it is
+// issued, so their iat is the redemption time and expires_in is the whole lifetime.
+func TestPublicClient_TokensMintedAtRedemption(t *testing.T) {
+	r, cookie := newPublicClientRoutes(t)
+	code := issueCode(t, r, cookie, cliAuthQuery())
+	issued := time.Now().Unix()
+	time.Sleep(time.Until(time.Unix(issued+1, 100_000_000))) // into the next second
+
+	redeemed := time.Now().Unix()
+	tok := postToken(t, r, tfTokenForm(code))
+	if tok.Code != http.StatusOK {
+		t.Fatalf("token status = %d: %s", tok.Code, tok.Body.String())
+	}
+	body := tokenBody(t, tok)
+	if body["expires_in"] != float64(86400) {
+		t.Errorf("expires_in = %v, want 86400", body["expires_in"])
+	}
+	for _, name := range []string{"access_token", "id_token"} {
+		token, _ := body[name].(string)
+		_, claims := verifiedClaims(t, r, token)
+		iat, exp := int64(claims["iat"].(float64)), int64(claims["exp"].(float64))
+		if iat < redeemed {
+			t.Errorf("%s iat = %d, before the redemption at %d: minted when the code was issued", name, iat, redeemed)
+		}
+		if exp-iat != 86400 {
+			t.Errorf("%s exp-iat = %d, want 86400", name, exp-iat)
+		}
 	}
 }
