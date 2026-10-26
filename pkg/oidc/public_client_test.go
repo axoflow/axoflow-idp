@@ -493,3 +493,20 @@ func TestValidResourceIndicator(t *testing.T) {
 		}
 	}
 }
+
+func TestParseTokenTTL(t *testing.T) {
+	for _, tc := range []struct {
+		s       string
+		want    time.Duration
+		wantErr bool
+	}{
+		{s: "1m", want: time.Minute}, {s: "1h", want: time.Hour}, {s: "24h", want: 24 * time.Hour},
+		{s: "59s", wantErr: true}, {s: "500ms", wantErr: true}, {s: "0s", wantErr: true}, {s: "-1h", wantErr: true},
+		{s: "24h1s", wantErr: true}, {s: "3600", wantErr: true},
+	} {
+		got, err := ParseTokenTTL(tc.s)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("ParseTokenTTL(%q) = %v, %v; want %v, wantErr %v", tc.s, got, err, tc.want, tc.wantErr)
+		}
+	}
+}

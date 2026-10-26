@@ -38,6 +38,10 @@ const (
 	// DefaultTokenTTL is the lifetime of both tokens unless the client sets a shorter tokenTTL. The
 	// revocation list keeps an entry this long, so no client may exceed it.
 	DefaultTokenTTL = 24 * time.Hour
+	// MinTokenTTL is the shortest tokenTTL. exp, iat and expires_in are whole seconds, which only rules out
+	// sub-second values; the minute is a policy floor, so that no client runs on tokens it renews every few
+	// seconds.
+	MinTokenTTL = time.Minute
 )
 
 type Client struct {
@@ -55,14 +59,14 @@ type Client struct {
 	TokenTTL string `json:"tokenTTL,omitempty"`
 }
 
-// ParseTokenTTL parses a client's tokenTTL: a positive Go duration of at most DefaultTokenTTL.
+// ParseTokenTTL parses a client's tokenTTL: a Go duration from MinTokenTTL to DefaultTokenTTL.
 func ParseTokenTTL(s string) (time.Duration, error) {
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		return 0, err
 	}
-	if d <= 0 || d > DefaultTokenTTL {
-		return 0, fmt.Errorf("%s is not within (0, %s]", d, DefaultTokenTTL)
+	if d < MinTokenTTL || d > DefaultTokenTTL {
+		return 0, fmt.Errorf("%s is not within [%s, %s]", d, MinTokenTTL, DefaultTokenTTL)
 	}
 	return d, nil
 }

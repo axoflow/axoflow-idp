@@ -156,15 +156,15 @@ func TestValidateClientUrisAndResources(t *testing.T) {
 	}
 }
 
-// TestValidateClientTokenTTL: a tokenTTL is a positive duration of at most the default; the error names the
+// TestValidateClientTokenTTL: a tokenTTL is a duration from a minute to the default; the error names the
 // client. A JSON number is refused by the decoder before validation.
 func TestValidateClientTokenTTL(t *testing.T) {
 	for _, tc := range []struct {
 		ttl     string
 		wantErr bool
 	}{
-		{ttl: ""}, {ttl: "1h"}, {ttl: "24h"},
-		{ttl: "25h", wantErr: true}, {ttl: "0s", wantErr: true}, {ttl: "-1h", wantErr: true},
+		{ttl: ""}, {ttl: "1m"}, {ttl: "1h"}, {ttl: "24h"},
+		{ttl: "25h", wantErr: true}, {ttl: "59s", wantErr: true}, {ttl: "500ms", wantErr: true}, {ttl: "0s", wantErr: true}, {ttl: "-1h", wantErr: true},
 		{ttl: "3600", wantErr: true}, {ttl: "abc", wantErr: true},
 	} {
 		t.Run(tc.ttl, func(t *testing.T) {
