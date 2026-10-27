@@ -309,6 +309,71 @@ func TestGetUserinfoFromToken_AccessTokenOnly(t *testing.T) {
 	}
 }
 
+// TestAccessTokenID pins the revocation identity: the jti of a verified access token, also when expired;
+// nothing for an ID token, a foreign signature or garbage.
+func TestAccessTokenID(t *testing.T) {
+	o := newTestOidc(t, publicClients())
+	u := user.UserInfo{ID: "u1", Username: "alice"}
+	access, err := o.GenerateAccessToken(u, "cli", cliResource)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	id, err := o.AccessTokenID(access)
+	if err != nil || id == "" {
+		t.Fatalf("AccessTokenID = %q, %v", id, err)
+	}
+	if got := accessTokenClaims(t, o, access)["jti"]; got != id {
+		t.Errorf("AccessTokenID = %q, jti claim %v", id, got)
+	}
+
+	o.idTokenTTL = -time.Hour
+	expired, err := o.GenerateAccessToken(u, "cli", cliResource)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	if _, err := o.AccessTokenID(expired); err != nil {
+		t.Errorf("an expired access token has no id: %v (it must stay revocable)", err)
+	}
+	o.idTokenTTL = time.Hour
+
+	idToken, err := o.GenerateIDToken(u, "cli", "n1")
+	if err != nil {
+		t.Fatalf("GenerateIDToken: %v", err)
+	}
+	other := newTestOidc(t, publicClients())
+	foreign, err := other.GenerateAccessToken(u, "cli", cliResource)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	// a token this provider signed as an access token but without a usable jti has no identity either:
+	// nothing may be recorded under an empty key, and such a token is not served
+	for name, payload := range map[string]string{
+		"missing jti": `{"iss":"https://idp.example.com","sub":"u1","aud":"cli","exp":4102444800,"iat":1,"client_id":"cli"}`,
+		"empty jti":   `{"iss":"https://idp.example.com","sub":"u1","aud":"cli","exp":4102444800,"iat":1,"jti":"","client_id":"cli"}`,
+		"null jti":    `{"iss":"https://idp.example.com","sub":"u1","aud":"cli","exp":4102444800,"iat":1,"jti":null,"client_id":"cli"}`,
+	} {
+		jws, err := o.accessSigner.Sign([]byte(payload))
+		if err != nil {
+			t.Fatalf("sign %s: %v", name, err)
+		}
+		token, err := jws.CompactSerialize()
+		if err != nil {
+			t.Fatalf("serialize %s: %v", name, err)
+		}
+		if id, err := o.AccessTokenID(token); err == nil {
+			t.Errorf("%s has an id %q", name, id)
+		}
+		if _, err := o.GetUserinfoFromToken(token); err == nil {
+			t.Errorf("%s is served at userinfo", name)
+		}
+	}
+	for name, token := range map[string]string{"ID token": idToken, "foreign signature": foreign, "garbage": "not.a.token"} {
+		if id, err := o.AccessTokenID(token); err == nil {
+			t.Errorf("%s has an id %q", name, id)
+		}
+	}
+}
+
 func TestGenerateAccessTokenClaims(t *testing.T) {
 	o := newTestOidc(t, publicClients())
 	u := user.UserInfo{ID: "u1", Username: "alice", Email: "a@example.com", Groups: []string{"admins"}}

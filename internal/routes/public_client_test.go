@@ -15,6 +15,7 @@
 package routes
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -453,6 +454,12 @@ func TestUserinfo_AccessTokenOnly(t *testing.T) {
 	if got := userinfoGet(t, r, id); got.Code != http.StatusUnauthorized {
 		t.Errorf("userinfo with the ID token = %d, want 401", got.Code)
 	}
+	// the parser accepts other spellings of the same token; they must share its revocation below
+	for name, alias := range tokenAliases(t, access) {
+		if got := userinfoGet(t, r, alias); got.Code != http.StatusOK {
+			t.Fatalf("userinfo with the token as %s = %d before revocation, want 200", name, got.Code)
+		}
+	}
 
 	revoke := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(url.Values{
 		"token": {access}, "client_id": {"app"}, "client_secret": {"s3cret"},
@@ -468,6 +475,38 @@ func TestUserinfo_AccessTokenOnly(t *testing.T) {
 	}
 	if got := userinfoGet(t, r, id); got.Code != http.StatusUnauthorized {
 		t.Errorf("userinfo with the ID token after revocation = %d, want 401", got.Code)
+	}
+	// the revocation holds for every spelling of the token, since it is recorded under the jti
+	for name, alias := range tokenAliases(t, access) {
+		if got := userinfoGet(t, r, alias); got.Code != http.StatusUnauthorized {
+			t.Errorf("userinfo with the revoked token as %s = %d, want 401", name, got.Code)
+		}
+	}
+}
+
+// tokenAliases returns spellings of a compact JWS that parse and verify as the same token: an internal
+// space, the flattened JSON serialization, and a signature whose unused padding bit is flipped.
+func tokenAliases(t *testing.T, compact string) map[string]string {
+	t.Helper()
+	parts := strings.Split(compact, ".")
+	if len(parts) != 3 {
+		t.Fatalf("not a compact JWS: %q", compact)
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	signature := parts[2]
+	last := strings.IndexByte(alphabet, signature[len(signature)-1])
+	padBit := signature[:len(signature)-1] + string(alphabet[last^1])
+	want, err := base64.RawURLEncoding.DecodeString(signature)
+	if err != nil {
+		t.Fatalf("signature: %v", err)
+	}
+	if got, err := base64.RawURLEncoding.DecodeString(padBit); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("padding-bit alias does not decode to the same signature: %v", err)
+	}
+	return map[string]string{
+		"internal space":        parts[0] + ". " + parts[1] + "." + parts[2],
+		"flattened JSON":        `{"protected":"` + parts[0] + `","payload":"` + parts[1] + `","signature":"` + parts[2] + `"}`,
+		"padding-bit signature": parts[0] + "." + parts[1] + "." + padBit,
 	}
 }
 

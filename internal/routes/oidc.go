@@ -309,7 +309,12 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.tokenStore.Revoke(revocationRequest.Token)
+	// the revocation is recorded under the verified token's jti, not its bytes: an access token has more
+	// than one valid spelling, its id has one. A token this server did not sign as an access token (the ID
+	// token is not a credential here) is the RFC 7009 unknown token: 200 and nothing recorded.
+	if id, err := r.oidc.AccessTokenID(revocationRequest.Token); err == nil {
+		r.tokenStore.Revoke(id)
+	}
 
 	res.WriteHeader(http.StatusOK)
 }
@@ -329,7 +334,12 @@ func (r *Routes) OidcUserinfo(res http.ResponseWriter, req *http.Request) {
 
 	token := parts[1]
 
-	if r.tokenStore.IsRevoked(token) {
+	id, err := r.oidc.AccessTokenID(token)
+	if err != nil {
+		http.Error(res, "invalid token", http.StatusUnauthorized)
+		return
+	}
+	if r.tokenStore.IsRevoked(id) {
 		http.Error(res, "token has been revoked", http.StatusUnauthorized)
 		return
 	}

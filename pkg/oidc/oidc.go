@@ -568,8 +568,33 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 	return nil
 }
 
-// GetUserinfoFromToken serves /oidc/userinfo from an access token. Only the at+jwt profile is accepted
-// (RFC 9068 §4): the ID token of the same response is a separate credential, and a revocation of the
+// AccessTokenID returns the jti of a token this provider signed as an access token (typ at+jwt), expired
+// or not. It is the identity a revocation is recorded under: the token's bytes have more than one valid
+// spelling (whitespace, JSON serialization, unused padding bits), the id has one.
+func (o *Oidc) AccessTokenID(tokenString string) (string, error) {
+	token, err := jose.ParseSigned(tokenString)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse token: %w", err)
+	}
+	if len(token.Signatures) != 1 || token.Signatures[0].Header.ExtraHeaders[jose.HeaderType] != "at+jwt" {
+		return "", errors.New("not an access token")
+	}
+	payload, err := token.Verify(o.keychain.GetAll()[0].Public().Key)
+	if err != nil {
+		return "", fmt.Errorf("failed to verify token: %w", err)
+	}
+	var claims AccessTokenPayload
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", fmt.Errorf("failed to unmarshal claims: %w", err)
+	}
+	if claims.JWTID == "" {
+		return "", errors.New("access token without jti")
+	}
+	return claims.JWTID, nil
+}
+
+// GetUserinfoFromToken serves /oidc/userinfo from an access token. Only a token with the typ at+jwt
+// header is accepted: the ID token of the same response is a separate credential, and a revocation of the
 // access token must not leave it usable here.
 func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
 	token, err := jose.ParseSigned(tokenString)
@@ -588,6 +613,9 @@ func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, erro
 	var claims AccessTokenPayload
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal claims: %w", err)
+	}
+	if claims.JWTID == "" {
+		return nil, errors.New("access token without jti") // no identity to revoke it under
 	}
 
 	if time.Now().Unix() > claims.Expiration {
