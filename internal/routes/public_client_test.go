@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
+	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/go-jose/go-jose/v3"
@@ -405,6 +406,68 @@ func TestPublicClient_AuthorizeRefusals(t *testing.T) {
 				t.Errorf("redirect query = %v, want error=invalid_target and state=xyz", q)
 			}
 		})
+	}
+}
+
+func userinfoGet(t *testing.T, r *Routes, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/oidc/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	r.OidcUserinfo(rec, req)
+	return rec
+}
+
+// TestUserinfo_AccessTokenOnly covers the confidential client's two tokens at /oidc/userinfo: the access
+// token answers, the ID token never does, and once the client revokes the access token neither does.
+// Before the access token was split from the ID token, revoking "the token" covered userinfo by itself.
+func TestUserinfo_AccessTokenOnly(t *testing.T) {
+	r, cookie := newPublicClientRoutes(t)
+	r.tokenStore = tokenstore.New(tokenstore.Config{})
+	q := url.Values{
+		"scope": {"openid profile email"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "nonce": {"n1"},
+	}
+	code := issueCode(t, r, cookie, q)
+	rec := postToken(t, r, url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+	}
+	body := tokenBody(t, rec)
+	id, _ := body["id_token"].(string)
+	access, _ := body["access_token"].(string)
+
+	if got := userinfoGet(t, r, access); got.Code != http.StatusOK {
+		t.Fatalf("userinfo with the access token = %d: %s", got.Code, got.Body.String())
+	} else {
+		var info map[string]any
+		if err := json.Unmarshal(got.Body.Bytes(), &info); err != nil {
+			t.Fatalf("userinfo body: %v", err)
+		}
+		_, claims := verifiedClaims(t, r, access)
+		if info["sub"] != claims["sub"] || info["sub"] == "" {
+			t.Errorf("userinfo sub = %v, want the token's %v", info["sub"], claims["sub"])
+		}
+	}
+	if got := userinfoGet(t, r, id); got.Code != http.StatusUnauthorized {
+		t.Errorf("userinfo with the ID token = %d, want 401", got.Code)
+	}
+
+	revoke := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(url.Values{
+		"token": {access}, "client_id": {"app"}, "client_secret": {"s3cret"},
+	}.Encode()))
+	revoke.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	revoked := httptest.NewRecorder()
+	r.OidcRevoke(revoked, revoke)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("revoke = %d: %s", revoked.Code, revoked.Body.String())
+	}
+	if got := userinfoGet(t, r, access); got.Code != http.StatusUnauthorized {
+		t.Errorf("userinfo with the revoked access token = %d, want 401", got.Code)
+	}
+	if got := userinfoGet(t, r, id); got.Code != http.StatusUnauthorized {
+		t.Errorf("userinfo with the ID token after revocation = %d, want 401", got.Code)
 	}
 }
 

@@ -281,6 +281,34 @@ func accessTokenClaims(t *testing.T, o *Oidc, token string) map[string]any {
 	return claims
 }
 
+// TestGetUserinfoFromToken_AccessTokenOnly pins that userinfo is served from the at+jwt access token and
+// that the ID token of the same response is refused: revoking the access token must not leave a second
+// credential for the endpoint.
+func TestGetUserinfoFromToken_AccessTokenOnly(t *testing.T) {
+	o := newTestOidc(t, publicClients())
+	u := user.UserInfo{ID: "u1", Username: "alice", Email: "a@example.com", Groups: []string{"admins"}}
+	access, err := o.GenerateAccessToken(u, "cli", cliResource)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	id, err := o.GenerateIDToken(u, "cli", "n1")
+	if err != nil {
+		t.Fatalf("GenerateIDToken: %v", err)
+	}
+
+	info, err := o.GetUserinfoFromToken(access)
+	if err != nil {
+		t.Fatalf("userinfo from the access token: %v", err)
+	}
+	want := &UserinfoResponse{Subject: "u1", Name: "alice", Email: "a@example.com", Groups: []string{"admins"}}
+	if !reflect.DeepEqual(info, want) {
+		t.Errorf("userinfo = %+v, want %+v", info, want)
+	}
+	if _, err := o.GetUserinfoFromToken(id); err == nil {
+		t.Error("the ID token was accepted as a userinfo bearer")
+	}
+}
+
 func TestGenerateAccessTokenClaims(t *testing.T) {
 	o := newTestOidc(t, publicClients())
 	u := user.UserInfo{ID: "u1", Username: "alice", Email: "a@example.com", Groups: []string{"admins"}}

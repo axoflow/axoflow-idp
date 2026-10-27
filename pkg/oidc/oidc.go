@@ -568,10 +568,16 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 	return nil
 }
 
+// GetUserinfoFromToken serves /oidc/userinfo from an access token. Only the at+jwt profile is accepted
+// (RFC 9068 §4): the ID token of the same response is a separate credential, and a revocation of the
+// access token must not leave it usable here.
 func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
 	token, err := jose.ParseSigned(tokenString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)
+	}
+	if len(token.Signatures) != 1 || token.Signatures[0].Header.ExtraHeaders[jose.HeaderType] != "at+jwt" {
+		return nil, errors.New("not an access token")
 	}
 
 	payload, err := token.Verify(o.keychain.GetAll()[0].Public().Key)
@@ -579,7 +585,7 @@ func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, erro
 		return nil, fmt.Errorf("failed to verify token: %w", err)
 	}
 
-	var claims IDTokenPayload
+	var claims AccessTokenPayload
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal claims: %w", err)
 	}
