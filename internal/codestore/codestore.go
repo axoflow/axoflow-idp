@@ -19,21 +19,24 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
-// Issued is what a code redeems to.
-type Issued struct {
-	IDToken       string
-	AccessToken   string
-	CodeChallenge string
-	// Resource is the RFC 8707 resource the access token was issued for ("" for the client itself);
+// Grant is what an authorization code stands for: the user who authenticated and the request the tokens
+// are minted from when the code is redeemed.
+type Grant struct {
+	User  user.UserInfo
+	Nonce string
+	// Resource is the RFC 8707 resource the access token is minted for ("" for the client itself);
 	// a resource named at /token must match it.
-	Resource string
+	Resource      string
+	CodeChallenge string
 }
 
 type code struct {
 	createdAt   time.Time
-	issued      Issued
+	grant       Grant
 	clientID    string
 	redirectURI string
 }
@@ -77,8 +80,8 @@ func (s *CodeStore) cleanUp() {
 	}
 }
 
-// Create stores the issued tokens under a new code bound to clientID and redirectURI.
-func (s *CodeStore) Create(issued Issued, clientID, redirectURI string) string {
+// Create stores the grant under a new code bound to clientID and redirectURI.
+func (s *CodeStore) Create(grant Grant, clientID, redirectURI string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -87,7 +90,7 @@ func (s *CodeStore) Create(issued Issued, clientID, redirectURI string) string {
 	id := rand.Text()
 	s.codes[id] = code{
 		createdAt:   time.Now(),
-		issued:      issued,
+		grant:       grant,
 		clientID:    clientID,
 		redirectURI: redirectURI,
 	}
@@ -97,24 +100,24 @@ func (s *CodeStore) Create(issued Issued, clientID, redirectURI string) string {
 
 // Pop consumes the code even when the binding fails: single use per RFC 6749 §4.1.2.
 // It refuses an expired code, whether or not cleanUp has run since it expired.
-func (s *CodeStore) Pop(code, clientID, redirectURI string) (Issued, error) {
+func (s *CodeStore) Pop(code, clientID, redirectURI string) (Grant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	session, ok := s.codes[code]
 	if !ok {
-		return Issued{}, ErrNotFound
+		return Grant{}, ErrNotFound
 	}
 
 	delete(s.codes, code)
 	if s.ttl != 0 && session.createdAt.Before(time.Now().Add(-s.ttl)) {
-		return Issued{}, ErrExpired
+		return Grant{}, ErrExpired
 	}
 	if session.clientID != clientID {
-		return Issued{}, ErrClientMismatch
+		return Grant{}, ErrClientMismatch
 	}
 	if session.redirectURI != redirectURI {
-		return Issued{}, ErrRedirectMismatch
+		return Grant{}, ErrRedirectMismatch
 	}
-	return session.issued, nil
+	return session.grant, nil
 }

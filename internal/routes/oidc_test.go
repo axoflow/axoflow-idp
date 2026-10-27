@@ -27,6 +27,7 @@ import (
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 const testRedirectURI = "https://app.example.com/cb"
@@ -252,7 +253,7 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
-	code := r.store.Create(codestore.Issued{IDToken: "the-id-token", AccessToken: "the-access-token"}, "app", testRedirectURI)
+	code := r.store.Create(codestore.Grant{User: user.UserInfo{ID: "u1", Username: "alice"}, Nonce: "n1"}, "app", testRedirectURI)
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {"app"},
@@ -277,11 +278,14 @@ func TestOidcToken_Success(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("bad json: %v", err)
 	}
-	if body.IDToken != "the-id-token" {
-		t.Errorf("id_token = %q, want %q", body.IDToken, "the-id-token")
+	// both tokens are minted at redemption from the grant
+	typ, claims := verifiedClaims(t, r, body.IDToken)
+	if typ != "JWT" || claims["sub"] != "u1" || claims["nonce"] != "n1" || claims["aud"] != "app" {
+		t.Errorf("id_token typ=%q sub=%v nonce=%v aud=%v, want JWT u1 n1 app", typ, claims["sub"], claims["nonce"], claims["aud"])
 	}
-	if body.AccessToken != "the-access-token" {
-		t.Errorf("access_token = %q, want %q", body.AccessToken, "the-access-token")
+	typ, claims = verifiedClaims(t, r, body.AccessToken)
+	if typ != "at+jwt" || claims["sub"] != "u1" || claims["aud"] != "app" || claims["client_id"] != "app" {
+		t.Errorf("access_token typ=%q sub=%v aud=%v client_id=%v, want at+jwt u1 app app", typ, claims["sub"], claims["aud"], claims["client_id"])
 	}
 	if body.ExpiresIn != 24*3600 {
 		t.Errorf("expires_in = %d, want %d", body.ExpiresIn, 24*3600)

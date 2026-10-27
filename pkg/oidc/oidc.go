@@ -35,7 +35,13 @@ import (
 const (
 	SigningKeyKid = "oidc-signing-key"
 
-	defaultIDTokenTTL = 24 * time.Hour
+	// DefaultTokenTTL is the lifetime of both tokens unless the client sets a shorter tokenTTL. The
+	// revocation list keeps an entry this long, so no client may exceed it.
+	DefaultTokenTTL = 24 * time.Hour
+	// MinTokenTTL is the shortest tokenTTL. exp, iat and expires_in are whole seconds, which only rules out
+	// sub-second values; the minute is a policy floor, so that no client runs on tokens it renews every few
+	// seconds.
+	MinTokenTTL = time.Minute
 )
 
 type Client struct {
@@ -48,6 +54,21 @@ type Client struct {
 	Public bool `json:"public,omitempty"`
 	// Resources are the RFC 8707 resource indicators allowed; none means no resource may be sent.
 	Resources []string `json:"resources,omitempty"`
+	// TokenTTL is the lifetime of this client's ID and access tokens as a Go duration string such as "1h";
+	// empty means DefaultTokenTTL. A string, not a time.Duration: a JSON number would decode as nanoseconds.
+	TokenTTL string `json:"tokenTTL,omitempty"`
+}
+
+// ParseTokenTTL parses a client's tokenTTL: a Go duration from MinTokenTTL to DefaultTokenTTL.
+func ParseTokenTTL(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d < MinTokenTTL || d > DefaultTokenTTL {
+		return 0, fmt.Errorf("%s is not within [%s, %s]", d, MinTokenTTL, DefaultTokenTTL)
+	}
+	return d, nil
 }
 
 // registeredRedirectUris returns every redirect URI registered for the client:
@@ -144,11 +165,23 @@ func New(cfg Config) (*Oidc, error) {
 		keychain:     cfg.Keychain,
 		signer:       signer,
 		accessSigner: accessSigner,
-		idTokenTTL:   defaultIDTokenTTL,
+		idTokenTTL:   DefaultTokenTTL,
 	}, nil
 }
 
+// IDTokenTTL is the provider's default token lifetime, the longest any client gets.
 func (o *Oidc) IDTokenTTL() time.Duration {
+	return o.idTokenTTL
+}
+
+// ClientTokenTTL is the lifetime of the tokens issued to clientID: its tokenTTL when set, the provider
+// default otherwise, also for an unknown client. Validation refused an unparsable tokenTTL at start.
+func (o *Oidc) ClientTokenTTL(clientID string) time.Duration {
+	if c, ok := o.getClient(clientID); ok && c.TokenTTL != "" {
+		if d, err := ParseTokenTTL(c.TokenTTL); err == nil {
+			return d
+		}
+	}
 	return o.idTokenTTL
 }
 
@@ -387,12 +420,13 @@ func ValidResourceIndicator(s string) bool {
 }
 
 func (o *Oidc) GenerateIDToken(user user.UserInfo, clientID string, nonce string) (string, error) {
+	now := time.Now()
 	return sign(o.signer, IDTokenPayload{
 		Issuer:     o.baseUrl,
 		Subject:    user.ID,
 		Audience:   clientID,
-		Expiration: time.Now().Add(o.idTokenTTL).Unix(),
-		IssuedAt:   time.Now().Unix(),
+		Expiration: now.Add(o.ClientTokenTTL(clientID)).Unix(),
+		IssuedAt:   now.Unix(),
 		Nonce:      nonce,
 		Name:       user.Username,
 		Groups:     user.Groups,
@@ -420,12 +454,13 @@ func (o *Oidc) GenerateAccessToken(user user.UserInfo, clientID string, resource
 	if audience == "" {
 		audience = clientID
 	}
+	now := time.Now()
 	return sign(o.accessSigner, AccessTokenPayload{
 		Issuer:     o.baseUrl,
 		Subject:    user.ID,
 		Audience:   audience,
-		Expiration: time.Now().Add(o.idTokenTTL).Unix(),
-		IssuedAt:   time.Now().Unix(),
+		Expiration: now.Add(o.ClientTokenTTL(clientID)).Unix(),
+		IssuedAt:   now.Unix(),
 		JWTID:      rand.Text(),
 		ClientID:   clientID,
 		Name:       user.Username,
