@@ -27,6 +27,9 @@ type Issued struct {
 	IDToken       string
 	AccessToken   string
 	CodeChallenge string
+	// Resource is the RFC 8707 resource the access token was issued for ("" for the client itself);
+	// a resource named at /token must match it.
+	Resource string
 }
 
 type code struct {

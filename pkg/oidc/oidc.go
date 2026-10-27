@@ -368,11 +368,11 @@ func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
 
 	// a token is bound to one audience, so this server accepts at most one resource
 	if len(req.Resources) > 1 {
-		return errors.New("invalid_target")
+		return ErrInvalidTarget
 	}
 	if resource := req.Resource(); resource != "" {
 		if !ValidResourceIndicator(resource) || !slices.Contains(client.Resources, resource) {
-			return errors.New("invalid_target")
+			return ErrInvalidTarget
 		}
 	}
 
@@ -441,6 +441,29 @@ type TokenRequest struct {
 	RedirectUri  string
 	Code         string
 	CodeVerifier string
+	// Resources are the RFC 8707 resource values of the request; an empty value counts as omitted.
+	Resources []string
+}
+
+// Resource returns the one non-empty resource of the request, or "" when none was sent.
+func (r TokenRequest) Resource() string {
+	resource := ""
+	for _, candidate := range r.Resources {
+		if candidate != "" {
+			resource = candidate
+		}
+	}
+	return resource
+}
+
+func (r TokenRequest) resourceCount() int {
+	count := 0
+	for _, candidate := range r.Resources {
+		if candidate != "" {
+			count++
+		}
+	}
+	return count
 }
 
 type RevocationRequest struct {
@@ -462,6 +485,8 @@ var (
 	ErrInvalidClient        = errors.New("invalid_client")
 	ErrInvalidGrant         = errors.New("invalid_grant")
 	ErrUnsupportedGrantType = errors.New("unsupported_grant_type")
+	// ErrInvalidTarget is RFC 8707 §2's code for a resource the request may not have.
+	ErrInvalidTarget = errors.New("invalid_target")
 )
 
 // ValidateTokenRequest authenticates the client; a public client has no secret, so it must send a code_verifier.
@@ -487,6 +512,21 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return ErrInvalidGrant
 	}
 
+	// this server accepts at most one non-empty resource per token request (a grant carries one); the match
+	// against the grant needs the code
+	if req.resourceCount() > 1 {
+		return ErrInvalidTarget
+	}
+
+	return nil
+}
+
+// VerifyTokenResource checks a resource named at /token against the one the code was issued for:
+// it must be that resource, or absent (a local policy within RFC 8707 §2.2). Issuance never changes at redemption.
+func VerifyTokenResource(req TokenRequest, granted string) error {
+	if resource := req.Resource(); resource != "" && resource != granted {
+		return ErrInvalidTarget
+	}
 	return nil
 }
 

@@ -184,6 +184,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		IDToken:       idToken,
 		AccessToken:   accessToken,
 		CodeChallenge: authReq.CodeChallenge,
+		Resource:      authReq.Resource(),
 	}, authReq.ClientID, authReq.RedirectUri)
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
@@ -226,6 +227,7 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			RedirectUri:  req.Form.Get("redirect_uri"),
 			Code:         req.Form.Get("code"),
 			CodeVerifier: req.Form.Get("code_verifier"),
+			Resources:    req.Form["resource"],
 		}
 	default:
 		res.Header().Add("allow", http.MethodPost)
@@ -245,6 +247,10 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := oidc.VerifyCodeExchange(issued.CodeChallenge, tokenRequest.CodeVerifier); err != nil {
+		writeTokenError(res, err)
+		return
+	}
+	if err := oidc.VerifyTokenResource(tokenRequest, issued.Resource); err != nil {
 		writeTokenError(res, err)
 		return
 	}

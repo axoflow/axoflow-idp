@@ -183,6 +183,56 @@ func TestValidateTokenRequest_PublicClient(t *testing.T) {
 	}
 }
 
+func TestValidateTokenRequest_Resources(t *testing.T) {
+	o := newTestOidc(t, publicClients())
+	base := TokenRequest{GrantType: "authorization_code", ClientID: "cli", RedirectUri: "http://localhost/callback", Code: "c", CodeVerifier: testVerifier}
+	tests := []struct {
+		name      string
+		resources []string
+		wantErr   error
+	}{
+		{"no resource", nil, nil},
+		{"one resource", []string{cliResource}, nil},
+		{"an empty value counts as omitted (RFC 6749 §3.1)", []string{""}, nil},
+		{"an empty value beside one resource", []string{"", cliResource}, nil},
+		{"two resources", []string{cliResource, "https://api.example/other"}, ErrInvalidTarget},
+		{"the same resource twice", []string{cliResource, cliResource}, ErrInvalidTarget},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := base
+			req.Resources = tt.resources
+			if err := o.ValidateTokenRequest(req); !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestVerifyTokenResource(t *testing.T) {
+	tests := []struct {
+		name      string
+		resources []string
+		granted   string
+		wantErr   error
+	}{
+		{"absent, grant for the client", nil, "", nil},
+		{"absent, grant for a resource", nil, cliResource, nil},
+		{"the granted resource", []string{cliResource}, cliResource, nil},
+		{"empty value, grant for a resource", []string{""}, cliResource, nil},
+		{"another resource", []string{"https://api.example/other"}, cliResource, ErrInvalidTarget},
+		{"a resource when the grant is for the client", []string{cliResource}, "", ErrInvalidTarget},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := TokenRequest{Resources: tt.resources}
+			if err := VerifyTokenResource(req, tt.granted); !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateRevocationRequest_PublicClientCannotRevoke(t *testing.T) {
 	o := newTestOidc(t, publicClients())
 	tests := []struct {

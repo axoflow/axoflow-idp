@@ -277,6 +277,49 @@ func TestPublicClient_TokenRefusals(t *testing.T) {
 	}
 }
 
+// TestPublicClient_TokenResource covers a resource named at /token: it may repeat the
+// granted one; another spends the code like the other binding failures; two values are refused before
+// the code is looked up, so it stays redeemable.
+func TestPublicClient_TokenResource(t *testing.T) {
+	tests := []struct {
+		name      string
+		resources []string
+		wantError string // empty: the tokens are issued
+		spent     bool
+	}{
+		{"the granted resource repeated", []string{cliResource}, "", false},
+		{"an empty value", []string{""}, "", false},
+		{"another resource", []string{"https://api.example/other"}, "invalid_target", true},
+		{"two resources", []string{cliResource, "https://api.example/other"}, "invalid_target", false},
+	}
+	r, cookie := newPublicClientRoutes(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code := issueCode(t, r, cookie, cliAuthQuery())
+			form := tfTokenForm(code)
+			form["resource"] = tt.resources
+			rec := postToken(t, r, form)
+			if tt.wantError == "" {
+				if rec.Code != http.StatusOK {
+					t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+				}
+				_, claims := verifiedClaims(t, r, tokenBody(t, rec)["access_token"].(string))
+				if claims["aud"] != cliResource {
+					t.Errorf("aud = %v, want %q", claims["aud"], cliResource)
+				}
+				return
+			}
+			assertRefusal(t, rec, tt.wantError)
+			retry := postToken(t, r, tfTokenForm(code))
+			if tt.spent {
+				assertRefusal(t, retry, "invalid_grant")
+			} else if retry.Code != http.StatusOK {
+				t.Errorf("code should still redeem, got %d: %s", retry.Code, retry.Body.String())
+			}
+		})
+	}
+}
+
 // TestPublicClient_LoginPostFlow is the signed-out path a command-line
 // user takes: the authorization URL renders the login form, the credentials
 // are posted to that same URL, and the code redeems to the resource-bound
