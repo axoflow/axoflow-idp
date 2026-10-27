@@ -293,7 +293,7 @@ func TestOidcToken_Success(t *testing.T) {
 
 func TestOidcRevokeBadClientCredentials(t *testing.T) {
 	r := newTokenTestRoutes(t)
-	r.tokenStore = tokenstore.New(tokenstore.Config{})
+	r.tokenStore = tokenstore.New(0)
 
 	form := url.Values{
 		"token":         {"some-token"},

@@ -15,14 +15,12 @@
 package session
 
 import (
+	"crypto/rand"
 	"errors"
 	"sync"
-
-	"github.com/oklog/ulid/v2"
 )
 
 type session struct {
-	ID     ulid.ULID
 	userID string
 }
 
@@ -38,16 +36,14 @@ func New() *Session {
 }
 
 func (s *Session) Create(userId string) string {
-	ses := session{
-		ID:     ulid.Make(),
-		userID: userId,
-	}
+	// the id is the cookie's whole credential, so it comes from crypto/rand: a ULID's entropy is math/rand
+	id := rand.Text()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[ses.ID.String()] = ses
+	s.sessions[id] = session{userID: userId}
 
-	return ses.ID.String()
+	return id
 }
 
 func (s *Session) Get(sessionId string) (string, error) {
