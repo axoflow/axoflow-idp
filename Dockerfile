@@ -22,9 +22,10 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build $GO_BUILD_FLAGS -o 
 
 FROM builder AS debug
 
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go install github.com/go-delve/delve/cmd/dlv@latest
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go install github.com/go-delve/delve/cmd/dlv@v1.27.2
 
-CMD ["/go/bin/dlv", "--listen=:40000", "--headless=true", "--api-version=2", "--accept-multiclient", "exec", "/usr/local/bin/axoidp"]
+# The Delve API is unauthenticated: it listens on loopback only, for kubectl port-forward. Never deploy this stage.
+CMD ["/go/bin/dlv", "--listen=127.0.0.1:40000", "--headless=true", "--api-version=2", "--accept-multiclient", "exec", "/usr/local/bin/axoidp"]
 
 FROM gcr.io/distroless/static:latest@sha256:9197324ba51d9cd071af8505989365c006adf9d6d2067eada25aef00abbb5278
 
