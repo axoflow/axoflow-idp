@@ -135,6 +135,11 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	user, ok := r.user.Authenticate(username, password)
 	if ok {
 		if err := r.issueSession(res, user.ID, user.Password); err == nil {
+			// The new cookie replaces the request's (the /oidc/auth form signs
+			// in over a live session); end the session it pointed to.
+			if old, err := req.Cookie("session"); err == nil {
+				r.session.Delete(old.Value)
+			}
 			return &user
 		}
 		slog.Info("login refused: the password changed while it was checked", "user_id", user.ID)

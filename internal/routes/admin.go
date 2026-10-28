@@ -233,6 +233,7 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	r.session.DeleteUserSessions(userId)
 	r.resetTokens.RevokeUser(userId)
 
 	slog.Info("admin deleted user", "admin", admin.Username, "deleted_user_id", userId)
