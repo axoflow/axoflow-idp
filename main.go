@@ -54,11 +54,17 @@ type config struct {
 }
 
 type serverConfig struct {
-	ListenAddr        string   `json:"listenAddr"`
-	ReadHeaderTimeout duration `json:"readHeaderTimeout"`
-	ReadTimeout       duration `json:"readTimeout"`
-	WriteTimeout      duration `json:"writeTimeout"`
-	IdleTimeout       duration `json:"idleTimeout"`
+	ListenAddr        string    `json:"listenAddr"`
+	ReadHeaderTimeout duration  `json:"readHeaderTimeout"`
+	ReadTimeout       duration  `json:"readTimeout"`
+	WriteTimeout      duration  `json:"writeTimeout"`
+	IdleTimeout       duration  `json:"idleTimeout"`
+	TLS               tlsConfig `json:"tls"`
+}
+
+type tlsConfig struct {
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
 }
 
 var defaultServerConfig = serverConfig{
@@ -208,6 +214,10 @@ func (s *serverConfig) validate() error {
 		return errors.New("server.readHeaderTimeout must not be longer than server.readTimeout")
 	}
 
+	if (s.TLS.CertFile == "") != (s.TLS.KeyFile == "") {
+		return errors.New("server.tls.certFile and server.tls.keyFile must be set together")
+	}
+
 	return nil
 }
 
@@ -220,6 +230,15 @@ func newServer(s serverConfig, handler http.Handler) *http.Server {
 		WriteTimeout:      time.Duration(s.WriteTimeout),
 		IdleTimeout:       time.Duration(s.IdleTimeout),
 	}
+}
+
+// serve serves HTTPS when a certificate is configured, plain HTTP otherwise.
+func serve(server *http.Server, t tlsConfig) error {
+	slog.Info("listening", "addr", server.Addr, "tls", t.CertFile != "")
+	if t.CertFile == "" {
+		return server.ListenAndServe()
+	}
+	return server.ListenAndServeTLS(t.CertFile, t.KeyFile)
 }
 
 // newMux registers every route under pathPrefix, so the same binary can be
@@ -341,9 +360,7 @@ func main() {
 
 	mux := newMux(r, pathPrefix, u)
 
-	server := newServer(cfg.Server, mux)
-	slog.Info("listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); err != nil {
+	if err := serve(newServer(cfg.Server, mux), cfg.Server.TLS); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}

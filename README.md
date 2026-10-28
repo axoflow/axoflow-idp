@@ -69,6 +69,25 @@ The timeouts are Go durations such as `10s` or `2m` and must be positive.
 longer than the idle timeout of a reverse proxy in front of the IdP, so the
 proxy closes an idle connection first.
 
+## Serving TLS
+
+By default the IdP serves plain HTTP, for a TLS-terminating reverse proxy in
+front of it. To encrypt the proxy-to-IdP hop too, set `server.tls` to a PEM
+certificate and key. The IdP then serves HTTPS on `listenAddr`:
+
+```json
+"server": {
+    "tls": {
+        "certFile": "/tls/tls.crt",
+        "keyFile": "/tls/tls.key"
+    }
+}
+```
+
+If an intermediate CA signed the certificate, `certFile` must hold the chain:
+the server certificate first, then the intermediates. The certificate only
+secures the proxy-to-IdP hop. `baseUrl` stays the public URL that clients use.
+
 ## Seeding the user database
 
 With `users.createIfMissing: true`, the IdP writes `users.users` to

@@ -132,6 +132,8 @@ func loadAndValidate(t *testing.T, server map[string]any) (config, error) {
 func TestServerConfig(t *testing.T) {
 	withReadTimeout := defaultServerConfig
 	withReadTimeout.ReadTimeout = duration(20 * time.Second)
+	withTLS := defaultServerConfig
+	withTLS.TLS = tlsConfig{CertFile: "tls.crt", KeyFile: "tls.key"}
 
 	tests := map[string]struct {
 		server  map[string]any
@@ -144,6 +146,15 @@ func TestServerConfig(t *testing.T) {
 		"a listenAddr without a port is rejected": {server: map[string]any{"listenAddr": "8080"}, wantErr: true},
 		"readHeaderTimeout longer than readTimeout is rejected": {
 			server: map[string]any{"readHeaderTimeout": "20s"}, wantErr: true,
+		},
+		"a certificate with its key enables TLS": {
+			server: map[string]any{"tls": map[string]string{"certFile": "tls.crt", "keyFile": "tls.key"}}, want: withTLS,
+		},
+		"a certificate without a key is rejected": {
+			server: map[string]any{"tls": map[string]string{"certFile": "tls.crt"}}, wantErr: true,
+		},
+		"a key without a certificate is rejected": {
+			server: map[string]any{"tls": map[string]string{"keyFile": "tls.key"}}, wantErr: true,
 		},
 	}
 
