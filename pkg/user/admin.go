@@ -129,6 +129,9 @@ func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []s
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
+	if !validUTF8(groups) {
+		return errInvalidUTF8
+	}
 
 	// With the self-delete guard in AdminDelete this keeps at least one admin:
 	// the caller is still one after every operation.

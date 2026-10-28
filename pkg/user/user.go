@@ -24,6 +24,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -73,6 +74,20 @@ var ErrRegistrationClosed = errors.New("registration is closed")
 // the minimum policy. Routes match it with errors.Is to show a friendly,
 // retryable message instead of treating it as an opaque failure.
 var ErrWeakPassword = errors.New("password does not meet the minimum requirements")
+
+// errInvalidUTF8 refuses a value that encoding/json would rewrite: it replaces
+// each invalid UTF-8 byte with U+FFFD when users.json is written, so two names
+// that differ only there become one on disk and the next start fails.
+var errInvalidUTF8 = errors.New("username, email and groups must be valid UTF-8 text")
+
+func validUTF8(groups []string, values ...string) bool {
+	for _, v := range append(values, groups...) {
+		if !utf8.ValidString(v) {
+			return false
+		}
+	}
+	return true
+}
 
 // dummyPasswordHash is a valid argon2id hash verified on the username-not-found
 // path of Authenticate so that path spends the same ~100ms as a real password
@@ -252,6 +267,9 @@ func (u *User) RegisterLocked(username string, groups []string, email string) (s
 func (u *User) register(id, username, hashedPassword string, groups []string, email string, selfService bool) (string, error) {
 	if u.Static {
 		return "", ErrReadOnly
+	}
+	if !validUTF8(groups, username, email) {
+		return "", errInvalidUTF8
 	}
 
 	u.mu.Lock()
