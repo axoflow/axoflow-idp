@@ -46,3 +46,18 @@ func TestRevokeKeepsEveryRevocationWithoutALifetime(t *testing.T) {
 		t.Error("a zero lifetime must keep every revocation")
 	}
 }
+
+func TestCleanUpDropsRevocationsOlderThanTheTokenLifetime(t *testing.T) {
+	s := New(time.Minute)
+	s.revokedTokens["stale"] = time.Now().Add(-2 * time.Minute)
+	s.revokedTokens["fresh"] = time.Now()
+
+	s.CleanUp()
+
+	if s.IsRevoked("stale") {
+		t.Error("a revocation older than the token lifetime survived CleanUp")
+	}
+	if !s.IsRevoked("fresh") {
+		t.Error("a revocation within the token lifetime was dropped")
+	}
+}

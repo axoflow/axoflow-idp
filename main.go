@@ -40,10 +40,70 @@ import (
 // stays valid. Kept short to limit the window of a leaked link.
 const passwordResetLinkTTL = time.Hour
 
+// defaultCookieTTL is how long the browser keeps the session cookie unless
+// session.cookieTTL says otherwise.
+const defaultCookieTTL = 7 * 24 * time.Hour
+
+// sweepInterval is how often the in-memory stores drop what has expired.
+const sweepInterval = time.Hour
+
+// sessionConfig bounds a sign-in. Each field is a Go duration string such as
+// "168h" ("7d" is not one), parsed like a client's tokenTTL.
+type sessionConfig struct {
+	// CookieTTL is the session cookie's Max-Age; default 168h.
+	CookieTTL string `json:"cookieTTL,omitempty"`
+	// IdleTTL ends a session unused for this long; default and "0": never.
+	IdleTTL string `json:"idleTTL,omitempty"`
+	// AbsoluteTTL ends a session this long after sign-in; default the
+	// cookieTTL, so a session does not outlive its cookie; "0": never.
+	AbsoluteTTL string `json:"absoluteTTL,omitempty"`
+}
+
+// sessionLimits is a sessionConfig parsed, with the defaults applied.
+type sessionLimits struct {
+	cookie time.Duration
+	session.Config
+}
+
+func (c *sessionConfig) limits() (sessionLimits, error) {
+	if c == nil {
+		c = &sessionConfig{}
+	}
+	parse := func(name, value string, def time.Duration) (time.Duration, error) {
+		if value == "" {
+			return def, nil
+		}
+		d, err := time.ParseDuration(value)
+		if err != nil || d < 0 {
+			return 0, fmt.Errorf("session.%s %q must be a non-negative duration such as \"168h\"", name, value)
+		}
+		return d, nil
+	}
+
+	var l sessionLimits
+	var err error
+	if l.cookie, err = parse("cookieTTL", c.CookieTTL, defaultCookieTTL); err != nil {
+		return l, err
+	}
+	// Max-Age counts whole seconds, and a Max-Age of zero would make the
+	// cookie last only until the browser closes.
+	if l.cookie < time.Second {
+		return l, fmt.Errorf("session.cookieTTL %q must be at least 1s", c.CookieTTL)
+	}
+	if l.IdleTTL, err = parse("idleTTL", c.IdleTTL, 0); err != nil {
+		return l, err
+	}
+	if l.AbsoluteTTL, err = parse("absoluteTTL", c.AbsoluteTTL, l.cookie); err != nil {
+		return l, err
+	}
+	return l, nil
+}
+
 type config struct {
-	BaseUrl    string        `json:"baseUrl"`
-	Clients    []oidc.Client `json:"clients"`
-	Users      *user.Config  `json:"users,omitempty"`
+	BaseUrl    string         `json:"baseUrl"`
+	Clients    []oidc.Client  `json:"clients"`
+	Users      *user.Config   `json:"users,omitempty"`
+	Session    *sessionConfig `json:"session,omitempty"`
 	SigningKey struct {
 		FilePath          string `json:"filePath,omitempty"`
 		GenerateIfMissing bool   `json:"generateIfMissing,omitempty"`
@@ -159,6 +219,10 @@ func (c *config) Validate() error {
 		}
 	}
 
+	if _, err := c.Session.limits(); err != nil {
+		return err
+	}
+
 	// Without a path a generated key is never read back, so every start would
 	// generate a new one: tokens signed with the previous key no longer
 	// validate against the restarted provider (a verifier still holding the
@@ -254,6 +318,55 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 	return mux
 }
 
+// logSessionLimits logs the effective session limits, and warns for each
+// client whose tokens outlive the absolute limit: shortening the session does
+// not shorten them.
+func logSessionLimits(log *slog.Logger, l sessionLimits, clients []oidc.Client, tokenTTL func(clientID string) time.Duration) {
+	limit := func(d time.Duration) string {
+		if d == 0 {
+			return "disabled"
+		}
+		return d.String()
+	}
+	log.Info("session limits", "cookie", l.cookie.String(), "idle", limit(l.IdleTTL), "absolute", limit(l.AbsoluteTTL))
+
+	if l.AbsoluteTTL == 0 {
+		return
+	}
+	for _, c := range clients {
+		if ttl := tokenTTL(c.Id); ttl > l.AbsoluteTTL {
+			log.Warn("id_token outlives the session; as a bearer JWT it stays valid at relying parties until it expires",
+				"client_id", c.Id, "token_ttl", ttl.String(), "session_absolute", l.AbsoluteTTL.String())
+		}
+	}
+}
+
+// cleaner is an in-memory store that can drop its expired entries.
+type cleaner interface{ CleanUp() }
+
+// startSweeper calls CleanUp on every store each interval until stop is
+// called: an entry nobody presents again is otherwise held until a restart.
+func startSweeper(interval time.Duration, stores ...cleaner) (stop func()) {
+	ticker := time.NewTicker(interval)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				for _, s := range stores {
+					s.CleanUp()
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		ticker.Stop()
+		close(done)
+	}
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
@@ -291,21 +404,32 @@ func main() {
 	parsedBaseUrl, _ := url.Parse(cfg.BaseUrl)
 	pathPrefix := parsedBaseUrl.Path
 
+	// Validate() has already parsed the session block, so this cannot fail.
+	limits, _ := cfg.Session.limits()
+	logSessionLimits(slog.Default(), limits, cfg.Clients, o.ClientTokenTTL)
+
+	sessions := session.New(limits.Config)
+	codes := codestore.New()
+	tokens := tokenstore.New(o.IDTokenTTL())
+	resetTokens := resettoken.New(passwordResetLinkTTL)
 	r, err := routes.New(routes.Config{
 		Oidc:          o,
-		Session:       session.New(),
+		Session:       sessions,
 		User:          u,
-		CodeStore:     codestore.New(),
-		TokenStore:    tokenstore.New(o.IDTokenTTL()),
-		ResetTokens:   resettoken.New(passwordResetLinkTTL),
+		CodeStore:     codes,
+		TokenStore:    tokens,
+		ResetTokens:   resetTokens,
 		BaseURL:       cfg.BaseUrl,
 		PathPrefix:    pathPrefix,
 		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
+		CookieTTL:     limits.cookie,
 	})
 	if err != nil {
 		slog.Error("failed to create routes", "error", err)
 		os.Exit(1)
 	}
+	stopSweeper := startSweeper(sweepInterval, sessions, codes, tokens, resetTokens)
+	defer stopSweeper()
 
 	mux := newMux(r, pathPrefix, u)
 

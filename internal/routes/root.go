@@ -18,7 +18,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -175,7 +174,7 @@ func (r *Routes) setSessionCookie(res http.ResponseWriter, sessionId string) {
 	http.SetCookie(res, &http.Cookie{
 		Name:     "session",
 		Value:    sessionId,
-		MaxAge:   int((7 * 24 * time.Hour).Seconds()),
+		MaxAge:   int(r.cookieTTL.Seconds()),
 		Path:     r.url("/"),
 		HttpOnly: true,
 		Secure:   r.secureCookies,

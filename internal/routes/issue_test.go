@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
@@ -132,5 +133,31 @@ func TestIssueSession_RotationAfterProofLeavesNoSession(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSessionCookieMaxAgeFollowsCookieTTL(t *testing.T) {
+	for _, tc := range []struct {
+		ttl  time.Duration
+		want int
+	}{
+		{168 * time.Hour, 604800},
+		{time.Hour, 3600},
+		{1500 * time.Millisecond, 1},
+	} {
+		t.Run(tc.ttl.String(), func(t *testing.T) {
+			r := newTestRoutes(t, false)
+			r.cookieTTL = tc.ttl
+			rec := postForm(r.Login, "/login", nil, url.Values{"username": {"bob"}, "password": {"bobpass1"}})
+			for _, c := range rec.Result().Cookies() {
+				if c.Name == "session" {
+					if c.MaxAge != tc.want {
+						t.Errorf("Max-Age = %d, want %d", c.MaxAge, tc.want)
+					}
+					return
+				}
+			}
+			t.Fatalf("no session cookie (status %d)", rec.Code)
+		})
 	}
 }

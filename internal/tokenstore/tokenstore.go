@@ -41,14 +41,29 @@ func (s *TokenStore) Revoke(token string) {
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	if s.ttl != 0 {
-		for revoked, revokedAt := range s.revokedTokens {
-			if now.Sub(revokedAt) > s.ttl {
-				delete(s.revokedTokens, revoked)
-			}
+	s.prune(now)
+	s.revokedTokens[token] = now
+}
+
+// CleanUp drops the revocations older than the token lifetime, as Revoke does, for a server that sees no
+// revocation for a long time.
+func (s *TokenStore) CleanUp() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.prune(time.Now())
+}
+
+// prune drops the revocations older than the token lifetime. The caller holds mu.
+func (s *TokenStore) prune(now time.Time) {
+	if s.ttl == 0 {
+		return
+	}
+	for revoked, revokedAt := range s.revokedTokens {
+		if now.Sub(revokedAt) > s.ttl {
+			delete(s.revokedTokens, revoked)
 		}
 	}
-	s.revokedTokens[token] = now
 }
 
 func (s *TokenStore) IsRevoked(token string) bool {

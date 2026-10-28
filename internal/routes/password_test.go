@@ -64,7 +64,7 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 	}
 
 	return &Routes{
-		session:     session.New(),
+		session:     session.New(session.Config{}),
 		user:        u,
 		template:    tpl,
 		resetTokens: resettoken.New(time.Hour),

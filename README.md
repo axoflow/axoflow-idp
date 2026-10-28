@@ -112,6 +112,40 @@ A client that is not public must have a `clientSecret`.
 > tokens signed with the previous key no longer validated against the restarted
 > provider (a verifier that still held the old key was not affected).
 
+### Sessions
+
+Signing in sets a `session` cookie. The optional `session` block bounds it,
+with Go duration strings as for `tokenTTL` (`"168h"`; `"7d"` is not a Go
+duration). These are the defaults:
+
+```json
+"session": {
+    "cookieTTL": "168h",
+    "idleTTL": "0",
+    "absoluteTTL": "168h"
+}
+```
+
+- `cookieTTL` is the cookie's `Max-Age`; at least `"1s"`.
+- `idleTTL` ends a session that has not been used for that long. `"0"`, the
+  default, sets no idle limit.
+- `absoluteTTL` ends a session that long after sign-in, used or not. It
+  defaults to the `cookieTTL`, so a session does not outlive its cookie;
+  `"0"` sets no limit.
+
+A negative value, or one too large for a Go duration, is refused at start.
+Sessions are held in memory, so a restart still signs everyone out. A user
+holds at most 50 sessions: the 51st sign-in ends the oldest. Once an hour the
+server drops expired sessions, authorization codes, revocations and reset
+links. At start it logs the effective limits, and warns for each client whose
+tokens (its `tokenTTL`, or 24 hours) outlive `absoluteTTL`: ending a session
+does not revoke the tokens issued during it.
+
+> Upgrading: a session used to last until a restart, sign-out, or a password
+> change or deletion of its user. It now also ends `absoluteTTL` after
+> sign-in, by default when its 7-day cookie expires. `"absoluteTTL": "0"`
+> keeps the previous behavior.
+
 ## Seeding the user database
 
 With `users.createIfMissing: true`, the IdP writes `users.users` to
