@@ -220,7 +220,7 @@ func (u *User) applySeedPasswords() error {
 	defer u.saveMu.Unlock()
 
 	users := u.snapshot()
-	changed := false
+	var updated []string
 	for _, s := range seed {
 		i := slices.IndexFunc(users, func(ui UserInfo) bool { return ui.Username == s.Username })
 		missing := i == -1
@@ -230,14 +230,19 @@ func (u *User) applySeedPasswords() error {
 		}
 
 		users[i].Password = s.Password
-		slog.Info("seed user's password set from the configuration", "username", s.Username)
-		changed = true
+		updated = append(updated, s.Username)
 	}
 
-	if !changed {
+	if len(updated) == 0 {
 		return nil
 	}
-	return u.commit(users)
+	if err := u.commit(users); err != nil {
+		return err
+	}
+	for _, username := range updated {
+		slog.Info("seed user's password updated from the configuration", "username", username)
+	}
+	return nil
 }
 
 func getIndex(users []UserInfo, id string) (int, bool) {

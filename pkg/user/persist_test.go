@@ -15,13 +15,16 @@
 package user
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -751,4 +754,37 @@ func TestApplySeedPasswords_WriteFailure(t *testing.T) {
 			t.Errorf("file changed:\nbefore %+v\nfile   %+v", before, disk)
 		}
 	})
+}
+
+// The per-user seed log reports a password that was set, so a write that
+// fails leaves no success-looking line before the startup error.
+func TestApplySeedPasswords_LogsOnlyCommitted(t *testing.T) {
+	tests := []struct {
+		fail       string
+		wantLogged bool
+	}{
+		{fail: "rename"},
+		{fail: "none", wantLogged: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.fail, func(t *testing.T) {
+			u, _ := persistFixture(t)
+			u.Defaults = []UserInfo{{Username: "bob", Password: hash([]byte("bob"), "seedpass1")}}
+			u.fsys = faultFS{fail: tt.fail}
+			var logs bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			err := u.applySeedPasswords()
+
+			if (err == nil) != tt.wantLogged {
+				t.Fatalf("applySeedPasswords error = %v", err)
+			}
+			if logged := strings.Contains(logs.String(), "username=bob"); logged != tt.wantLogged {
+				t.Errorf("bob's seed password logged = %v, want %v; log:\n%s", logged, tt.wantLogged, logs.String())
+			}
+		})
+	}
 }
