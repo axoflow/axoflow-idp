@@ -570,3 +570,185 @@ func TestReadAPIsReturnCopiesOfGroups(t *testing.T) {
 		})
 	}
 }
+
+// A change owns its copy of every user down to the groups: editing a group in
+// place reaches neither memory nor the file unless the change commits.
+func TestUpdate_CandidateGroupsAreOwned(t *testing.T) {
+	tests := []struct {
+		name   string
+		fail   string // faultFS step; empty means the change refuses itself
+		refuse bool
+	}{
+		{name: "refused change", refuse: true},
+		{name: "failed write", fail: "rename"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, path := persistFixture(t)
+			if tt.fail != "" {
+				u.fsys = faultFS{fail: tt.fail}
+			}
+			before := readUsers(t, path)
+
+			err := u.update(func(users []UserInfo) ([]UserInfo, error) {
+				i, _ := getIndex(users, "bob")
+				users[i].Groups[0] = "admins"
+				if tt.refuse {
+					return nil, errInjected
+				}
+				return users, nil
+			})
+			if !errors.Is(err, errInjected) {
+				t.Fatalf("update error = %v, want the injected failure", err)
+			}
+
+			if bob, _ := u.Get("bob"); !slices.Equal(bob.Groups, []string{RoleUser}) {
+				t.Errorf("bob's groups in memory = %v, want [%s]", bob.Groups, RoleUser)
+			}
+			if disk := readUsers(t, path); !reflect.DeepEqual(disk, before) {
+				t.Errorf("file changed:\nbefore %+v\nfile   %+v", before, disk)
+			}
+			// What memory holds is what the next write saves.
+			u.fsys = nil
+			if err := u.SaveUsers(); err != nil {
+				t.Fatalf("SaveUsers: %v", err)
+			}
+			if disk := readUsers(t, path); !reflect.DeepEqual(disk, before) {
+				t.Errorf("file after the next write:\nbefore %+v\nfile   %+v", before, disk)
+			}
+		})
+	}
+}
+
+// pauseFS stops a write just before its rename; resume decides how the rename
+// ends (nil lets it run).
+type pauseFS struct {
+	osFileSystem
+	paused chan<- struct{}
+	resume <-chan error
+}
+
+func (p pauseFS) Rename(oldpath, newpath string) error {
+	p.paused <- struct{}{}
+	if err := <-p.resume; err != nil {
+		return err
+	}
+	return p.osFileSystem.Rename(oldpath, newpath)
+}
+
+// Until the rename installs the new file, readers see the old state and the
+// file is untouched; after it the change is visible only if the rename worked.
+func TestReadersSeeOldStateUntilRename(t *testing.T) {
+	tests := []struct {
+		name      string
+		renameErr error
+	}{
+		{name: "rename succeeds"},
+		{name: "rename fails", renameErr: errInjected},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, path := persistFixture(t)
+			paused := make(chan struct{})
+			resume := make(chan error)
+			u.fsys = pauseFS{paused: paused, resume: resume}
+			before := readUsers(t, path)
+			oldBob, _ := u.Get("bob")
+
+			done := make(chan error, 1)
+			go func() { done <- u.SetPassword("bob", "newpass123") }()
+			<-paused
+
+			// t.Error, not t.Fatal: the writer must be resumed either way.
+			if bob, _ := u.Get("bob"); bob.Password != oldBob.Password {
+				t.Error("Get sees the new password before the rename")
+			}
+			if _, ok := u.Authenticate("bob", "bobpass123"); !ok {
+				t.Error("old password refused before the rename")
+			}
+			if _, ok := u.Authenticate("bob", "newpass123"); ok {
+				t.Error("new password accepted before the rename")
+			}
+			if disk := readUsers(t, path); !reflect.DeepEqual(disk, before) {
+				t.Errorf("file changed before the rename:\nbefore %+v\nfile   %+v", before, disk)
+			}
+
+			resume <- tt.renameErr
+			err := <-done
+
+			_, oldOK := u.Authenticate("bob", "bobpass123")
+			_, newOK := u.Authenticate("bob", "newpass123")
+			disk := readUsers(t, path)
+			if tt.renameErr == nil {
+				if err != nil {
+					t.Fatalf("SetPassword: %v", err)
+				}
+				if oldOK || !newOK {
+					t.Errorf("after the rename: old password accepted %v, new %v; want false, true", oldOK, newOK)
+				}
+				if got := memory(u); !reflect.DeepEqual(disk, got) {
+					t.Errorf("file differs from memory:\nfile   %+v\nmemory %+v", disk, got)
+				}
+			} else {
+				if !errors.Is(err, ErrPersist) {
+					t.Fatalf("SetPassword error = %v, want ErrPersist", err)
+				}
+				if !oldOK || newOK {
+					t.Errorf("after the failed rename: old password accepted %v, new %v; want true, false", oldOK, newOK)
+				}
+				if !reflect.DeepEqual(disk, before) {
+					t.Errorf("file changed:\nbefore %+v\nfile   %+v", before, disk)
+				}
+			}
+		})
+	}
+}
+
+// A seed password that cannot be written leaves the account's old password in
+// memory and on disk, and the server does not start.
+func TestApplySeedPasswords_WriteFailure(t *testing.T) {
+	seed := []UserInfo{{Username: "bob", Password: hash([]byte("bob"), "seedpass1")}}
+
+	t.Run("store", func(t *testing.T) {
+		u, path := persistFixture(t)
+		u.Defaults = seed
+		u.fsys = faultFS{fail: "rename"}
+		before := readUsers(t, path)
+		oldBob, _ := u.Get("bob")
+
+		if err := u.applySeedPasswords(); !errors.Is(err, ErrPersist) {
+			t.Fatalf("applySeedPasswords error = %v, want ErrPersist", err)
+		}
+
+		if bob, _ := u.Get("bob"); bob.Password != oldBob.Password {
+			t.Error("bob's password in memory changed despite the failed write")
+		}
+		if disk := readUsers(t, path); !reflect.DeepEqual(disk, before) {
+			t.Errorf("file changed:\nbefore %+v\nfile   %+v", before, disk)
+		}
+	})
+
+	t.Run("New", func(t *testing.T) {
+		_, path := persistFixture(t)
+		before := readUsers(t, path)
+		dir := filepath.Dir(path)
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		if f, err := os.CreateTemp(dir, "probe"); err == nil {
+			_ = f.Close()
+			t.Skip("directory permissions are not enforced (running as root?)")
+		}
+
+		_, err := New(Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: true, Defaults: seed})
+		if !errors.Is(err, ErrPersist) {
+			t.Fatalf("New error = %v, want ErrPersist", err)
+		}
+		if disk := readUsers(t, path); !reflect.DeepEqual(disk, before) {
+			t.Errorf("file changed:\nbefore %+v\nfile   %+v", before, disk)
+		}
+	})
+}

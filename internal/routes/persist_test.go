@@ -169,3 +169,35 @@ func TestRegister_FailedSaveReopensBootstrap(t *testing.T) {
 		t.Errorf("reloaded database holds %d users, alice %+v (login %v); want alice alone, as admin", reloaded.Count(), alice, ok)
 	}
 }
+
+// A reset link whose new password could not be saved stays usable: the token
+// is not consumed, and a retry once the storage recovers sets the password.
+// This is the behavior until reset-link redemption consumes the token first.
+func TestSetPassword_FailedSaveKeepsTheLink(t *testing.T) {
+	r := newTestRoutes(t, false)
+	tok, err := r.resetTokens.Create("bob")
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	form := url.Values{"token": {tok}, "new_password": {"newpass123"}}
+	restore := readOnlyDir(t, r.user)
+
+	if rec := postForm(r.SetPassword, "/set-password", nil, form); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if _, ok := r.resetTokens.Peek(tok); !ok {
+		t.Fatal("reset token consumed by the failed save")
+	}
+
+	restore()
+	rec := postForm(r.SetPassword, "/set-password", nil, form)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("retry status = %d, want 303: %s", rec.Code, head(rec.Body.String(), 300))
+	}
+	if _, ok := r.user.Authenticate("bob", "newpass123"); !ok {
+		t.Error("new password refused after the retry")
+	}
+	if _, ok := r.resetTokens.Peek(tok); ok {
+		t.Error("reset token still usable after the password was set")
+	}
+}
