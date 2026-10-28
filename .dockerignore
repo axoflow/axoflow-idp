@@ -1,0 +1,8 @@
+# The build copies only these; keep .git, local config, users and keys out of the context.
+*
+!go.mod
+!go.sum
+!main.go
+!internal
+!pkg
+!templates

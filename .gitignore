@@ -3,3 +3,6 @@ bin/
 config.json
 signing-key.json
 users.json
+signing-key.pem
+users.json~
+.users-*.json

@@ -41,12 +41,18 @@ image:
 minikube-deploy:
     #!/usr/bin/env bash
     set -euo pipefail
-    eval "$(minikube docker-env)"
+    # eval "$(...)" exits 0 when the substitution fails, which would build on
+    # the default daemon; check the exit status before using the output.
+    if ! docker_env="$(minikube -p minikube docker-env)"; then
+        echo "minikube docker-env failed; is minikube running?" >&2
+        exit 1
+    fi
+    eval "$docker_env"
     docker build -t {{IMAGE}}:dev .
     # distroless image: the binary is /axoidp, not on PATH, so the command needs patching too.
-    kubectl -n axoflow-local patch deployment/axoidp -p \
+    kubectl --context minikube -n axoflow-local patch deployment/axoidp -p \
       '{"spec":{"template":{"spec":{"containers":[{"name":"axoidp","image":"{{IMAGE}}:dev","command":["/axoidp"]}]}}}}'
-    kubectl -n axoflow-local rollout status deployment/axoidp --timeout=120s
+    kubectl --context minikube -n axoflow-local rollout status deployment/axoidp --timeout=120s
 
 lint-go: (_install-golangci-lint GOLANGCI_LINT_VERSION GOVERSION)
     {{GOLANGCI_LINT}}_{{GOLANGCI_LINT_VERSION}}_{{GOVERSION}} run --timeout 5m

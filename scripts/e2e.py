@@ -220,6 +220,32 @@ class ServerCase(unittest.TestCase):
         if not _wait_for_port(PORT):
             self._stop()
             raise RuntimeError("server did not start listening (see log)")
+        self._check_server_under_test(config)
+
+    def _check_server_under_test(self, config):
+        # An open port alone could be another process on :PORT; the suite
+        # would then drive that one. Require our process alive and the port
+        # serving the issuer of the config it was started with. A foreign
+        # IdP that serves the same issuer would still pass; the suite runs on
+        # a private runner, so that residual is accepted.
+        with open(config) as f:
+            # the server trims trailing slashes from baseUrl before it becomes the issuer
+            issuer = json.load(f)["baseUrl"].rstrip("/")
+        path = urllib.parse.urlparse(issuer).path
+        code, served = None, None
+        try:
+            code, _, body = Client().get(path + "/.well-known/openid-configuration")
+            served = json.loads(body).get("issuer") if code == 200 else None
+        except (OSError, ValueError, AttributeError):
+            pass
+        exited = self._proc.poll()
+        if exited is not None or served != issuer:
+            self._stop()
+            raise RuntimeError(
+                f"the listener on :{PORT} is not the server under test "
+                f"(server exit code {exited}, discovery status {code}, "
+                f"issuer {served!r}, want {issuer!r}); is another process "
+                f"holding the port? (see log)")
 
     def tearDown(self):
         self._stop()
