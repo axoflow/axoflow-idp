@@ -369,12 +369,25 @@ func TestValidateRefusesIneffectiveSettings(t *testing.T) {
 		{name: "generateIfMissing without filePath", modify: func(c *config) {
 			c.SigningKey.FilePath = ""
 		}, wantErr: "signingKey.filePath is required"},
+		{name: "no filePath without generateIfMissing", modify: func(c *config) {
+			c.SigningKey.FilePath = ""
+			c.SigningKey.GenerateIfMissing = false
+		}, wantErr: "signingKey.filePath is required"},
 		{name: "duplicate client id", modify: func(c *config) {
 			c.Clients = append(c.Clients, c.Clients[0])
 		}, wantErr: "client 1 (cli): duplicate id"},
 		{name: "baseUrl without a host", modify: func(c *config) {
 			c.BaseUrl = "https:///idp"
 		}, wantErr: "baseUrl must have a host"},
+		{name: "baseUrl with a port and no hostname", modify: func(c *config) {
+			c.BaseUrl = "https://:443/idp"
+		}, wantErr: "baseUrl must have a host"},
+		{name: "baseUrl with a hostname and port", modify: func(c *config) {
+			c.BaseUrl = "https://idp.example.test:8443/idp"
+		}},
+		{name: "baseUrl with an IPv6 host", modify: func(c *config) {
+			c.BaseUrl = "https://[::1]/idp"
+		}},
 		{name: "baseUrl with userinfo", modify: func(c *config) {
 			c.BaseUrl = "https://admin:secret@host"
 		}, wantErr: "baseUrl must not contain userinfo"},

@@ -89,8 +89,9 @@ func (c *config) Validate() error {
 	}
 
 	// The issuer is compared verbatim by relying parties, and a credential in
-	// it would be published in discovery.
-	if parsedUrl.Host == "" {
+	// it would be published in discovery. Hostname, not Host: "https://:443"
+	// has a Host of ":443" and names no server.
+	if parsedUrl.Hostname() == "" {
 		return errors.New("baseUrl must have a host")
 	}
 	if parsedUrl.User != nil {
