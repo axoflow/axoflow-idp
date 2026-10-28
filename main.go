@@ -160,7 +160,9 @@ func (c *config) Validate() error {
 	}
 
 	// Without a path a generated key is never read back, so every start would
-	// sign with a new key and invalidate every token already issued.
+	// generate a new one: tokens signed with the previous key no longer
+	// validate against the restarted provider (a verifier still holding the
+	// old key is not affected).
 	if c.SigningKey.FilePath == "" {
 		return errors.New("signingKey.filePath is required")
 	}

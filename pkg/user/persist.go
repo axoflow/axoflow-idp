@@ -127,8 +127,9 @@ func (u *User) commit(users []UserInfo) error {
 
 // writeFile replaces FilePath with users. The rename is the commit boundary:
 // a failure before it removes the temp file and returns ErrPersist with the
-// old file in place. After it the new file is what the next start loads, so a
-// failure to sync the directory is only logged and the write counts as done.
+// old file in place. After it a normal restart loads the new file, so a
+// failure to sync the directory is only logged and the write counts as done,
+// though the change may then not survive a crash.
 func (u *User) writeFile(users []UserInfo) error {
 	data, err := json.Marshal(users)
 	if err != nil {

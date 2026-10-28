@@ -108,8 +108,9 @@ A client that is not public must have a `clientSecret`.
 > undocumented `token.ttl` is no longer read: a revocation is kept for 24 hours,
 > the maximum token lifetime. Client ids must be unique, `baseUrl` needs a host
 > and no userinfo (`user:password@`), and `signingKey.filePath` is required
-> even with `generateIfMissing`: without it a new key was generated at every
-> start, which invalidated every token issued before.
+> even with `generateIfMissing`: without it every start generated a new key, so
+> tokens signed with the previous key no longer validated against the restarted
+> provider (a verifier that still held the old key was not affected).
 
 ## Seeding the user database
 
@@ -149,6 +150,41 @@ be combined with `users.static`; the server refuses to start otherwise.
 `Password` must already be an argon2id or bcrypt hash — the value is stored as
 given. `ID` is optional (a ULID is generated). Duplicate usernames or ids are
 rejected before anything is written.
+
+## Identities
+
+These rules apply when an account is created, through `/register` or the admin
+panel:
+
+- Leading and trailing whitespace is removed from the username and the email.
+  A username that is empty after that is refused, and so is an email made only
+  of whitespace.
+- A username or email containing a control character is refused, and so is a
+  username, email or group that is not valid UTF-8.
+- A username or email that differs from an existing one only in letter case is
+  a duplicate: `Alice` is refused when `alice` exists.
+- An account created by an admin may have no email; an empty email never
+  collides with another. The public registration form requires one.
+
+Existing accounts are not checked against these rules. A database holding both
+`alice` and `Alice` keeps loading, and login, seed users and loading match a
+username byte for byte.
+
+The email is what the registrant typed. The IdP does not verify it and emits no
+`email_verified` claim, so it is no proof that the user controls the mailbox. A
+relying party should link an account by the token's issuer and subject (`iss`
+and `sub`), not by its email.
+
+## How the user database is written
+
+Each change is written to a new owner-only (`0600`) file in the directory of
+`users.filePath`, flushed to disk and renamed over the database; the running
+IdP uses the change only after that. If anything fails before the rename, the
+change is dropped: the file and the running IdP keep the previous state and the
+request fails with "could not save the user database". After a successful
+rename a normal restart loads the new file. The IdP then syncs the directory;
+if that fails it logs a warning and keeps the change, but whether the change
+survives a crash or power loss is uncertain.
 
 ## Releases
 
