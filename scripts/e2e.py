@@ -31,8 +31,8 @@ Usage:
     python3 scripts/e2e.py StaticModeTest          # a single case
     E2E_PORT=8080 E2E_KEEP=1 python3 scripts/e2e.py
 
-The server binds :8080 (hard-coded in the server); set E2E_PORT only if you
-have patched it. E2E_KEEP=1 keeps the temp working dir for debugging.
+E2E_PORT sets the port the server listens on (server.listenAddr) and the tests
+connect to. E2E_KEEP=1 keeps the temp working dir for debugging.
 Standard unittest flags (-v, -k, -f, test selectors) all work.
 """
 
@@ -136,6 +136,7 @@ def _write_config(path, users_path, signing_path, static, base=BASE,
             "baseUrl": base,
             "clients": [{"id": "dev", "name": "Dev", "clientSecret": "s",
                          "redirectUri": BASE + "/cb"}],
+            "server": {"listenAddr": f":{PORT}"},
             "users": {
                 "createIfMissing": False,
                 "filePath": users_path,

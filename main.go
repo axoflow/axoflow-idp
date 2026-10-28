@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,6 +50,41 @@ type config struct {
 		FilePath          string `json:"filePath,omitempty"`
 		GenerateIfMissing bool   `json:"generateIfMissing,omitempty"`
 	} `json:"signingKey"`
+	Server serverConfig `json:"server"`
+}
+
+type serverConfig struct {
+	ListenAddr        string   `json:"listenAddr"`
+	ReadHeaderTimeout duration `json:"readHeaderTimeout"`
+	ReadTimeout       duration `json:"readTimeout"`
+	WriteTimeout      duration `json:"writeTimeout"`
+	IdleTimeout       duration `json:"idleTimeout"`
+}
+
+var defaultServerConfig = serverConfig{
+	ListenAddr:        ":8080",
+	ReadHeaderTimeout: duration(5 * time.Second),
+	ReadTimeout:       duration(10 * time.Second),
+	WriteTimeout:      duration(30 * time.Second),
+	// Longer than the 60-90s a reverse proxy usually keeps an idle upstream
+	// connection, so the proxy closes it first and never reuses a closed one.
+	IdleTimeout: duration(120 * time.Second),
+}
+
+// duration is a time.Duration written as a Go duration string ("10s") in JSON.
+type duration time.Duration
+
+func (d *duration) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d = duration(v)
+	return nil
 }
 
 func LoadConfig() (cfg config, err error) {
@@ -62,6 +98,7 @@ func LoadConfig() (cfg config, err error) {
 		return
 	}
 
+	cfg.Server = defaultServerConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
@@ -131,6 +168,10 @@ func (c *config) Validate() error {
 		return errors.New("signingKey.filePath is required when generateIfMissing is false")
 	}
 
+	if err := c.Server.validate(); err != nil {
+		return err
+	}
+
 	if c.Users != nil && c.Users.AllowBootstrap {
 		if c.Users.Static {
 			return errors.New("users.allowBootstrap cannot be combined with users.static (read-only database)")
@@ -141,6 +182,44 @@ func (c *config) Validate() error {
 	}
 
 	return nil
+}
+
+func (s *serverConfig) validate() error {
+	if _, _, err := net.SplitHostPort(s.ListenAddr); err != nil {
+		return fmt.Errorf("server.listenAddr must be host:port or :port: %w", err)
+	}
+
+	timeouts := []struct {
+		name  string
+		value duration
+	}{
+		{"server.readHeaderTimeout", s.ReadHeaderTimeout},
+		{"server.readTimeout", s.ReadTimeout},
+		{"server.writeTimeout", s.WriteTimeout},
+		{"server.idleTimeout", s.IdleTimeout},
+	}
+	for _, t := range timeouts {
+		if t.value <= 0 {
+			return fmt.Errorf("%s must be a positive duration such as 10s", t.name)
+		}
+	}
+
+	if s.ReadHeaderTimeout > s.ReadTimeout {
+		return errors.New("server.readHeaderTimeout must not be longer than server.readTimeout")
+	}
+
+	return nil
+}
+
+func newServer(s serverConfig, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              s.ListenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: time.Duration(s.ReadHeaderTimeout),
+		ReadTimeout:       time.Duration(s.ReadTimeout),
+		WriteTimeout:      time.Duration(s.WriteTimeout),
+		IdleTimeout:       time.Duration(s.IdleTimeout),
+	}
 }
 
 // newMux registers every route under pathPrefix, so the same binary can be
@@ -262,8 +341,9 @@ func main() {
 
 	mux := newMux(r, pathPrefix, u)
 
-	slog.Info("listening", "addr", "http://localhost:8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	server := newServer(cfg.Server, mux)
+	slog.Info("listening", "addr", server.Addr)
+	if err := server.ListenAndServe(); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
