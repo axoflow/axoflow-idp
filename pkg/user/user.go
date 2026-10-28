@@ -23,7 +23,9 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
@@ -87,6 +89,27 @@ func validUTF8(groups []string, values ...string) bool {
 		}
 	}
 	return true
+}
+
+// newAccountIdentity applies the identity rules for a new account. Surrounding
+// whitespace is dropped and control characters are refused so a name cannot
+// pass for another that looks the same; register compares both fields
+// case-insensitively. An empty email stays allowed: only the public form
+// requires one. Login, seed matching and loading stay byte-exact, so accounts
+// created before these rules keep working.
+func newAccountIdentity(username, email string) (string, string, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", "", errors.New("username is required")
+	}
+	trimmedEmail := strings.TrimSpace(email)
+	if email != "" && trimmedEmail == "" {
+		return "", "", errors.New("email must not be blank")
+	}
+	if strings.ContainsFunc(username, unicode.IsControl) || strings.ContainsFunc(trimmedEmail, unicode.IsControl) {
+		return "", "", errors.New("username and email must not contain control characters")
+	}
+	return username, trimmedEmail, nil
 }
 
 // dummyPasswordHash is a valid argon2id hash verified on the username-not-found
@@ -271,6 +294,10 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 	if !validUTF8(groups, username, email) {
 		return "", errInvalidUTF8
 	}
+	username, email, err := newAccountIdentity(username, email)
+	if err != nil {
+		return "", err
+	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -290,13 +317,13 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 	}
 
 	if slices.IndexFunc(u.users, func(u UserInfo) bool {
-		return u.Username == username
+		return strings.EqualFold(u.Username, username)
 	}) != -1 {
 		return "", errors.New("username already exists")
 	}
 
 	if email != "" && slices.IndexFunc(u.users, func(u UserInfo) bool {
-		return u.Email == email
+		return strings.EqualFold(u.Email, email)
 	}) != -1 {
 		return "", errors.New("email already registered")
 	}
