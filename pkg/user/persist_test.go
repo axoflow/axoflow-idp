@@ -417,3 +417,61 @@ func TestNew_SeedWriteFailure(t *testing.T) {
 		t.Errorf("directory holds %v, want nothing", names)
 	}
 }
+
+// The read APIs hand out copies: a caller changing the groups it got back
+// must not reach the published users, or a later write would save a change
+// no mutator checked.
+func TestReadAPIsReturnCopiesOfGroups(t *testing.T) {
+	reads := []struct {
+		name string
+		bob  func(t *testing.T, u *User) UserInfo
+	}{
+		{"Get", func(t *testing.T, u *User) UserInfo {
+			bob, ok := u.Get("bob")
+			if !ok {
+				t.Fatal("Get: bob not found")
+			}
+			return bob
+		}},
+		{"Authenticate", func(t *testing.T, u *User) UserInfo {
+			bob, ok := u.Authenticate("bob", "bobpass123")
+			if !ok {
+				t.Fatal("Authenticate: bob refused")
+			}
+			return bob
+		}},
+		{"AdminList", func(t *testing.T, u *User) UserInfo {
+			users, err := u.AdminList("alice")
+			if err != nil {
+				t.Fatalf("AdminList: %v", err)
+			}
+			i := slices.IndexFunc(users, func(ui UserInfo) bool { return ui.ID == "bob" })
+			if i == -1 {
+				t.Fatal("AdminList: bob not listed")
+			}
+			return users[i]
+		}},
+	}
+
+	for _, r := range reads {
+		t.Run(r.name, func(t *testing.T) {
+			u, path := persistFixture(t)
+
+			r.bob(t, u).Groups[0] = "admins"
+
+			if bob, _ := u.Get("bob"); !slices.Equal(bob.Groups, []string{RoleUser}) {
+				t.Errorf("bob's groups in memory = %v, want [%s]", bob.Groups, RoleUser)
+			}
+			if err := u.SaveUsers(); err != nil {
+				t.Fatalf("SaveUsers: %v", err)
+			}
+			reloaded, err := New(Config{FilePath: path})
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if bob, _ := reloaded.Get("bob"); !slices.Equal(bob.Groups, []string{RoleUser}) {
+				t.Errorf("bob's groups on disk = %v, want [%s]", bob.Groups, RoleUser)
+			}
+		})
+	}
+}

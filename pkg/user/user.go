@@ -129,6 +129,13 @@ type UserInfo struct {
 	Email    string
 }
 
+// clone is a copy of user that shares nothing with it, so a caller can
+// change what a read returned without touching the published users.
+func (user UserInfo) clone() UserInfo {
+	user.Groups = slices.Clone(user.Groups)
+	return user
+}
+
 type User struct {
 	Config
 	// Lock order: saveMu, then mu. Every writer holds saveMu for its whole
@@ -256,7 +263,7 @@ func (u *User) Get(id string) (UserInfo, bool) {
 		return UserInfo{}, false
 	}
 
-	return u.users[i], true
+	return u.users[i].clone(), true
 }
 
 // Register creates a user for an already-authorized caller; it does not
@@ -473,7 +480,7 @@ func (u *User) Authenticate(username, password string) (UserInfo, bool) {
 		_ = verifyPassword(UserInfo{Password: dummyPasswordHash}, password)
 		return UserInfo{}, false
 	}
-	user := u.users[i]
+	user := u.users[i].clone()
 	u.mu.RUnlock()
 
 	// verifyPassword runs argon2id/bcrypt (~100ms); keep it out of the lock.
