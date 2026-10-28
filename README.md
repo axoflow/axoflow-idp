@@ -88,6 +88,10 @@ If an intermediate CA signed the certificate, `certFile` must hold the chain:
 the server certificate first, then the intermediates. The certificate only
 secures the proxy-to-IdP hop. `baseUrl` stays the public URL that clients use.
 
+The IdP reloads both files when `certFile` changes, so a renewed certificate
+takes effect without a restart. If the new files do not load, the IdP keeps the
+previous certificate and logs a warning.
+
 ## Seeding the user database
 
 With `users.createIfMissing: true`, the IdP writes `users.users` to

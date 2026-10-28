@@ -15,6 +15,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/axoflow/axoflow-idp/internal/certreloader"
 	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/routes"
@@ -234,11 +236,17 @@ func newServer(s serverConfig, handler http.Handler) *http.Server {
 
 // serve serves HTTPS when a certificate is configured, plain HTTP otherwise.
 func serve(server *http.Server, t tlsConfig) error {
-	slog.Info("listening", "addr", server.Addr, "tls", t.CertFile != "")
 	if t.CertFile == "" {
+		slog.Info("listening", "addr", server.Addr, "tls", false)
 		return server.ListenAndServe()
 	}
-	return server.ListenAndServeTLS(t.CertFile, t.KeyFile)
+	certs, err := certreloader.New(t.CertFile, t.KeyFile)
+	if err != nil {
+		return err
+	}
+	server.TLSConfig = &tls.Config{GetCertificate: certs.GetCertificate}
+	slog.Info("listening", "addr", server.Addr, "tls", true)
+	return server.ListenAndServeTLS("", "")
 }
 
 // newMux registers every route under pathPrefix, so the same binary can be
