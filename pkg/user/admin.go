@@ -132,6 +132,34 @@ func (u *User) AdminResetPassword(adminID string, targetID string, newPassword s
 	})
 }
 
+// ErrResetRefused is returned by SetPasswordByReset when the link no longer
+// carries the authority to set the password.
+var ErrResetRefused = errors.New("password reset link is no longer valid")
+
+// SetPasswordByReset sets targetID's password hash to newHash on the
+// authority of a reset link minted by issuerID. Both conditions are checked
+// against the users it changes, under the writer lock: issuerID is still in
+// UserAdminGroup, and the target's hash is still expectedHash, the one read
+// before the redemption started. A demotion, deletion or password change that
+// commits first therefore refuses the link with ErrResetRefused.
+func (u *User) SetPasswordByReset(targetID, issuerID, expectedHash, newHash string) error {
+	if u.Static {
+		return ErrReadOnly
+	}
+
+	return u.update(func(users []UserInfo) ([]UserInfo, error) {
+		if err := u.requireAdmin(users, issuerID); err != nil {
+			return nil, ErrResetRefused
+		}
+		i, ok := getIndex(users, targetID)
+		if !ok || users[i].Password != expectedHash {
+			return nil, ErrResetRefused
+		}
+		users[i].Password = newHash
+		return users, nil
+	})
+}
+
 func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []string) error {
 	if u.Static {
 		return ErrReadOnly

@@ -105,3 +105,53 @@ func TestValidatePassword(t *testing.T) {
 		})
 	}
 }
+
+func TestSetPasswordByReset(t *testing.T) {
+	const users = `[
+		{"ID":"admin1","Username":"admin","Groups":["admins"]},
+		{"ID":"user1","Username":"user","Groups":["user"]},
+		{"ID":"bob","Username":"bob","Password":"bob-hash"}
+	]`
+	newHash, err := HashNewPassword("bob", "linkpass1")
+	if err != nil {
+		t.Fatalf("HashNewPassword: %v", err)
+	}
+	tests := []struct {
+		name         string
+		target       string
+		issuer       string
+		expectedHash string
+		static       bool
+		wantErr      error
+	}{
+		{"current admin, unchanged hash", "bob", "admin1", "bob-hash", false, nil},
+		{"issuer not an admin", "bob", "user1", "bob-hash", false, ErrResetRefused},
+		{"issuer gone", "bob", "nobody", "bob-hash", false, ErrResetRefused},
+		{"target's hash changed", "bob", "admin1", "older-hash", false, ErrResetRefused},
+		{"target gone", "carol", "admin1", "bob-hash", false, ErrResetRefused},
+		{"static database", "bob", "admin1", "bob-hash", true, ErrReadOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := New(Config{FilePath: writeUsersFile(t, users), UserAdminGroup: "admins", Static: tt.static})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			err = u.SetPasswordByReset(tt.target, tt.issuer, tt.expectedHash, newHash)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("SetPasswordByReset = %v, want %v", err, tt.wantErr)
+			}
+			_, set := u.Authenticate("bob", "linkpass1")
+			if set != (tt.wantErr == nil) {
+				t.Errorf("link password authenticates = %v, want %v", set, tt.wantErr == nil)
+			}
+		})
+	}
+}
+
+func TestHashNewPasswordRefusesWeak(t *testing.T) {
+	if _, err := HashNewPassword("bob", "short"); !errors.Is(err, ErrWeakPassword) {
+		t.Errorf("HashNewPassword(short) = %v, want ErrWeakPassword", err)
+	}
+}

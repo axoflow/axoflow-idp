@@ -27,7 +27,10 @@ import (
 )
 
 type entry struct {
-	userID    string
+	userID string
+	// issuedBy is the admin who minted the link: redemption carries that
+	// admin's authority, so the redeemer checks it is still held.
+	issuedBy  string
 	expiresAt time.Time
 }
 
@@ -50,9 +53,10 @@ func New(ttl time.Duration) *Store {
 	}
 }
 
-// Create mints a new reset token for userID, invalidating any token previously
-// issued to that user. The returned token is the secret to embed in the link.
-func (s *Store) Create(userID string) (string, error) {
+// Create mints a new reset token for userID on behalf of the admin issuedBy,
+// invalidating any token previously issued to that user. The returned token is
+// the secret to embed in the link.
+func (s *Store) Create(userID, issuedBy string) (string, error) {
 	token, err := randomToken()
 	if err != nil {
 		return "", err
@@ -64,58 +68,84 @@ func (s *Store) Create(userID string) (string, error) {
 	if prev, ok := s.byUser[userID]; ok {
 		delete(s.byToken, prev)
 	}
-	s.byToken[token] = entry{userID: userID, expiresAt: s.now().Add(s.ttl)}
+	s.byToken[token] = entry{userID: userID, issuedBy: issuedBy, expiresAt: s.now().Add(s.ttl)}
 	s.byUser[userID] = token
 
 	return token, nil
 }
 
 // Consume validates and atomically invalidates a token. It returns the
-// associated user ID and true on success. Unknown, already-used, and expired
-// tokens all return ("", false); the token is removed regardless so a single
-// presentation is the only chance to use it.
-func (s *Store) Consume(token string) (string, bool) {
+// associated user ID, the issuing admin's ID and true on success. Unknown,
+// already-used, and expired tokens all return ("", "", false); the token is
+// removed regardless so a single presentation is the only chance to use it.
+func (s *Store) Consume(token string) (userID, issuedBy string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.byToken[token]
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 
+	s.remove(token, e)
+
+	if s.now().After(e.expiresAt) {
+		return "", "", false
+	}
+
+	return e.userID, e.issuedBy, true
+}
+
+// Peek is Consume without the invalidation. It decides nothing: a caller that
+// acts on a token Consumes it first, so two presentations cannot both act.
+// Expired tokens are removed and reported invalid.
+func (s *Store) Peek(token string) (userID, issuedBy string, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.byToken[token]
+	if !ok {
+		return "", "", false
+	}
+	if s.now().After(e.expiresAt) {
+		s.remove(token, e)
+		return "", "", false
+	}
+
+	return e.userID, e.issuedBy, true
+}
+
+// RevokeUser drops userID's outstanding token, if any. A change of the
+// user's password by another path makes a link minted before it moot.
+func (s *Store) RevokeUser(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if token, ok := s.byUser[userID]; ok {
+		s.remove(token, s.byToken[token])
+	}
+}
+
+// CleanUp drops every expired token. Expired tokens are otherwise removed
+// only when presented or replaced, so links nobody opens would stay forever.
+func (s *Store) CleanUp() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	for token, e := range s.byToken {
+		if now.After(e.expiresAt) {
+			s.remove(token, e)
+		}
+	}
+}
+
+// remove deletes token, whose entry is e. The caller holds mu.
+func (s *Store) remove(token string, e entry) {
 	delete(s.byToken, token)
 	if s.byUser[e.userID] == token {
 		delete(s.byUser, e.userID)
 	}
-
-	if s.now().After(e.expiresAt) {
-		return "", false
-	}
-
-	return e.userID, true
-}
-
-// Peek returns the user ID for a valid (known, unexpired) token without
-// consuming it, so the caller can perform fallible work (e.g. persisting the
-// new password) and only Consume once it has durably succeeded. Expired tokens
-// are removed and reported invalid.
-func (s *Store) Peek(token string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	e, ok := s.byToken[token]
-	if !ok {
-		return "", false
-	}
-	if s.now().After(e.expiresAt) {
-		delete(s.byToken, token)
-		if s.byUser[e.userID] == token {
-			delete(s.byUser, e.userID)
-		}
-		return "", false
-	}
-
-	return e.userID, true
 }
 
 func randomToken() (string, error) {

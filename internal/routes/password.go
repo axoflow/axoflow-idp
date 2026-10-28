@@ -15,7 +15,6 @@
 package routes
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -72,6 +71,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		// Invalidate every session for this user (including the current one),
 		// then issue a fresh session so this browser stays logged in.
 		r.session.DeleteUserSessions(u.ID)
+		r.resetTokens.RevokeUser(u.ID)
 		r.setSessionCookie(res, r.session.Create(u.ID))
 
 		slog.Info("user changed password", "user_id", u.ID, "username", u.Username)
@@ -142,7 +142,7 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 		return
 	}
 
-	token, err := r.resetTokens.Create(userID)
+	token, err := r.resetTokens.Create(userID, admin.ID)
 	if err != nil {
 		slog.Error("failed to generate password reset token", "target_user_id", userID, "error", err)
 		http.Error(res, "Could not create reset link", http.StatusInternalServerError)
@@ -200,41 +200,47 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		// Validate the token without consuming it yet, so that if persisting
-		// the new password fails the link remains usable for a retry.
-		userID, ok := r.resetTokens.Peek(token)
+		// Peek only names the account; Consume decides. target.Password is
+		// the hash the link may replace, read before the slow hash so that a
+		// change committing meanwhile refuses the link. A weak password
+		// leaves the link usable for a retry.
+		userID, _, ok := r.resetTokens.Peek(token)
 		if !ok {
 			r.renderSetPasswordInvalid(res)
 			return
 		}
+		target, ok := r.user.Get(userID)
+		if !ok {
+			r.renderSetPasswordInvalid(res)
+			return
+		}
+		newHash, err := user.HashNewPassword(target.ID, newPassword)
+		if err != nil {
+			res.WriteHeader(http.StatusBadRequest)
+			r.renderSetPasswordForm(res, token, err.Error())
+			return
+		}
 
-		if err := r.user.SetPassword(userID, newPassword); err != nil {
-			// The token is still unconsumed, so the link works for a retry.
+		// From here the link is spent whatever happens: two presentations
+		// cannot both set a password, and an admin re-mints a refused one.
+		consumedID, issuedBy, ok := r.resetTokens.Consume(token)
+		if !ok || consumedID != userID {
+			r.renderSetPasswordInvalid(res)
+			return
+		}
+		if r.hooks.afterResetConsume != nil {
+			r.hooks.afterResetConsume()
+		}
+		if err := r.user.SetPasswordByReset(userID, issuedBy, target.Password, newHash); err != nil {
 			if saveFailed(err, "operation", "set_password", "target_user_id", userID) {
-				res.WriteHeader(http.StatusInternalServerError)
-				r.renderSetPasswordForm(res, token, saveFailedMessage)
+				http.Error(res, saveFailedMessage, http.StatusInternalServerError)
 				return
 			}
-			// A weak password is a client-side mistake: keep the token usable and
-			// re-render the form with the reason, like the empty-password branch.
-			if errors.Is(err, user.ErrWeakPassword) {
-				res.WriteHeader(http.StatusBadRequest)
-				r.renderSetPasswordForm(res, token, err.Error())
-				return
-			}
-			slog.Warn("set password via reset link failed", "target_user_id", userID, "error", err)
+			slog.Warn("password reset link refused", "target_user_id", userID, "error", err)
 			r.renderSetPasswordInvalid(res)
 			return
 		}
 
-		// Only now burn the token, and sign out any existing sessions. The token
-		// was already saved durably above, so a retryable link is no longer
-		// needed. If Consume reports the token already gone, a concurrent
-		// request for the same link won the race (e.g. a double submit): the
-		// password is set either way, so log the anomaly rather than fail.
-		if _, ok := r.resetTokens.Consume(token); !ok {
-			slog.Warn("reset token already consumed by a concurrent request", "target_user_id", userID)
-		}
 		r.session.DeleteUserSessions(userID)
 
 		slog.Info("password set via reset link", "target_user_id", userID)

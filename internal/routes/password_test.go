@@ -261,9 +261,9 @@ func TestAdminCreateResetLink_Success(t *testing.T) {
 		t.Fatal("response should contain a /set-password link")
 	}
 	// The minted token must resolve to bob.
-	userID, ok := r.resetTokens.Consume(m[1])
-	if !ok || userID != "bob" {
-		t.Errorf("token resolved to (%q,%v), want (bob,true)", userID, ok)
+	userID, issuedBy, ok := r.resetTokens.Consume(m[1])
+	if !ok || userID != "bob" || issuedBy != "admin1" {
+		t.Errorf("token resolved to (%q,%q,%v), want (bob,admin1,true)", userID, issuedBy, ok)
 	}
 }
 
@@ -378,9 +378,9 @@ func TestAdminRegister_WithResetLink(t *testing.T) {
 		t.Error("locked user should not authenticate with empty password")
 	}
 
-	userID, ok := r.resetTokens.Consume(m[1])
-	if !ok {
-		t.Fatal("minted token should be valid")
+	userID, issuedBy, ok := r.resetTokens.Consume(m[1])
+	if !ok || issuedBy != "admin1" {
+		t.Fatalf("minted token = (%q,%v), want issued by admin1", issuedBy, ok)
 	}
 	if err := r.user.SetPassword(userID, "chosenpw1"); err != nil {
 		t.Fatalf("SetPassword: %v", err)
@@ -409,7 +409,7 @@ func TestSetPassword_GetWithoutTokenIsInvalid(t *testing.T) {
 
 func TestSetPassword_Success(t *testing.T) {
 	r := newTestRoutes(t, false)
-	tok, _ := r.resetTokens.Create("bob")
+	tok, _ := r.resetTokens.Create("bob", "admin1")
 	existing := r.session.Create("bob") // should be invalidated
 
 	form := url.Values{"token": {tok}, "new_password": {"freshpass"}}
@@ -431,7 +431,7 @@ func TestSetPassword_Success(t *testing.T) {
 	if _, ok := r.user.Authenticate("bob", "freshpass"); !ok {
 		t.Error("new password should authenticate")
 	}
-	if _, ok := r.resetTokens.Consume(tok); ok {
+	if _, _, ok := r.resetTokens.Consume(tok); ok {
 		t.Error("token should already be consumed")
 	}
 	if _, err := r.session.Get(existing); err == nil {
@@ -455,7 +455,7 @@ func TestSetPassword_InvalidToken(t *testing.T) {
 
 func TestSetPassword_EmptyPasswordDoesNotConsumeToken(t *testing.T) {
 	r := newTestRoutes(t, false)
-	tok, _ := r.resetTokens.Create("bob")
+	tok, _ := r.resetTokens.Create("bob", "admin1")
 
 	form := url.Values{"token": {tok}, "new_password": {""}}
 	req := httptest.NewRequest(http.MethodPost, "/set-password", strings.NewReader(form.Encode()))
@@ -468,14 +468,14 @@ func TestSetPassword_EmptyPasswordDoesNotConsumeToken(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 	// Token must still be usable.
-	if _, ok := r.resetTokens.Consume(tok); !ok {
+	if _, _, ok := r.resetTokens.Consume(tok); !ok {
 		t.Error("token should not be consumed on an empty-password submission")
 	}
 }
 
 func TestSetPassword_WeakPasswordDoesNotConsumeToken(t *testing.T) {
 	r := newTestRoutes(t, false)
-	tok, _ := r.resetTokens.Create("bob")
+	tok, _ := r.resetTokens.Create("bob", "admin1")
 
 	form := url.Values{"token": {tok}, "new_password": {"short"}}
 	req := httptest.NewRequest(http.MethodPost, "/set-password", strings.NewReader(form.Encode()))
@@ -489,7 +489,7 @@ func TestSetPassword_WeakPasswordDoesNotConsumeToken(t *testing.T) {
 	}
 	// A weak (too-short) password is a client-side validation failure: the link
 	// must stay valid for a retry.
-	if _, ok := r.resetTokens.Peek(tok); !ok {
+	if _, _, ok := r.resetTokens.Peek(tok); !ok {
 		t.Error("weak password must not consume the reset token")
 	}
 	if _, ok := r.user.Authenticate("bob", "short"); ok {
@@ -499,7 +499,7 @@ func TestSetPassword_WeakPasswordDoesNotConsumeToken(t *testing.T) {
 
 func TestSetPassword_ValidTokenDeletedUser(t *testing.T) {
 	r := newTestRoutes(t, false)
-	tok, _ := r.resetTokens.Create("bob")
+	tok, _ := r.resetTokens.Create("bob", "admin1")
 	if err := r.user.AdminDelete("admin1", "bob"); err != nil {
 		t.Fatalf("AdminDelete: %v", err)
 	}
@@ -519,7 +519,7 @@ func TestSetPassword_ValidTokenDeletedUser(t *testing.T) {
 	}
 	// SetPassword failed (user gone) before the token was consumed, so the link
 	// stays valid for a retry.
-	if _, ok := r.resetTokens.Peek(tok); !ok {
+	if _, _, ok := r.resetTokens.Peek(tok); !ok {
 		t.Error("token should remain valid after a failed SetPassword")
 	}
 }

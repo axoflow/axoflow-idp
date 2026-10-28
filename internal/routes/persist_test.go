@@ -74,7 +74,7 @@ func TestSaveFailure_EveryRouteIsGenericAndRollsBack(t *testing.T) {
 			})
 		}},
 		{"set password", func(r *Routes) *httptest.ResponseRecorder {
-			tok, _ := r.resetTokens.Create("bob")
+			tok, _ := r.resetTokens.Create("bob", "admin1")
 			return postForm(r.SetPassword, "/set-password", nil, url.Values{"token": {tok}, "new_password": {"newpass123"}})
 		}},
 		{"admin register", func(r *Routes) *httptest.ResponseRecorder {

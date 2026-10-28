@@ -55,6 +55,12 @@ type Routes struct {
 	prefix        string
 	secureCookies bool
 	csrfKey       []byte
+
+	// hooks are seams where a test stops a request to let a concurrent one
+	// change the user database; all nil in production.
+	hooks struct {
+		afterResetConsume func()
+	}
 }
 
 // templateFuncs are the helpers available to every HTML template.

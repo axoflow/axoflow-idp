@@ -181,7 +181,7 @@ func (r *Routes) adminRegisterWithResetLink(res http.ResponseWriter, req *http.R
 		return
 	}
 
-	token, err := r.resetTokens.Create(newID)
+	token, err := r.resetTokens.Create(newID, admin.ID)
 	if err != nil {
 		slog.Error("failed to generate password reset token", "target_user_id", newID, "error", err)
 		http.Error(res, "Could not create reset link", http.StatusInternalServerError)
@@ -232,6 +232,8 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 		r.renderAdminPanel(res, req, admin, "", "", err.Error())
 		return
 	}
+
+	r.resetTokens.RevokeUser(userId)
 
 	slog.Info("admin deleted user", "admin", admin.Username, "deleted_user_id", userId)
 
@@ -292,6 +294,7 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 	// Invalidate the target's existing sessions so an admin reset actually locks
 	// out a compromised/departed user (mirrors the reset-link flow).
 	r.session.DeleteUserSessions(userId)
+	r.resetTokens.RevokeUser(userId)
 
 	slog.Info("admin reset user password", "admin", admin.Username, "target_user_id", userId)
 

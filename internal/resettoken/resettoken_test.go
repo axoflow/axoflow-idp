@@ -23,7 +23,7 @@ import (
 func TestCreateAndConsume(t *testing.T) {
 	s := New(time.Hour)
 
-	tok, err := s.Create("alice")
+	tok, err := s.Create("alice", "admin")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -31,39 +31,39 @@ func TestCreateAndConsume(t *testing.T) {
 		t.Fatal("Create returned empty token")
 	}
 
-	userID, ok := s.Consume(tok)
+	userID, issuedBy, ok := s.Consume(tok)
 	if !ok {
 		t.Fatal("Consume of valid token should succeed")
 	}
-	if userID != "alice" {
-		t.Errorf("Consume userID = %q, want %q", userID, "alice")
+	if userID != "alice" || issuedBy != "admin" {
+		t.Errorf("Consume = (%q, %q), want (alice, admin)", userID, issuedBy)
 	}
 }
 
 func TestConsumeIsSingleUse(t *testing.T) {
 	s := New(time.Hour)
-	tok, _ := s.Create("alice")
+	tok, _ := s.Create("alice", "admin")
 
-	if _, ok := s.Consume(tok); !ok {
+	if _, _, ok := s.Consume(tok); !ok {
 		t.Fatal("first Consume should succeed")
 	}
-	if _, ok := s.Consume(tok); ok {
+	if _, _, ok := s.Consume(tok); ok {
 		t.Error("second Consume of the same token should fail")
 	}
 }
 
 func TestPeekDoesNotConsume(t *testing.T) {
 	s := New(time.Hour)
-	tok, _ := s.Create("alice")
+	tok, _ := s.Create("alice", "admin")
 
 	for i := 0; i < 3; i++ {
-		userID, ok := s.Peek(tok)
-		if !ok || userID != "alice" {
-			t.Fatalf("Peek #%d = (%q,%v), want (alice,true)", i, userID, ok)
+		userID, issuedBy, ok := s.Peek(tok)
+		if !ok || userID != "alice" || issuedBy != "admin" {
+			t.Fatalf("Peek #%d = (%q,%q,%v), want (alice,admin,true)", i, userID, issuedBy, ok)
 		}
 	}
 	// Still consumable afterwards.
-	if _, ok := s.Consume(tok); !ok {
+	if _, _, ok := s.Consume(tok); !ok {
 		t.Error("token should still be consumable after Peek")
 	}
 }
@@ -72,17 +72,17 @@ func TestPeekExpired(t *testing.T) {
 	s := New(time.Hour)
 	now := time.Unix(1_700_000_000, 0)
 	s.now = func() time.Time { return now }
-	tok, _ := s.Create("alice")
+	tok, _ := s.Create("alice", "admin")
 
 	now = now.Add(time.Hour + time.Second)
-	if _, ok := s.Peek(tok); ok {
+	if _, _, ok := s.Peek(tok); ok {
 		t.Error("Peek of expired token should fail")
 	}
 }
 
 func TestConsumeUnknownToken(t *testing.T) {
 	s := New(time.Hour)
-	if _, ok := s.Consume("does-not-exist"); ok {
+	if _, _, ok := s.Consume("does-not-exist"); ok {
 		t.Error("Consume of unknown token should fail")
 	}
 }
@@ -92,10 +92,10 @@ func TestConsumeExpiredToken(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	s.now = func() time.Time { return now }
 
-	tok, _ := s.Create("alice")
+	tok, _ := s.Create("alice", "admin")
 
 	now = now.Add(time.Hour + time.Second) // advance past TTL
-	if _, ok := s.Consume(tok); ok {
+	if _, _, ok := s.Consume(tok); ok {
 		t.Error("Consume of expired token should fail")
 	}
 }
@@ -103,17 +103,55 @@ func TestConsumeExpiredToken(t *testing.T) {
 func TestNewTokenInvalidatesPrior(t *testing.T) {
 	s := New(time.Hour)
 
-	first, _ := s.Create("alice")
-	second, _ := s.Create("alice")
+	first, _ := s.Create("alice", "admin")
+	second, _ := s.Create("alice", "admin")
 
 	if first == second {
 		t.Fatal("expected distinct tokens")
 	}
-	if _, ok := s.Consume(first); ok {
+	if _, _, ok := s.Consume(first); ok {
 		t.Error("prior token should be invalidated by a newer one")
 	}
-	if _, ok := s.Consume(second); !ok {
+	if _, _, ok := s.Consume(second); !ok {
 		t.Error("newest token should still be valid")
+	}
+}
+
+func TestRevokeUser(t *testing.T) {
+	s := New(time.Hour)
+	alice, _ := s.Create("alice", "admin")
+	bob, _ := s.Create("bob", "admin")
+
+	s.RevokeUser("alice")
+	s.RevokeUser("carol") // no token: a no-op
+
+	if _, _, ok := s.Consume(alice); ok {
+		t.Error("revoked token should be invalid")
+	}
+	if _, _, ok := s.Consume(bob); !ok {
+		t.Error("another user's token should survive the revocation")
+	}
+}
+
+func TestCleanUpDropsExpired(t *testing.T) {
+	s := New(time.Hour)
+	now := time.Unix(1_700_000_000, 0)
+	s.now = func() time.Time { return now }
+	old, _ := s.Create("alice", "admin")
+	now = now.Add(30 * time.Minute)
+	fresh, _ := s.Create("bob", "admin")
+
+	now = now.Add(31 * time.Minute) // past old's TTL, within fresh's
+	s.CleanUp()
+
+	if _, ok := s.byToken[old]; ok {
+		t.Error("expired token still held after CleanUp")
+	}
+	if _, ok := s.byUser["alice"]; ok {
+		t.Error("expired token's user index still held after CleanUp")
+	}
+	if _, _, ok := s.Consume(fresh); !ok {
+		t.Error("unexpired token dropped by CleanUp")
 	}
 }
 
@@ -121,7 +159,7 @@ func TestTokensAreUnique(t *testing.T) {
 	s := New(time.Hour)
 	seen := map[string]struct{}{}
 	for i := 0; i < 1000; i++ {
-		tok, err := s.Create("user")
+		tok, err := s.Create("user", "admin")
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -141,8 +179,8 @@ func TestConcurrentAccess(_ *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				tok, _ := s.Create("user")
-				_, _ = s.Consume(tok)
+				tok, _ := s.Create("user", "admin")
+				_, _, _ = s.Consume(tok)
 			}
 		}()
 	}
