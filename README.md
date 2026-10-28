@@ -139,6 +139,49 @@ is not applied, and a seed user deleted from the database is not recreated.
 given. `ID` is optional (a ULID is generated). Duplicate usernames or ids are
 rejected before anything is written.
 
+## Releases
+
+The container image `ghcr.io/axoflow/axoflow-idp` (linux/amd64 and
+linux/arm64) is built by `.github/workflows/image-build.yaml`, which both
+`ci.yaml` and `release.yaml` call:
+
+- Its `build` job runs for every caller with a read-only token. It builds the
+  image without pushing it, scans it with Trivy and uploads the SARIF. The scan
+  is a report: findings do not fail the job.
+- Its `publish` job runs only when the caller publishes, after `build`, in the
+  `release` environment, and is the only job with `packages: write` and
+  `id-token: write`. It rebuilds the image from the layer cache, pushes it and
+  signs every tag keyless with cosign (GitHub OIDC, recorded in Rekor).
+
+Publishing happens on a push to `main` (tags `main` and `latest`), to a
+`release-X.Y…` branch (the branch name), and of a tag `X.Y.Z…` (the tag).
+Pull requests and manual runs build and scan only. In both workflows the image
+build needs `test`, `e2e`, `lint` and `license-check` to pass first.
+
+To verify a published image:
+
+```sh
+cosign verify ghcr.io/axoflow/axoflow-idp:1.2.3 \
+  --certificate-identity https://github.com/axoflow/axoflow-idp/.github/workflows/image-build.yaml@refs/tags/1.2.3 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The signature shows which workflow and ref built the image, not who approved
+it. The checks above are a quality gate: whoever can push a matching tag or
+`release-*` branch still chooses the code and the workflow that run. Who may
+publish is decided by repository settings, which the owner must configure:
+
+- A tag ruleset on the release tag pattern and a branch ruleset on `release-*`
+  that restrict creation, update and deletion to the release team, with no
+  other bypass actors.
+- Protection rules on the `release` environment: the release team as required
+  reviewers, self-review prevented, and deployments limited to `main`,
+  `release-*` and the release tags. A push to `main` publishes too, so it then
+  waits for that approval.
+
+An environment without protection rules approves nothing, so until these
+settings exist anyone with push access can publish a signed image.
+
 ## Contributing
 
 If you find this project useful, help us:
