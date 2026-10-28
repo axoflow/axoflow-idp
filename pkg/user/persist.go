@@ -74,11 +74,19 @@ func (osFileSystem) SyncDir(dir string) error {
 	return err
 }
 
+// testBeforeUpdate, when a test sets it, runs as a writer enters update:
+// after the writer's early checks, before it takes saveMu. Tests use it to
+// hold a writer there while another commits. Nil in production.
+var testBeforeUpdate func()
+
 // update runs change on a copy of the users that it owns and commits what
 // change returns. Holding saveMu throughout means the copy is still the
 // committed state when the result is published, so a check change makes (an
 // admin's authority, a free username) cannot be overtaken by another writer.
 func (u *User) update(change func(users []UserInfo) ([]UserInfo, error)) error {
+	if testBeforeUpdate != nil {
+		testBeforeUpdate()
+	}
 	u.saveMu.Lock()
 	defer u.saveMu.Unlock()
 

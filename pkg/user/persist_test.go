@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -172,6 +173,100 @@ func TestAdminsDemotingEachOther(t *testing.T) {
 				t.Fatalf("no admin left: %+v", users)
 			}
 		}
+	}
+}
+
+// holdFirstUpdate makes the next writer to enter update wait there, past its
+// early checks, until release runs; writers after it pass straight through.
+// held is closed once the first writer is waiting.
+func holdFirstUpdate(t *testing.T) (held <-chan struct{}, release func()) {
+	arrived := make(chan struct{})
+	proceed := make(chan struct{})
+	var taken atomic.Bool
+	testBeforeUpdate = func() {
+		if taken.CompareAndSwap(false, true) {
+			close(arrived)
+			<-proceed
+		}
+	}
+	release = sync.OnceFunc(func() { close(proceed) })
+	t.Cleanup(func() {
+		release()
+		testBeforeUpdate = nil
+	})
+	return arrived, release
+}
+
+// An admin whose early check passed and who is then demoted or deleted before
+// the write must be refused: the binding check runs on the users the write
+// changes, not on what the early check saw. Each row targets one requireAdmin.
+func TestStaleAdminIsRefused(t *testing.T) {
+	tests := []struct {
+		name  string
+		stale func(u *User) error // carol's write, held after its early check
+		first func(u *User) error // alice's write, committed meanwhile
+	}{
+		{
+			name:  "group update after a demotion",
+			stale: func(u *User) error { return u.AdminUpdateUserGroups("carol", "alice", []string{RoleUser}) },
+			first: func(u *User) error { return u.AdminUpdateUserGroups("alice", "carol", []string{RoleUser}) },
+		},
+		{
+			name:  "delete after a deletion",
+			stale: func(u *User) error { return u.AdminDelete("carol", "bob") },
+			first: func(u *User) error { return u.AdminDelete("alice", "carol") },
+		},
+		{
+			name:  "register after a demotion",
+			stale: func(u *User) error { return u.AdminRegister("carol", "dave", "davepass1", []string{"admins"}, "") },
+			first: func(u *User) error { return u.AdminUpdateUserGroups("alice", "carol", []string{RoleUser}) },
+		},
+		{
+			name: "register locked after a demotion",
+			stale: func(u *User) error {
+				_, err := u.AdminRegisterLocked("carol", "dave", []string{"admins"}, "")
+				return err
+			},
+			first: func(u *User) error { return u.AdminUpdateUserGroups("alice", "carol", []string{RoleUser}) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, path := persistFixture(t)
+			held, release := holdFirstUpdate(t)
+
+			staleErr := make(chan error, 1)
+			go func() { staleErr <- tt.stale(u) }()
+			<-held
+
+			if err := tt.first(u); err != nil {
+				t.Fatalf("alice's write: %v", err)
+			}
+			committed := readUsers(t, path)
+
+			release()
+			if err := <-staleErr; !errors.Is(err, errNotAdmin) {
+				t.Fatalf("carol's write error = %v, want %v", err, errNotAdmin)
+			}
+
+			disk := readUsers(t, path)
+			if !reflect.DeepEqual(disk, committed) {
+				t.Errorf("file changed by the refused write:\nbefore %+v\nafter  %+v", committed, disk)
+			}
+			if got := memory(u); !reflect.DeepEqual(got, disk) {
+				t.Errorf("memory differs from the file:\nmemory %+v\nfile   %+v", got, disk)
+			}
+			var admins []string
+			for _, ui := range disk {
+				if u.IsAdmin(&ui) {
+					admins = append(admins, ui.Username)
+				}
+			}
+			if !slices.Equal(admins, []string{"alice"}) {
+				t.Errorf("admins = %v, want [alice]", admins)
+			}
+		})
 	}
 }
 
