@@ -145,6 +145,10 @@ type User struct {
 	saveMu sync.Mutex   // serializes writers
 	users  []UserInfo
 	fsys   fileSystem // nil means the OS
+
+	// afterVerify, when set, runs between ChangePassword's verification and
+	// its commit, so a test can commit a competing change there.
+	afterVerify func()
 }
 
 func ensureUserID(users []UserInfo) []UserInfo {
@@ -419,33 +423,47 @@ func (u *User) KnownGroups() []string {
 	return slices.Sorted(maps.Keys(seen))
 }
 
-func (u *User) ChangePassword(userID string, oldPassword, newPassword string) error {
+// ChangePassword sets userID's password after verifying oldPassword, and
+// returns the new hash so the caller can prove it when it issues a session.
+func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (string, error) {
 	if u.Static {
-		return ErrReadOnly
+		return "", ErrReadOnly
 	}
 	if err := validatePassword(newPassword); err != nil {
-		return err
+		return "", err
 	}
 
 	user, ok := u.Get(userID)
 	if !ok {
-		return errors.New("user not found")
+		return "", errors.New("user not found")
 	}
 
 	// verifyPassword and hash run argon2id (~100ms each); keep them out of the lock.
 	if !verifyPassword(user, oldPassword) {
-		return errors.New("invalid old password")
+		return "", errors.New("invalid old password")
 	}
 	newHash := hash([]byte(user.ID), newPassword)
+	if u.afterVerify != nil {
+		u.afterVerify()
+	}
 
-	return u.update(func(users []UserInfo) ([]UserInfo, error) {
+	err := u.update(func(users []UserInfo) ([]UserInfo, error) {
 		i, ok := getIndex(users, userID)
 		if !ok {
 			return nil, errors.New("user not found")
 		}
+		// oldPassword was checked against user.Password; a reset that
+		// committed since then wins.
+		if users[i].Password != user.Password {
+			return nil, errors.New("invalid old password")
+		}
 		users[i].Password = newHash
 		return users, nil
 	})
+	if err != nil {
+		return "", err
+	}
+	return newHash, nil
 }
 
 // SetPassword sets a user's password without requiring the current one. It is

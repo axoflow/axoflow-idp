@@ -68,14 +68,62 @@ func TestSetPasswordUnknownUser(t *testing.T) {
 func TestChangePassword(t *testing.T) {
 	u := newTestUser(t, false)
 
-	if err := u.ChangePassword("alice", "wrong", "newpass12"); err == nil {
+	if _, err := u.ChangePassword("alice", "wrong", "newpass12"); err == nil {
 		t.Error("ChangePassword with wrong old password should fail")
 	}
-	if err := u.ChangePassword("alice", "original", "newpass12"); err != nil {
+	newHash, err := u.ChangePassword("alice", "original", "newpass12")
+	if err != nil {
 		t.Fatalf("ChangePassword: %v", err)
+	}
+	if alice, _ := u.Get("alice"); alice.Password != newHash {
+		t.Error("ChangePassword returned a hash other than the one stored")
 	}
 	if _, ok := u.Authenticate("alice", "newpass12"); !ok {
 		t.Error("changed password should authenticate")
+	}
+}
+
+// A change verified against the old hash must not overwrite a password that
+// another path set while it ran.
+func TestChangePasswordLosesToConcurrentChange(t *testing.T) {
+	tests := []struct {
+		name    string
+		compete func(u *User) error
+	}{
+		{"admin reset", func(u *User) error { return u.AdminResetPassword("admin1", "alice", "adminset1") }},
+		{"reset link", func(u *User) error {
+			alice, _ := u.Get("alice")
+			h, _ := HashNewPassword("alice", "adminset1")
+			return u.SetPasswordByReset("alice", "admin1", alice.Password, h)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeUsersFile(t, `[{"ID":"admin1","Username":"admin","Groups":["admins"]},{"ID":"alice","Username":"alice"}]`)
+			u, err := New(Config{FilePath: path, UserAdminGroup: "admins"})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if err := u.SetPassword("alice", "original"); err != nil {
+				t.Fatalf("SetPassword: %v", err)
+			}
+			u.afterVerify = func() {
+				if err := tt.compete(u); err != nil {
+					t.Errorf("competing change: %v", err)
+				}
+			}
+
+			_, err = u.ChangePassword("alice", "original", "requester1")
+			if err == nil || err.Error() != "invalid old password" {
+				t.Errorf("ChangePassword = %v, want invalid old password", err)
+			}
+			if _, ok := u.Authenticate("alice", "adminset1"); !ok {
+				t.Error("the competing password no longer verifies")
+			}
+			if _, ok := u.Authenticate("alice", "requester1"); ok {
+				t.Error("the stale change was written")
+			}
+		})
 	}
 }
 

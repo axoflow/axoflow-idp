@@ -84,7 +84,7 @@ var mutators = []struct {
 	{"RegisterLocked", func(u *User) error { _, err := u.RegisterLocked("dave", nil, ""); return err }},
 	{"AdminRegister", func(u *User) error { return u.AdminRegister("alice", "dave", "davepass1", nil, "") }},
 	{"AdminRegisterLocked", func(u *User) error { _, err := u.AdminRegisterLocked("alice", "dave", nil, ""); return err }},
-	{"ChangePassword", func(u *User) error { return u.ChangePassword("bob", "bobpass123", "newpass123") }},
+	{"ChangePassword", func(u *User) error { _, err := u.ChangePassword("bob", "bobpass123", "newpass123"); return err }},
 	{"SetPassword", func(u *User) error { return u.SetPassword("bob", "newpass123") }},
 	{"AdminDelete", func(u *User) error { return u.AdminDelete("alice", "bob") }},
 	{"AdminResetPassword", func(u *User) error { return u.AdminResetPassword("alice", "bob", "newpass123") }},

@@ -57,7 +57,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if err := r.user.ChangePassword(u.ID, currentPassword, newPassword); err != nil {
+		if _, err := r.user.ChangePassword(u.ID, currentPassword, newPassword); err != nil {
 			if saveFailed(err, "operation", "change_password", "user_id", u.ID) {
 				res.WriteHeader(http.StatusInternalServerError)
 				r.renderChangePassword(res, sessionCookie.Value, saveFailedMessage)
