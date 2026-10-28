@@ -16,45 +16,41 @@ on:
     outputs:
       container-image-name:
         description: Container image name
-        value: ${{ jobs.container-image.outputs.name }}
+        value: ${{ jobs.build.outputs.name }}
       container-image-digest:
         description: Container image digest
-        value: ${{ jobs.container-image.outputs.digest }}
+        value: ${{ jobs.publish.outputs.digest || jobs.build.outputs.digest }}
       container-image-tag:
         description: Container image tag
-        value: ${{ jobs.container-image.outputs.tag }}
+        value: ${{ jobs.build.outputs.tag }}
 
 permissions:
   contents: read
 
 jobs:
-  container-image:
+  # build runs on every caller, pull requests included, so it holds no write
+  # scope: it builds the image into an OCI tarball and scans it.
+  build:
     name: Container image
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
-      packages: write
-      id-token: write
 
     outputs:
       name: ${{ steps.image-name.outputs.value }}
       digest: ${{ steps.build.outputs.digest }}
       tag: ${{ steps.meta.outputs.version }}
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+      description: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.description'] }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Set up Cosign
-        uses: sigstore/cosign-installer@v3
-        if: inputs.publish
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Set image name
         id: image-name
@@ -62,7 +58,7 @@ jobs:
 
       - name: Gather build metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ steps.image-name.outputs.value }}
           flavor: |
@@ -77,17 +73,9 @@ jobs:
             org.opencontainers.image.title=Axoflow OIDC Identity Provider
             org.opencontainers.image.authors=Axoflow
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-        if: inputs.publish
-
-      - name: Build and push image
+      - name: Build image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -96,33 +84,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           outputs: |
-            type=image,push=${{ inputs.publish }},name=target,annotation-index.org.opencontainers.image.description=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.description'] }}
             type=oci,dest=image.tar,name=target,annotation-index.org.opencontainers.image.description=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.description'] }}
-
-      - name: Sign image with GitHub OIDC Token
-        if: ${{ inputs.publish && github.repository_owner == 'axoflow' }} # Check if the workflow is called by the same GitHub organization
-        env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          readarray -t tag_array <<< "$TAGS"
-          for tag in "${tag_array[@]}"; do
-            full_image="${tag}@${DIGEST}"
-            cosign sign --yes --rekor-url "https://rekor.sigstore.dev/" "${full_image}"
-          done
-
-      - name: Verify signed image with cosign
-        if: ${{ inputs.publish && github.repository_owner == 'axoflow' }} # Check if the workflow is called by the same GitHub organization
-        env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          for tag in $TAGS; do
-            cosign verify "${tag}@${DIGEST}" \
-              --rekor-url "https://rekor.sigstore.dev/" \
-              --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/image-build.yaml@${{ github.ref }}" \
-              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" | jq
-          done
 
       - name: Extract OCI tarball
         run: |
@@ -140,7 +102,7 @@ jobs:
           output: trivy-results.sarif
 
       - name: Upload Trivy scan results as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: "[${{ github.job }}] Trivy scan results"
           path: trivy-results.sarif
@@ -200,3 +162,77 @@ jobs:
               "| \(.cve) | \(.severity) | \(.package) | \(.installed) | \(.fixed) |"
             ' "$sarif"
           } >> "$out"
+
+  # publish is the only job with write scopes. The release environment is the
+  # place for the owner's protection rules (see README "Releases").
+  publish:
+    name: Publish container image
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    environment: release
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Set up Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Rebuilds from the layer cache the build job filled, then pushes.
+      - name: Build and push image
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ needs.build.outputs.tags }}
+          labels: ${{ needs.build.outputs.labels }}
+          cache-from: type=gha
+          outputs: |
+            type=image,push=true,name=target,annotation-index.org.opencontainers.image.description=${{ needs.build.outputs.description }}
+
+      - name: Sign image with GitHub OIDC Token
+        if: ${{ github.repository_owner == 'axoflow' }} # Check if the workflow is called by the same GitHub organization
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ needs.build.outputs.tags }}
+        run: |
+          readarray -t tag_array <<< "$TAGS"
+          for tag in "${tag_array[@]}"; do
+            full_image="${tag}@${DIGEST}"
+            cosign sign --yes --rekor-url "https://rekor.sigstore.dev/" "${full_image}"
+          done
+
+      - name: Verify signed image with cosign
+        if: ${{ github.repository_owner == 'axoflow' }} # Check if the workflow is called by the same GitHub organization
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ needs.build.outputs.tags }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          for tag in $TAGS; do
+            cosign verify "${tag}@${DIGEST}" \
+              --rekor-url "https://rekor.sigstore.dev/" \
+              --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/image-build.yaml@${REF}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" | jq
+          done
