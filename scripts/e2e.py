@@ -224,10 +224,13 @@ class ServerCase(unittest.TestCase):
 
     def _check_server_under_test(self, config):
         # An open port alone could be another process on :PORT; the suite
-        # would then drive that one. Require our process alive and serving
-        # the issuer of the config it was started with.
+        # would then drive that one. Require our process alive and the port
+        # serving the issuer of the config it was started with. A foreign
+        # IdP that serves the same issuer would still pass; the suite runs on
+        # a private runner, so that residual is accepted.
         with open(config) as f:
-            issuer = json.load(f)["baseUrl"]
+            # the server trims trailing slashes from baseUrl before it becomes the issuer
+            issuer = json.load(f)["baseUrl"].rstrip("/")
         path = urllib.parse.urlparse(issuer).path
         code, served = None, None
         try:

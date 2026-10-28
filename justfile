@@ -43,7 +43,7 @@ minikube-deploy:
     set -euo pipefail
     # eval "$(...)" exits 0 when the substitution fails, which would build on
     # the default daemon; check the exit status before using the output.
-    if ! docker_env="$(minikube docker-env)"; then
+    if ! docker_env="$(minikube -p minikube docker-env)"; then
         echo "minikube docker-env failed; is minikube running?" >&2
         exit 1
     fi

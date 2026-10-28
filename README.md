@@ -147,7 +147,9 @@ linux/arm64) is built by `.github/workflows/image-build.yaml`, which both
 
 - Its `build` job runs for every caller with a read-only token. It builds the
   image without pushing it, scans it with Trivy and uploads the SARIF. The scan
-  is a report: findings do not fail the job.
+  is a report: findings do not fail the job. It examines this prepublication
+  build; the published image is rebuilt from the layer cache by `publish`, so
+  the scan is not a verified scan of the signed image.
 - Its `publish` job runs only when the caller publishes, after `build`, in the
   `release` environment, and is the only job with `packages: write` and
   `id-token: write`. It rebuilds the image from the layer cache, pushes it and
