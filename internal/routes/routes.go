@@ -59,7 +59,8 @@ type Routes struct {
 	// hooks are seams where a test stops a request to let a concurrent one
 	// change the user database; all nil in production.
 	hooks struct {
-		afterResetConsume func()
+		afterResetConsume  func()
+		beforeIssueSession func()
 	}
 }
 

@@ -134,16 +134,40 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	password := req.Form.Get("password")
 
 	user, ok := r.user.Authenticate(username, password)
-	if !ok {
-		res.WriteHeader(http.StatusUnauthorized)
-		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
-			slog.Error("failed to render login template", "error", err)
+	if ok {
+		if err := r.issueSession(res, user.ID, user.Password); err == nil {
+			return &user
 		}
-		return nil
+		slog.Info("login refused: the password changed while it was checked", "user_id", user.ID)
 	}
 
-	r.setSessionCookie(res, r.session.Create(user.ID))
-	return &user
+	res.WriteHeader(http.StatusUnauthorized)
+	if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
+		slog.Error("failed to render login template", "error", err)
+	}
+	return nil
+}
+
+// errPasswordChanged refuses a session whose password was rotated after the
+// request proved it.
+var errPasswordChanged = errors.New("the password changed after it was proved")
+
+// issueSession creates a session for userID and sets its cookie, provided
+// the user's stored hash is still provedHash: the hash this request verified
+// or committed, never one read afterwards. Every password change commits its
+// hash before it signs the user out, so either the re-read below sees the
+// new hash, or that sign-out runs after Create and removes the session.
+func (r *Routes) issueSession(res http.ResponseWriter, userID, provedHash string) error {
+	if r.hooks.beforeIssueSession != nil {
+		r.hooks.beforeIssueSession()
+	}
+	id := r.session.Create(userID)
+	if u, ok := r.user.Get(userID); !ok || u.Password != provedHash {
+		r.session.Delete(id)
+		return errPasswordChanged
+	}
+	r.setSessionCookie(res, id)
+	return nil
 }
 
 // setSessionCookie writes the session cookie with the standard attributes.
@@ -233,7 +257,7 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		id, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
+		id, passwordHash, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
 		if err != nil {
 			status, message := http.StatusBadRequest, err.Error()
 			switch {
@@ -251,7 +275,9 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 
 		// The registrant just proved the password, so the success page can
 		// hand them to the relying party without a login stop.
-		r.setSessionCookie(res, r.session.Create(id))
+		if err := r.issueSession(res, id, passwordHash); err != nil {
+			slog.Info("registrant not signed in: the password changed since registration", "user_id", id)
+		}
 
 		var data struct{ SiteName, SiteURL string }
 		if client := r.oidc.FirstClient(); client != nil {

@@ -57,7 +57,8 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if _, err := r.user.ChangePassword(u.ID, currentPassword, newPassword); err != nil {
+		newHash, err := r.user.ChangePassword(u.ID, currentPassword, newPassword)
+		if err != nil {
 			if saveFailed(err, "operation", "change_password", "user_id", u.ID) {
 				res.WriteHeader(http.StatusInternalServerError)
 				r.renderChangePassword(res, sessionCookie.Value, saveFailedMessage)
@@ -72,9 +73,13 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		// then issue a fresh session so this browser stays logged in.
 		r.session.DeleteUserSessions(u.ID)
 		r.resetTokens.RevokeUser(u.ID)
-		r.setSessionCookie(res, r.session.Create(u.ID))
-
 		slog.Info("user changed password", "user_id", u.ID, "username", u.Username)
+		if err := r.issueSession(res, u.ID, newHash); err != nil {
+			slog.Info("no new session after the password change: the password changed again", "user_id", u.ID)
+			http.Redirect(res, req, r.url("/login"), http.StatusSeeOther)
+			return
+		}
+
 		http.Redirect(res, req, r.url("/?flash=password"), http.StatusSeeOther)
 		return
 

@@ -278,28 +278,34 @@ func (u *User) Get(id string) (UserInfo, bool) {
 // Register creates a user for an already-authorized caller; it does not
 // consult RegistrationOpen.
 func (u *User) Register(username string, password string, groups []string, email string) error {
-	_, err := u.registerWithPassword(username, password, groups, email, nil)
+	_, _, err := u.registerWithPassword(username, password, groups, email, nil)
 	return err
 }
 
 // SelfRegister creates a user through the public registration form and returns
-// the new user's ID. It checks RegistrationOpen as it adds the account and
-// returns ErrRegistrationClosed when the form is closed.
-func (u *User) SelfRegister(username string, password string, groups []string, email string) (string, error) {
+// the new user's ID and the password hash it stored, which the session issued
+// to the registrant proves. It checks RegistrationOpen as it adds the account
+// and returns ErrRegistrationClosed when the form is closed.
+func (u *User) SelfRegister(username string, password string, groups []string, email string) (id, passwordHash string, err error) {
 	return u.registerWithPassword(username, password, groups, email, u.selfServiceOpen)
 }
 
-func (u *User) registerWithPassword(username, password string, groups []string, email string, authorize func(users []UserInfo) error) (string, error) {
+func (u *User) registerWithPassword(username, password string, groups []string, email string, authorize func(users []UserInfo) error) (string, string, error) {
 	if u.Static {
-		return "", ErrReadOnly
+		return "", "", ErrReadOnly
 	}
 	if err := validatePassword(password); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	return u.register(id, username, hash([]byte(id), password), groups, email, authorize)
+	passwordHash := hash([]byte(id), password)
+	id, err := u.register(id, username, passwordHash, groups, email, authorize)
+	if err != nil {
+		return "", "", err
+	}
+	return id, passwordHash, nil
 }
 
 // RegisterLocked creates a user whose password cannot be matched (see

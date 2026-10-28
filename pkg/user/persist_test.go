@@ -77,7 +77,7 @@ var mutators = []struct {
 	run  func(u *User) error
 }{
 	{"SelfRegister", func(u *User) error {
-		_, err := u.SelfRegister("dave", "davepass1", []string{RoleUser}, "dave@example.com")
+		_, _, err := u.SelfRegister("dave", "davepass1", []string{RoleUser}, "dave@example.com")
 		return err
 	}},
 	{"Register", func(u *User) error { return u.Register("dave", "davepass1", nil, "") }},

@@ -36,7 +36,7 @@ func (u *User) AdminRegister(adminID string, username string, password string, g
 		return errNotAdmin
 	}
 
-	_, err := u.registerWithPassword(username, password, groups, email, func(users []UserInfo) error {
+	_, _, err := u.registerWithPassword(username, password, groups, email, func(users []UserInfo) error {
 		return u.requireAdmin(users, adminID)
 	})
 	return err
