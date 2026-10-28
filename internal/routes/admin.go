@@ -128,15 +128,13 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.AdminRegister(admin.ID, username, password, groups, email); err != nil {
+			if saveFailed(err, "operation", "register", "admin", admin.Username, "new_user", username) {
+				res.WriteHeader(http.StatusInternalServerError)
+				r.renderAdminRegister(res, sessionCookie.Value, admin.Username, saveFailedMessage)
+				return
+			}
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderAdminRegister(res, sessionCookie.Value, admin.Username, err.Error())
-			return
-		}
-
-		if err := r.user.SaveUsers(); err != nil {
-			slog.Error("failed to save users", "operation", "register", "admin", admin.Username, "new_user", username, "error", err)
-			res.WriteHeader(http.StatusInternalServerError)
-			r.renderAdminRegister(res, sessionCookie.Value, admin.Username, "Failed to save changes")
 			return
 		}
 
@@ -173,15 +171,13 @@ func (r *Routes) renderAdminRegister(res http.ResponseWriter, sessionID, adminUs
 func (r *Routes) adminRegisterWithResetLink(res http.ResponseWriter, req *http.Request, admin *user.UserInfo, sessionID, username, email string, groups []string) {
 	newID, err := r.user.AdminRegisterLocked(admin.ID, username, groups, email)
 	if err != nil {
+		if saveFailed(err, "operation", "register_locked", "admin", admin.Username, "new_user", username) {
+			res.WriteHeader(http.StatusInternalServerError)
+			r.renderAdminRegister(res, sessionID, admin.Username, saveFailedMessage)
+			return
+		}
 		res.WriteHeader(http.StatusBadRequest)
 		r.renderAdminRegister(res, sessionID, admin.Username, err.Error())
-		return
-	}
-
-	if err := r.user.SaveUsers(); err != nil {
-		slog.Error("failed to save users", "operation", "register_locked", "admin", admin.Username, "new_user", username, "error", err)
-		res.WriteHeader(http.StatusInternalServerError)
-		r.renderAdminRegister(res, sessionID, admin.Username, "Failed to save changes")
 		return
 	}
 
@@ -229,13 +225,11 @@ func (r *Routes) AdminDeleteUser(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := r.user.AdminDelete(admin.ID, userId); err != nil {
+		if saveFailed(err, "operation", "delete", "admin", admin.Username, "target_user_id", userId) {
+			http.Error(res, saveFailedMessage, http.StatusInternalServerError)
+			return
+		}
 		r.renderAdminPanel(res, req, admin, "", "", err.Error())
-		return
-	}
-
-	if err := r.user.SaveUsers(); err != nil {
-		slog.Error("failed to save users", "operation", "delete", "admin", admin.Username, "target_user_id", userId, "error", err)
-		http.Error(res, "Failed to save changes", http.StatusInternalServerError)
 		return
 	}
 
@@ -283,17 +277,15 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 	}
 
 	if err := r.user.AdminResetPassword(admin.ID, userId, newPassword); err != nil {
+		if saveFailed(err, "operation", "reset_password", "admin", admin.Username, "target_user_id", userId) {
+			http.Error(res, saveFailedMessage, http.StatusInternalServerError)
+			return
+		}
 		if wantsInlineError(req) {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
 		}
 		r.renderAdminPanel(res, req, admin, "", "", err.Error())
-		return
-	}
-
-	if err := r.user.SaveUsers(); err != nil {
-		slog.Error("failed to save users", "operation", "reset_password", "admin", admin.Username, "target_user_id", userId, "error", err)
-		http.Error(res, "Failed to save changes", http.StatusInternalServerError)
 		return
 	}
 
@@ -340,17 +332,15 @@ func (r *Routes) AdminUpdateUserGroups(res http.ResponseWriter, req *http.Reques
 
 	groups := req.Form["groups"]
 	if err := r.user.AdminUpdateUserGroups(admin.ID, userId, groups); err != nil {
+		if saveFailed(err, "operation", "update_groups", "admin", admin.Username, "target_user_id", userId) {
+			http.Error(res, saveFailedMessage, http.StatusInternalServerError)
+			return
+		}
 		if wantsInlineError(req) {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
 		}
 		r.renderAdminPanel(res, req, admin, "", "", err.Error())
-		return
-	}
-
-	if err := r.user.SaveUsers(); err != nil {
-		slog.Error("failed to save users", "operation", "update_groups", "admin", admin.Username, "target_user_id", userId, "error", err)
-		http.Error(res, "Failed to save changes", http.StatusInternalServerError)
 		return
 	}
 

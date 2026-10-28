@@ -15,9 +15,26 @@
 package routes
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
+
+// saveFailedMessage is all a client learns of a failed write of the user
+// database: the cause can name the file path.
+const saveFailedMessage = "could not save the user database"
+
+// saveFailed reports whether err is a failed write of the user database and,
+// if so, logs its cause with attrs.
+func saveFailed(err error, attrs ...any) bool {
+	if !errors.Is(err, user.ErrPersist) {
+		return false
+	}
+	slog.Error("failed to save users", append(attrs, "error", err)...)
+	return true
+}
 
 // renderError renders the error page; the admin panel's fetch-based modal
 // forms get the message as plain text instead.
