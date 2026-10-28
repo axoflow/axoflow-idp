@@ -60,7 +60,9 @@ type Config struct {
 	// UpdateSeedPasswords sets each seed user's configured password hash on
 	// its existing account at every start, so a password changed in the IdP
 	// does not last. Leave it off when the hash is regenerated at every
-	// deploy: each deploy would reset the password.
+	// deploy: each deploy would reset the password. It takes effect only with
+	// FilePath and CreateIfMissing on a database that is not Static; the
+	// server's config validation refuses any other combination.
 	UpdateSeedPasswords bool `json:"updateSeedPasswords"`
 }
 

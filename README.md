@@ -106,7 +106,10 @@ A client that is not public must have a `clientSecret`.
 > and must send the code flow's `access_token`; a token issued before the
 > upgrade, when the access token was the ID token, must be re-acquired. The
 > undocumented `token.ttl` is no longer read: a revocation is kept for 24 hours,
-> the maximum token lifetime.
+> the maximum token lifetime. Client ids must be unique, `baseUrl` needs a host
+> and no userinfo (`user:password@`), and `signingKey.filePath` is required
+> even with `generateIfMissing`: without it a new key was generated at every
+> start, which invalidated every token issued before.
 
 ## Seeding the user database
 
@@ -123,6 +126,14 @@ password through its configuration. A password changed in the IdP lasts until
 the next start. Leave the option off when the hash is regenerated at every
 deploy, because every deploy would reset the password. An empty configured hash
 is not applied, and a seed user deleted from the database is not recreated.
+The option needs `users.filePath` and `users.createIfMissing: true` and cannot
+be combined with `users.static`; the server refuses to start otherwise.
+
+> Upgrading: a configuration with `users.updateSeedPasswords: true` but without
+> `users.createIfMissing: true` or `users.filePath`, or with `users.static`,
+> used to start and silently skip the seed passwords, leaving the previous
+> password valid. It now refuses to start. Set `createIfMissing` (an existing
+> database is never reseeded) or remove the option before upgrading.
 
 ```json
 "users": {
