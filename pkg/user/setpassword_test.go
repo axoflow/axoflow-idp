@@ -88,15 +88,19 @@ func TestChangePassword(t *testing.T) {
 // another path set while it ran.
 func TestChangePasswordLosesToConcurrentChange(t *testing.T) {
 	tests := []struct {
-		name    string
-		compete func(u *User) error
+		name     string
+		password string // the competing change's password
+		compete  func(u *User) error
 	}{
-		{"admin reset", func(u *User) error { return u.AdminResetPassword("admin1", "alice", "adminset1") }},
-		{"reset link", func(u *User) error {
+		{"admin reset", "adminset1", func(u *User) error { return u.AdminResetPassword("admin1", "alice", "adminset1") }},
+		{"reset link", "adminset1", func(u *User) error {
 			generation, _ := u.CredentialGeneration("alice")
 			h, _ := HashNewPassword("alice", "adminset1")
 			return u.SetPasswordByReset("alice", "admin1", generation, h)
 		}},
+		// The hash is deterministic per user, so a reset to the password the
+		// change verified leaves the stored hash as it was.
+		{"admin reset to the same password", "original", func(u *User) error { return u.AdminResetPassword("admin1", "alice", "original") }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,7 +122,7 @@ func TestChangePasswordLosesToConcurrentChange(t *testing.T) {
 			if err == nil || err.Error() != "invalid old password" {
 				t.Errorf("ChangePassword = %v, want invalid old password", err)
 			}
-			if _, ok := u.Authenticate("alice", "adminset1"); !ok {
+			if _, ok := u.Authenticate("alice", tt.password); !ok {
 				t.Error("the competing password no longer verifies")
 			}
 			if _, ok := u.Authenticate("alice", "requester1"); ok {

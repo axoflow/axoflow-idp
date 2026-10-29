@@ -293,6 +293,20 @@ func (u *User) Get(id string) (UserInfo, bool) {
 	return u.users[i].clone(), true
 }
 
+// getWithGeneration is Get together with the user's credential generation,
+// read in one critical section so no commit can fall between the two.
+func (u *User) getWithGeneration(id string) (UserInfo, uint64, bool) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
+	i, ok := getIndex(u.users, id)
+	if !ok {
+		return UserInfo{}, 0, false
+	}
+
+	return u.users[i].clone(), u.generations[id], true
+}
+
 // Register creates a user for an already-authorized caller; it does not
 // consult RegistrationOpen.
 func (u *User) Register(username string, password string, groups []string, email string) error {
@@ -457,7 +471,7 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (s
 		return "", err
 	}
 
-	user, ok := u.Get(userID)
+	user, generation, ok := u.getWithGeneration(userID)
 	if !ok {
 		return "", errors.New("user not found")
 	}
@@ -476,9 +490,11 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (s
 		if !ok {
 			return nil, errors.New("user not found")
 		}
-		// oldPassword was checked against user.Password; a reset that
-		// committed since then wins.
-		if users[i].Password != user.Password {
+		// oldPassword was checked against a snapshot; a password write that
+		// committed since then wins, even one that set the same hash, which
+		// a hash comparison would miss (the hash is deterministic per user).
+		// saveMu, held here, orders this read after every commit.
+		if u.generations[userID] != generation {
 			return nil, errors.New("invalid old password")
 		}
 		users[i].Password = newHash
