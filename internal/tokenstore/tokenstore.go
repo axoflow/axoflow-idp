@@ -37,6 +37,45 @@ type TokenStore struct {
 	// restart still refuses a revoked token. Lock order: saveMu, then mu.
 	filePath string
 	saveMu   sync.Mutex // serializes the writes of filePath
+	fsys     fileSystem // nil means the OS
+}
+
+// fileSystem is what writeFile goes through, as in pkg/user; tests swap in one that fails at a chosen
+// step.
+type fileSystem interface {
+	CreateTemp(dir, pattern string) (tempFile, error)
+	Rename(oldpath, newpath string) error
+	SyncDir(dir string) error
+}
+
+type tempFile interface {
+	Name() string
+	Chmod(mode fs.FileMode) error
+	Write(b []byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type osFileSystem struct{}
+
+func (osFileSystem) CreateTemp(dir, pattern string) (tempFile, error) {
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+func (osFileSystem) Rename(oldpath, newpath string) error { return os.Rename(oldpath, newpath) }
+
+func (osFileSystem) SyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	_ = d.Close()
+	return err
 }
 
 // New keeps a revocation for ttl, the lifetime of the tokens it is asked about; a zero ttl keeps every one.
@@ -127,20 +166,25 @@ func (s *TokenStore) Revoke(token string) {
 		return
 	}
 	if err == nil {
-		err = writeFile(s.filePath, data)
+		err = s.writeFile(data)
 	}
 	if err != nil {
 		slog.Error("revocation not saved: a restart accepts the token again until it expires", "path", s.filePath, "error", err)
 	}
 }
 
-// writeFile replaces path with data as pkg/user's writeFile replaces users.json: a fresh owner-only
-// temp file in the same directory, synced, renamed over path, then the directory synced. The rename
+// writeFile replaces filePath with data as pkg/user's writeFile replaces users.json: a fresh owner-only
+// temp file in the same directory, synced, renamed over filePath, then the directory synced. The rename
 // is the commit; before it the old file stays in place.
-func writeFile(path string, data []byte) error {
+func (s *TokenStore) writeFile(data []byte) error {
+	fsys := s.fsys
+	if fsys == nil {
+		fsys = osFileSystem{}
+	}
+	path := s.filePath
 	dir := filepath.Dir(path)
 	// a fresh name created with O_EXCL: a fixed one could be a planted symlink
-	tmp, err := os.CreateTemp(dir, ".revocations-*.json")
+	tmp, err := fsys.CreateTemp(dir, ".revocations-*.json")
 	if err != nil {
 		return err
 	}
@@ -153,18 +197,13 @@ func writeFile(path string, data []byte) error {
 		err = closeErr
 	}
 	if err == nil {
-		err = os.Rename(tmp.Name(), path)
+		err = fsys.Rename(tmp.Name(), path)
 	}
 	if err != nil {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	d, err := os.Open(dir)
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	if err != nil {
+	if err := fsys.SyncDir(dir); err != nil {
 		slog.Warn("revocations written but their directory could not be synced; the change may not survive a crash", "path", path, "error", err)
 	}
 	return nil
