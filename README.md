@@ -257,6 +257,54 @@ survives a crash or power loss is uncertain.
 
 ## Hardening
 
+### HTTP
+
+The server listens on `LISTEN_ADDR`, by default `:8080` (every interface). Set
+it to `127.0.0.1:8080` when a reverse proxy on the same host is the only
+client. A request must send its headers within 5 seconds and the whole
+request within 30; a response must be written within 30 seconds, and an idle
+keep-alive connection is closed after 120. Headers and body are each limited
+to 64 KiB, and a larger request is refused.
+
+Every response carries `Content-Security-Policy: frame-ancestors 'none'`,
+`X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`, so no page can
+be framed by another site. The profile page, the admin pages and their JSON
+API, `/password`, `/set-password` and `/oidc/userinfo`, their errors included,
+carry `Cache-Control: no-store`; `/token` sends `no-store` with its tokens.
+
+A `baseUrl` path such as `/idp` scopes the routes and the session cookie, not
+who can use them: another application served from the same host name can send
+requests to the IdP with the user's cookie and read the answers. Give the IdP a
+host name of its own.
+
+### Sign-in from other sites
+
+A form on another site's page could sign the user's browser in to an account
+of that site's choosing. `POST /login`, `POST /register` and the login form of
+`/oidc/auth` therefore refuse with `403` a request the browser marks as sent
+from another origin (`Sec-Fetch-Site`, or an `Origin` whose host is not the
+request's `Host`). A request with neither header, from a non-browser client,
+is accepted. A reverse proxy must pass the `Host` header through unchanged for
+browsers that send `Origin` but not `Sec-Fetch-Site`. A relying party's own
+authorization request, sent as a cross-site `POST` to `/oidc/auth` without
+credentials, is not affected.
+
+The login fields and the `csrf_token` of every form are read from the request
+body only, never from the URL. The `/oidc/auth` login form signs the user in
+only after the authorization request has been validated, so a refused request
+leaves no session behind.
+
+### Password checks under load
+
+Checking or setting a password derives an argon2id hash, which takes about
+15 MiB of memory for the default parameters (up to 32 MiB for a stored hash
+with other ones). At most 4 derivations run at once; up to 32 more requests
+wait for one, for at most 2 seconds. Any other request that would derive one
+(a sign-in, a registration, a password change or reset) is answered with `503`
+and `Retry-After: 2` before anything is allocated; a reset link it carried
+stays usable. Size the memory limit for at least 4 × 32 MiB on top of the
+server's own use.
+
 ### Failed sign-ins
 
 Five failed sign-ins for one username within 10 minutes put that username in
@@ -298,6 +346,13 @@ time of a wrong-password answer can tell such an account from an unknown
 username. To close that, give those users new passwords (a reset link, an
 admin reset, or the user's own change); every password set in the IdP is
 stored with the default argon2id parameters.
+
+> Upgrading: a stored argon2id hash with `m` above 32 MiB (such as
+> `m=65536`), `t` above 10 or `p` above 4 no longer verifies, and a bcrypt user
+> can no longer sign in with a password over 72 bytes; give such users a new
+> password before upgrading. A sign-in or registration posted from another
+> site's page, a login form or `csrf_token` sent in the URL instead of the body,
+> and a request body over 64 KiB are now refused.
 
 ## Releases
 
