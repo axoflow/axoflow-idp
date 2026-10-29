@@ -255,15 +255,18 @@ be combined with `users.static`; the server refuses to start otherwise.
     "createIfMissing": true,
     "userAdminGroup": "admin",
     "users": [
-        { "Username": "admin", "Password": "$2y$10$…", "Groups": ["admin"], "Email": "admin@example.com" }
+        { "ID": "01J…", "Username": "admin", "Password": "$argon2id$v=19$m=15360,t=2,p=1$…", "Groups": ["admin"], "Email": "admin@example.com" }
     ]
 }
 ```
 
 `Password` must already be an argon2id or bcrypt hash — the value is stored as
-given. `ID` is optional without `users.updateSeedPasswords` (a ULID is
-generated) and required with it. Duplicate usernames or ids are
-rejected before anything is written.
+given. Prefer argon2id with the default parameters (`m=15360`, `t=2`, `p=1`):
+a bcrypt hash, or an argon2id one with other parameters, is checked at its own
+cost, and the time of a wrong-password answer then tells the account from an
+unknown username (see "Password hashes"). `ID` is optional without
+`users.updateSeedPasswords` (a ULID is generated) and required with it.
+Duplicate usernames or ids are rejected before anything is written.
 
 ## Identities
 
@@ -428,8 +431,11 @@ other parameters, takes a different time to check than the default, so the
 time of a wrong-password answer can tell such an account from an unknown
 username. To close that, give those users new passwords (a reset link, an
 admin reset, or the user's own change); every password set in the IdP is
-stored with the default argon2id parameters. This does not apply to a user
-whose ID is longer than 256 bytes (below).
+stored with the default argon2id parameters. A seed user under
+`users.updateSeedPasswords` is the exception: every start puts the configured
+hash back, so a new password does not help; put a default-parameter argon2id
+hash in the configuration instead. This does not apply to a user whose ID is
+longer than 256 bytes (below).
 
 > Upgrading: a stored argon2id hash with `m` above 32 MiB (such as
 > `m=65536`), `t` above 10 or `p` above 4, and a bcrypt hash with a cost above
