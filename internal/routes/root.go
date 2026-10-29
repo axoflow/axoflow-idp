@@ -271,10 +271,11 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
 		}
-		username := req.Form.Get("username")
-		email := req.Form.Get("email")
-		password := req.Form.Get("password")
-		passwordConfirm := req.Form.Get("password_confirm")
+		// from the body only, the identity with the password it is registered with
+		username := req.PostForm.Get("username")
+		email := req.PostForm.Get("email")
+		password := req.PostForm.Get("password")
+		passwordConfirm := req.PostForm.Get("password_confirm")
 		if email == "" {
 			res.WriteHeader(http.StatusBadRequest)
 			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{"Email is required"}); err != nil {

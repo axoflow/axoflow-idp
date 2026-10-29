@@ -20,6 +20,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 // originHeaders are the request headers a browser sends with a form POST,
@@ -200,4 +202,123 @@ func TestFormSecretsFromTheBodyOnly(t *testing.T) {
 			t.Error("the password changed")
 		}
 	})
+}
+
+// postSplit posts body to handler with cookie, the named fields moved from
+// the body to the URL query.
+func postSplit(handler http.HandlerFunc, path string, cookie *http.Cookie, body url.Values, keys ...string) *httptest.ResponseRecorder {
+	query := url.Values{}
+	for _, k := range keys {
+		query[k] = body[k]
+		body.Del(k)
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	return postForm(handler, path, cookie, body)
+}
+
+// Every form write reads its passwords, the reset token of a POST and a
+// registration's identity from the body: under valid authorization, the
+// same fields in the query write nothing, and leave the account, its
+// sessions and the reset link as they were. In the body they write.
+func TestFormWritesReadTheBody(t *testing.T) {
+	tests := []struct {
+		name string
+		keys []string // the fields put in the query
+		// submit posts the form and reports whether it wrote; when it did
+		// not, it checks that nothing changed
+		submit func(t *testing.T, keys []string) bool
+	}{
+		{"register", []string{"username", "email", "password", "password_confirm"}, submitRegister},
+		{"register, the passwords", []string{"password", "password_confirm"}, submitRegister},
+		{"change password", []string{"current_password", "new_password"}, submitChangePassword},
+		{"change password, the new one", []string{"new_password"}, submitChangePassword},
+		{"set-password", []string{"token", "new_password"}, submitSetPassword},
+		{"set-password, the password", []string{"new_password"}, submitSetPassword},
+		{"admin register", []string{"password"}, submitAdminRegister},
+		{"admin reset", []string{"new_password"}, submitAdminReset},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.submit(t, tc.keys) {
+				t.Errorf("%v in the query wrote", tc.keys)
+			}
+			if !tc.submit(t, nil) {
+				t.Error("the form in the body did not write")
+			}
+		})
+	}
+}
+
+func submitRegister(t *testing.T, keys []string) bool {
+	r := newBootstrapRoutes(t, `[{"ID":"a1","Username":"alice","Password":"!"}]`, user.Config{SelfRegistration: true})
+	body := url.Values{"username": {"carol"}, "email": {"carol@example.com"}, "password": {"carolpass1"}, "password_confirm": {"carolpass1"}}
+	rec := postSplit(r.Register, "/register", nil, body, keys...)
+	written := r.user.Count() == 2
+	if !written && sessionCookieOf(rec) != nil {
+		t.Error("a refused registration set a session cookie")
+	}
+	return written
+}
+
+func submitChangePassword(t *testing.T, keys []string) bool {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("bob")
+	body := url.Values{"csrf_token": {csrf}, "current_password": {"bobpass1"}, "new_password": {"newsecret1"}}
+	postSplit(r.ChangePassword, "/password", cookie, body, keys...)
+	if _, ok := r.user.Authenticate("bob", "newsecret1"); ok {
+		return true
+	}
+	assertOnlyPassword(t, r, "bobpass1")
+	if _, err := r.session.Get(cookie.Value); err != nil {
+		t.Errorf("bob's session ended: %v", err)
+	}
+	return false
+}
+
+func submitSetPassword(t *testing.T, keys []string) bool {
+	r := newTestRoutes(t, false)
+	generation, _ := r.user.CredentialGeneration("bob")
+	token, err := r.resetTokens.Create("bob", "admin1", generation)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	bobCookie, _ := r.authed("bob")
+	postSplit(r.SetPassword, "/set-password", nil, url.Values{"token": {token}, "new_password": {"linkpass1"}}, keys...)
+	if _, ok := r.user.Authenticate("bob", "linkpass1"); ok {
+		return true
+	}
+	assertOnlyPassword(t, r, "bobpass1")
+	if !tokenHeld(r, token) {
+		t.Error("the reset link was spent")
+	}
+	if _, err := r.session.Get(bobCookie.Value); err != nil {
+		t.Errorf("bob's session ended: %v", err)
+	}
+	return false
+}
+
+func submitAdminRegister(t *testing.T, keys []string) bool {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("admin1")
+	body := url.Values{"csrf_token": {csrf}, "username": {"carol"}, "email": {"carol@example.com"}, "password": {"carolpass1"}}
+	postSplit(r.AdminRegister, "/admin/register", cookie, body, keys...)
+	return r.user.Count() == 3
+}
+
+func submitAdminReset(t *testing.T, keys []string) bool {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("admin1")
+	bobCookie, _ := r.authed("bob")
+	body := url.Values{"csrf_token": {csrf}, "user_id": {"bob"}, "new_password": {"bobpass99"}}
+	postSplit(r.AdminResetPassword, "/admin/users/reset-password", cookie, body, keys...)
+	if _, ok := r.user.Authenticate("bob", "bobpass99"); ok {
+		return true
+	}
+	assertOnlyPassword(t, r, "bobpass1")
+	if _, err := r.session.Get(bobCookie.Value); err != nil {
+		t.Errorf("bob's session ended: %v", err)
+	}
+	return false
 }

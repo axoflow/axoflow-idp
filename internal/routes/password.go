@@ -49,8 +49,8 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		currentPassword := req.Form.Get("current_password")
-		newPassword := req.Form.Get("new_password")
+		currentPassword := req.PostForm.Get("current_password")
+		newPassword := req.PostForm.Get("new_password")
 		if newPassword == "" {
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderChangePassword(res, sessionCookie.Value, "New password is required")
@@ -200,8 +200,9 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		token := req.Form.Get("token")
-		newPassword := req.Form.Get("new_password")
+		// the link's GET carries the token in the URL; the form posts it in the body
+		token := req.PostForm.Get("token")
+		newPassword := req.PostForm.Get("new_password")
 		if token == "" {
 			r.renderSetPasswordInvalid(res)
 			return

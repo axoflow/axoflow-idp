@@ -117,7 +117,7 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		}
 		username := req.Form.Get("username")
 		email := req.Form.Get("email")
-		password := req.Form.Get("password")
+		password := req.PostForm.Get("password")
 		groups := req.Form["groups"]
 
 		// The admin can either set an initial password or have the new user set
@@ -284,7 +284,7 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	newPassword := req.Form.Get("new_password")
+	newPassword := req.PostForm.Get("new_password")
 	if newPassword == "" {
 		http.Error(res, "New password is required", http.StatusBadRequest)
 		return
