@@ -65,6 +65,14 @@ func (s *Session) Create(userId string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Expired sessions go first, or the cap would evict a live one for them.
+	// That can empty the user's index and drop it, so look it up afterwards.
+	now := s.now()
+	for id := range s.byUser[userId] {
+		if s.expired(s.sessions[id], now) {
+			s.remove(id)
+		}
+	}
 	ids := s.byUser[userId]
 	if ids == nil {
 		ids = map[string]struct{}{}
@@ -74,7 +82,6 @@ func (s *Session) Create(userId string) string {
 		s.evictOldest(ids)
 	}
 
-	now := s.now()
 	s.sessions[id] = session{userID: userId, createdAt: now, lastSeen: now}
 	ids[id] = struct{}{}
 

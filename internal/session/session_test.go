@@ -186,3 +186,56 @@ func TestCreateEvictsOldestBeyondCap(t *testing.T) {
 		t.Errorf("alice holds %d sessions, want %d", n, MaxPerUser)
 	}
 }
+
+// Expired sessions do not count toward the cap: an old session kept alive by
+// use outlives 49 younger ones that went idle.
+func TestCreateDropsExpiredBeforeTheCap(t *testing.T) {
+	s, c := newClockedStore(Config{IdleTTL: 30 * time.Minute})
+	old := s.Create("alice")
+	bob := s.Create("bob")
+	idle := make([]string, MaxPerUser-1)
+	for i := range idle {
+		c.t = c.t.Add(time.Second)
+		idle[i] = s.Create("alice")
+	}
+	c.t = c.t.Add(20 * time.Minute)
+	if _, err := s.Get(old); err != nil {
+		t.Fatalf("refresh the old session: %v", err)
+	}
+	c.t = c.t.Add(20 * time.Minute) // the idle ones and bob's are now expired
+
+	fresh := s.Create("alice")
+
+	if _, err := s.Get(old); err != nil {
+		t.Errorf("the live old session was evicted: %v", err)
+	}
+	for _, id := range idle {
+		if _, ok := s.sessions[id]; ok {
+			t.Fatal("an expired session is still held after Create")
+		}
+	}
+	if _, ok := s.sessions[bob]; !ok {
+		t.Error("another user's session was touched")
+	}
+	if got := s.byUser["alice"]; len(got) != 2 {
+		t.Errorf("alice's index holds %d ids, want 2 (old and fresh)", len(got))
+	}
+	if _, err := s.Get(fresh); err != nil {
+		t.Errorf("the new session does not resolve: %v", err)
+	}
+}
+
+// When every session of the user has expired, the new one still lands in the
+// user's index, so DeleteUserSessions reaches it.
+func TestCreateAfterAllExpiredIsIndexed(t *testing.T) {
+	s, c := newClockedStore(Config{IdleTTL: 30 * time.Minute})
+	s.Create("alice")
+	c.t = c.t.Add(time.Hour)
+
+	fresh := s.Create("alice")
+	s.DeleteUserSessions("alice")
+
+	if _, err := s.Get(fresh); err == nil {
+		t.Error("the new session survived DeleteUserSessions")
+	}
+}
