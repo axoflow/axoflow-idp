@@ -765,8 +765,8 @@ func postRevoke(t *testing.T, r *Routes, form url.Values) *httptest.ResponseReco
 }
 
 // TestOidcRevoke_Ownership lets a client revoke its own access tokens only:
-// another client's token is the RFC 7009 unknown token, so the request
-// succeeds and nothing is recorded.
+// another client's token is answered, by local policy, as an invalid token
+// (RFC 7009 §2.2), so the request succeeds and nothing is recorded.
 func TestOidcRevoke_Ownership(t *testing.T) {
 	appToken := func(t *testing.T, r *Routes, cookie *http.Cookie) string {
 		code := issueCode(t, r, cookie, url.Values{

@@ -74,9 +74,11 @@ func authRequest(values url.Values) oidc.AuthenticationRequest {
 }
 
 // fragmentResponse reports whether the response to responseType goes in the
-// redirect's fragment: one that carries a token does (the default of OAuth 2.0
-// Multiple Response Type Encoding Practices), so the token reaches no server
-// log or Referer. A request's errors go where its success would.
+// redirect's fragment: one that carries a token does, so the token reaches no
+// server log or Referer. The fragment is the default response mode of such a
+// type (OAuth 2.0 Multiple Response Type Encoding Practices §2.1, §3 for a
+// lone id_token), and an implicit request's errors go there too (OpenID
+// Connect Core §3.2.2.6).
 func fragmentResponse(responseType string) bool {
 	return slices.ContainsFunc(strings.Fields(responseType), func(t string) bool {
 		return t == "id_token" || t == "token"
@@ -87,7 +89,8 @@ func fragmentResponse(responseType string) bool {
 // query string, or as its fragment, all properly percent-encoded. It must only
 // be called with a redirect_uri that has already passed ValidateRedirect.
 func authRedirect(res http.ResponseWriter, req *http.Request, redirectUri string, params url.Values, fragment bool) {
-	// config validation refuses a registered URI with a fragment; url.URL.Fragment would encode it twice
+	// config validation refuses a registered URI with a fragment, so appending one is safe; assigning the
+	// already percent-encoded params.Encode() to url.URL.Fragment would escape its percent signs again
 	if fragment {
 		http.Redirect(res, req, redirectUri+"#"+params.Encode(), http.StatusFound)
 		return
@@ -158,7 +161,6 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// chosen once, so that no path of this request delivers in the other part of the redirect
 	fragment := fragmentResponse(authReq.ResponseType)
 
 	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
@@ -249,7 +251,8 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		}
 
 		// the credentials, the code and the verifier are read from the body only: in the URL they reach
-		// access logs and proxies (RFC 6749 §2.3.1)
+		// access logs and proxies. RFC 6749 §2.3.1 keeps client credentials sent as parameters (the
+		// alternative to HTTP Basic) out of the URI; the code and the verifier stay out of it by local policy.
 		tokenRequest = oidc.TokenRequest{
 			GrantType:    req.Form.Get("grant_type"),
 			ClientID:     req.PostForm.Get("client_id"),
@@ -344,7 +347,6 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// body only, as at /token
 	revocationRequest := oidc.RevocationRequest{
 		Token:        req.PostForm.Get("token"),
 		ClientID:     req.PostForm.Get("client_id"),
@@ -365,9 +367,9 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 
 	// the revocation is recorded under the verified token's jti, not its bytes: an access token has more
 	// than one valid spelling, its id has one. A token this server did not sign as an access token (the ID
-	// token is not a credential here), or one issued to another client (RFC 7009 §2.1 lets a client revoke
-	// only its own), is answered as the RFC 7009 unknown token: 200 and nothing recorded, so the answer does
-	// not tell the caller whose token it was.
+	// token is not a credential here) is an invalid token, 200 and nothing recorded (RFC 7009 §2.2). One
+	// issued to another client gets the same answer by local policy: §2.1 lets a client revoke only its own
+	// tokens and says to refuse the rest, but a refusal would tell the caller whose token it was.
 	if id, clientID, err := r.oidc.AccessTokenIdentity(revocationRequest.Token); err == nil && clientID == revocationRequest.ClientID {
 		r.tokenStore.Revoke(id)
 	}
