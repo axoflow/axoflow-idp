@@ -184,7 +184,15 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if authReq.ResponseType == "id_token" {
-		idToken, err := r.oidc.GenerateIDToken(*user, authReq.ClientID, authReq.Nonce)
+		// the login returns the record its password was checked against, read before that check; an admin
+		// change since then applies here as at code redemption. A deleted user is refused, not a failed signing.
+		current, ok := r.user.Get(user.ID)
+		if !ok {
+			authError(res, req, authReq, "access_denied", fragment)
+			return
+		}
+		current.Password = ""
+		idToken, err := r.oidc.GenerateIDToken(current, authReq.ClientID, authReq.Nonce)
 		if err != nil {
 			authError(res, req, authReq, "server_error", fragment)
 			return

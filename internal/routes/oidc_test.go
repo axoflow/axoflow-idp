@@ -513,6 +513,49 @@ func TestUserinfo_LiveUser(t *testing.T) {
 	}
 }
 
+// TestOidcAuth_ImplicitLoginLiveUser changes bob's record after the login
+// form's password check and before the implicit ID token is signed: the token
+// carries the record as it is after the login, and a user gone by then gets
+// neither a token nor a session.
+func TestOidcAuth_ImplicitLoginLiveUser(t *testing.T) {
+	q := url.Values{
+		"scope": {"openid"}, "response_type": {"id_token"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "nonce": {"n1"},
+	}
+	for _, tt := range userChanges {
+		t.Run(tt.name, func(t *testing.T) {
+			r, _ := newPublicClientRoutes(t)
+			hookRan := false
+			r.hooks.afterCreateSession = func() {
+				hookRan = true
+				tt.change(t, r.user)
+			}
+
+			rec := loginPost(t, r, q)
+			if !hookRan {
+				t.Fatal("the hook did not run")
+			}
+			query, fragment := splitLocation(t, rec)
+			if tt.wantGroups == nil {
+				if query.Has("id_token") || fragment.Has("id_token") {
+					t.Errorf("a deleted user got an id_token: %d %q", rec.Code, rec.Header().Get("Location"))
+				}
+				if resolvingSession(r, rec) {
+					t.Error("a deleted user got a resolving session")
+				}
+				return
+			}
+			if rec.Code != http.StatusFound || fragment.Get("id_token") == "" {
+				t.Fatalf("login = %d %q, want 302 with an id_token in the fragment", rec.Code, rec.Header().Get("Location"))
+			}
+			_, claims := verifiedClaims(t, r, fragment.Get("id_token"))
+			current, _ := r.user.Get("bob")
+			if claims["sub"] != current.ID || claims["name"] != current.Username || claims["email"] != current.Email || !slices.Equal(groupsOf(claims), tt.wantGroups) {
+				t.Errorf("id_token sub=%v name=%v email=%v groups=%v, want %s %s %q %v", claims["sub"], claims["name"], claims["email"], claims["groups"], current.ID, current.Username, current.Email, tt.wantGroups)
+			}
+		})
+	}
+}
+
 // TestUserinfo_TokenClaims refuses an access token this server's key signed
 // but whose claims do not name this issuer, a registered client and an
 // audience of that client.
