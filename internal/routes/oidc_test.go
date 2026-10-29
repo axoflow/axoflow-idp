@@ -636,3 +636,93 @@ func TestOidcRevoke_Ownership(t *testing.T) {
 		})
 	}
 }
+
+// moveToQuery posts body to handler with the named parameters moved from the
+// body to the URL query.
+func moveToQuery(t *testing.T, handler http.HandlerFunc, path string, body url.Values, keys ...string) *httptest.ResponseRecorder {
+	t.Helper()
+	query := url.Values{}
+	for _, k := range keys {
+		query[k] = body[k]
+		body.Del(k)
+	}
+	req := httptest.NewRequest(http.MethodPost, path+"?"+query.Encode(), strings.NewReader(body.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	return rec
+}
+
+// TestOidcToken_CredentialsInQuery takes the client's credentials, the code
+// and the verifier from the request body only: in the URL they reach logs.
+func TestOidcToken_CredentialsInQuery(t *testing.T) {
+	appForm := func(t *testing.T, r *Routes, cookie *http.Cookie) url.Values {
+		code := issueCode(t, r, cookie, url.Values{
+			"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI},
+		})
+		return url.Values{
+			"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+		}
+	}
+	cliForm := func(t *testing.T, r *Routes, cookie *http.Cookie) url.Values {
+		return tfTokenForm(issueCode(t, r, cookie, cliAuthQuery()))
+	}
+	tests := []struct {
+		name       string
+		form       func(t *testing.T, r *Routes, cookie *http.Cookie) url.Values
+		key        string
+		wantStatus int
+		wantError  string
+	}{
+		{"client_secret", appForm, "client_secret", http.StatusUnauthorized, "invalid_client"},
+		{"client_id", appForm, "client_id", http.StatusUnauthorized, "invalid_client"},
+		{"code", appForm, "code", http.StatusBadRequest, "invalid_grant"},
+		{"code_verifier", cliForm, "code_verifier", http.StatusBadRequest, "invalid_request"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, cookie := newPublicClientRoutes(t)
+			rec := moveToQuery(t, r.OidcToken, "/token", tt.form(t, r, cookie), tt.key)
+			if rec.Code != tt.wantStatus || tokenBody(t, rec)["error"] != tt.wantError {
+				t.Errorf("token with %s in the query = %d %s, want %d %s", tt.key, rec.Code, rec.Body.String(), tt.wantStatus, tt.wantError)
+			}
+		})
+	}
+}
+
+// TestOidcRevoke_CredentialsInQuery takes the client's credentials and the
+// token from the request body only.
+func TestOidcRevoke_CredentialsInQuery(t *testing.T) {
+	tests := []struct {
+		key        string
+		wantStatus int
+	}{
+		{"client_secret", http.StatusUnauthorized},
+		{"client_id", http.StatusUnauthorized},
+		{"token", http.StatusOK}, // no token is the RFC 7009 unknown token
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			r, cookie := newPublicClientRoutes(t)
+			r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
+			code := issueCode(t, r, cookie, url.Values{
+				"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI},
+			})
+			tok := postToken(t, r, url.Values{
+				"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+			})
+			access := tokenBody(t, tok)["access_token"].(string)
+
+			rec := moveToQuery(t, r.OidcRevoke, "/revoke", url.Values{
+				"token": {access}, "client_id": {"app"}, "client_secret": {"s3cret"},
+			}, tt.key)
+			if rec.Code != tt.wantStatus {
+				t.Errorf("revoke with %s in the query = %d %s, want %d", tt.key, rec.Code, rec.Body.String(), tt.wantStatus)
+			}
+			_, claims := verifiedClaims(t, r, access)
+			if r.tokenStore.IsRevoked(claims["jti"].(string)) {
+				t.Errorf("revoke with %s in the query recorded the revocation", tt.key)
+			}
+		})
+	}
+}

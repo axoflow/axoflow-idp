@@ -240,13 +240,15 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		// the credentials, the code and the verifier are read from the body only: in the URL they reach
+		// access logs and proxies (RFC 6749 §2.3.1)
 		tokenRequest = oidc.TokenRequest{
 			GrantType:    req.Form.Get("grant_type"),
-			ClientID:     req.Form.Get("client_id"),
-			ClientSecret: req.Form.Get("client_secret"),
+			ClientID:     req.PostForm.Get("client_id"),
+			ClientSecret: req.PostForm.Get("client_secret"),
 			RedirectUri:  req.Form.Get("redirect_uri"),
-			Code:         req.Form.Get("code"),
-			CodeVerifier: req.Form.Get("code_verifier"),
+			Code:         req.PostForm.Get("code"),
+			CodeVerifier: req.PostForm.Get("code_verifier"),
 			Resources:    req.Form["resource"],
 		}
 	default:
@@ -334,10 +336,11 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// body only, as at /token
 	revocationRequest := oidc.RevocationRequest{
-		Token:        req.Form.Get("token"),
-		ClientID:     req.Form.Get("client_id"),
-		ClientSecret: req.Form.Get("client_secret"),
+		Token:        req.PostForm.Get("token"),
+		ClientID:     req.PostForm.Get("client_id"),
+		ClientSecret: req.PostForm.Get("client_secret"),
 	}
 
 	if err := r.oidc.ValidateRevocationRequest(revocationRequest); err != nil {
