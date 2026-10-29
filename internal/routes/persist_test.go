@@ -170,34 +170,52 @@ func TestRegister_FailedSaveReopensBootstrap(t *testing.T) {
 	}
 }
 
-// A reset link whose new password could not be saved stays usable: the token
-// is not consumed, and a retry once the storage recovers sets the password.
-// This is the behavior until reset-link redemption consumes the token first.
-func TestSetPassword_FailedSaveKeepsTheLink(t *testing.T) {
+// A reset link whose new password could not be saved is spent: Consume
+// reserved it before the write and nothing puts it back, so an admin mints a
+// new one. The password stays as it was.
+func TestSetPassword_FailedSaveSpendsTheLink(t *testing.T) {
 	r := newTestRoutes(t, false)
-	tok, err := r.resetTokens.Create("bob")
+	tok, err := r.resetTokens.Create("bob", "admin1")
 	if err != nil {
 		t.Fatalf("create token: %v", err)
 	}
 	form := url.Values{"token": {tok}, "new_password": {"newpass123"}}
 	restore := readOnlyDir(t, r.user)
 
-	if rec := postForm(r.SetPassword, "/set-password", nil, form); rec.Code != http.StatusInternalServerError {
+	rec := postForm(r.SetPassword, "/set-password", nil, form)
+	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
-	if _, ok := r.resetTokens.Peek(tok); !ok {
-		t.Fatal("reset token consumed by the failed save")
+	if body := rec.Body.String(); !strings.Contains(body, "could not save the user database") {
+		t.Errorf("body lacks the generic message: %s", head(body, 300))
 	}
+	if _, _, ok := r.resetTokens.Peek(tok); ok {
+		t.Error("reset token still usable after the failed save")
+	}
+	assertBobsPassword(t, r, "bobpass1", "newpass123")
 
 	restore()
-	rec := postForm(r.SetPassword, "/set-password", nil, form)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("retry status = %d, want 303: %s", rec.Code, head(rec.Body.String(), 300))
+	rec = postForm(r.SetPassword, "/set-password", nil, form)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid or has expired") {
+		t.Fatalf("retry status = %d, want 400 with the invalid-link page: %s", rec.Code, head(rec.Body.String(), 300))
 	}
-	if _, ok := r.user.Authenticate("bob", "newpass123"); !ok {
-		t.Error("new password refused after the retry")
+	assertBobsPassword(t, r, "bobpass1", "newpass123")
+}
+
+// assertBobsPassword checks that bob signs in with want and not with refused,
+// in memory and in the database file.
+func assertBobsPassword(t *testing.T, r *Routes, want, refused string) {
+	t.Helper()
+	reloaded, err := user.New(user.Config{FilePath: r.user.FilePath})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
 	}
-	if _, ok := r.resetTokens.Peek(tok); ok {
-		t.Error("reset token still usable after the password was set")
+	for where, u := range map[string]*user.User{"in memory": r.user, "on disk": reloaded} {
+		if _, ok := u.Authenticate("bob", want); !ok {
+			t.Errorf("bob's password %s is no longer %q", where, want)
+		}
+		if _, ok := u.Authenticate("bob", refused); ok {
+			t.Errorf("bob's password %s is %q", where, refused)
+		}
 	}
 }
