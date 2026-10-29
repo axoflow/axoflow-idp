@@ -206,7 +206,7 @@ func TestValidateClientTokenTTL(t *testing.T) {
 // newTestMux builds the real handler stack — OIDC provider, routes, mux — the
 // same way main() does, so the registered patterns are the ones production
 // serves.
-func newTestMux(t *testing.T, baseUrl string) *http.ServeMux {
+func newTestMux(t *testing.T, baseUrl string) http.Handler {
 	t.Helper()
 
 	u, err := user.New(user.Config{UserAdminGroup: "admin"})
@@ -217,7 +217,7 @@ func newTestMux(t *testing.T, baseUrl string) *http.ServeMux {
 }
 
 // newTestMuxWithUsers is newTestMux serving the users of u.
-func newTestMuxWithUsers(t *testing.T, baseUrl string, u *user.User) *http.ServeMux {
+func newTestMuxWithUsers(t *testing.T, baseUrl string, u *user.User) http.Handler {
 	t.Helper()
 
 	o, err := oidc.New(oidc.Config{
@@ -332,7 +332,7 @@ func TestMuxWiring(t *testing.T) {
 
 	// One mux per distinct baseUrl; signing-key generation is too slow to
 	// repeat for every request.
-	muxes := map[string]*http.ServeMux{}
+	muxes := map[string]http.Handler{}
 	for _, tc := range tests {
 		if muxes[tc.baseUrl] == nil {
 			muxes[tc.baseUrl] = newTestMux(t, tc.baseUrl)
@@ -758,4 +758,89 @@ func TestNewServer(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestSecurityHeaders: no page may be framed or content-sniffed, and a page
+// that shows an account, a secret or a form for one, its errors included, must
+// not be kept by a browser or proxy cache.
+func TestSecurityHeaders(t *testing.T) {
+	u, err := user.New(user.Config{UserAdminGroup: "admin"})
+	if err != nil {
+		t.Fatalf("user.New: %v", err)
+	}
+	if err := u.Register("alice", "alicepass1", []string{"admin"}, ""); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	mux := newTestMuxWithUsers(t, "https://host/idp", u)
+
+	form := url.Values{"username": {"alice"}, "password": {"alicepass1"}}
+	login := httptest.NewRequest(http.MethodPost, "/idp/login", strings.NewReader(form.Encode()))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, login)
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			session = c
+		}
+	}
+	if session == nil {
+		t.Fatalf("login = %d, no session cookie", rec.Code)
+	}
+
+	tests := []struct {
+		method, path string
+		authed       bool
+		wantNoStore  bool
+	}{
+		{method: "GET", path: "/idp/", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/", wantNoStore: true},
+		{method: "GET", path: "/idp/admin", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/admin", wantNoStore: true},
+		{method: "GET", path: "/idp/admin/users/api", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/admin/users/api", wantNoStore: true},
+		{method: "GET", path: "/idp/admin/register", authed: true, wantNoStore: true},
+		{method: "POST", path: "/idp/admin/users/reset-link", authed: true, wantNoStore: true},
+		{method: "POST", path: "/idp/admin/users/reset-link", wantNoStore: true},
+		{method: "POST", path: "/idp/admin/users/delete", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/password", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/password", wantNoStore: true},
+		{method: "GET", path: "/idp/set-password?token=t", wantNoStore: true},
+		{method: "GET", path: "/idp/set-password", wantNoStore: true},
+		{method: "POST", path: "/idp/set-password", wantNoStore: true},
+		{method: "GET", path: "/idp/oidc/userinfo", wantNoStore: true},
+		{method: "GET", path: "/idp/login"},
+		{method: "GET", path: "/idp/.well-known/openid-configuration"},
+		{method: "POST", path: "/idp/token"},
+		{method: "GET", path: "/idp/nonexistent", wantNoStore: true},
+		{method: "GET", path: "/idp"},
+		{method: "GET", path: "/outside"},
+	}
+	for _, tc := range tests {
+		name := tc.method + " " + tc.path
+		if tc.authed {
+			name += " signed in"
+		}
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			if tc.authed {
+				req.AddCookie(session)
+			}
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			h := rec.Header()
+			for name, want := range map[string]string{
+				"Content-Security-Policy": "frame-ancestors 'none'",
+				"X-Frame-Options":         "DENY",
+				"X-Content-Type-Options":  "nosniff",
+			} {
+				if got := h.Get(name); got != want {
+					t.Errorf("%s = %q (status %d), want %q", name, got, rec.Code, want)
+				}
+			}
+			if gotNoStore := h.Get("Cache-Control") == "no-store"; gotNoStore != tc.wantNoStore {
+				t.Errorf("Cache-Control = %q (status %d), want no-store %v", h.Get("Cache-Control"), rec.Code, tc.wantNoStore)
+			}
+		})
+	}
 }

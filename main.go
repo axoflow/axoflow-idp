@@ -259,15 +259,20 @@ func (c *config) Validate() error {
 
 // newMux registers every route under pathPrefix, so the same binary can be
 // served from the host root or from a prefix such as /idp. A reverse proxy in
-// front of it must pass the prefix through rather than strip it.
-func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
+// front of it must pass the prefix through rather than strip it. Every
+// response gets routes.SecurityHeaders.
+func newMux(r *routes.Routes, pathPrefix string, u *user.User) http.Handler {
 	mux := http.NewServeMux()
 	handle := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pathPrefix+pattern, handler)
 	}
+	// for the routes that show an account, a secret or a form for one
+	handlePrivate := func(pattern string, handler http.HandlerFunc) {
+		handle(pattern, routes.NoStore(handler))
+	}
 
 	rootPath := pathPrefix + "/"
-	handle("/", func(res http.ResponseWriter, req *http.Request) {
+	handlePrivate("/", func(res http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != rootPath {
 			r.NotFound(res, req)
 			return
@@ -279,7 +284,7 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 	handle("/logout", r.Logout)
 	handle("/oidc/auth", r.OidcAuth)
 	handle("/oidc/jwks", r.OidcJwks)
-	handle("/oidc/userinfo", r.OidcUserinfo)
+	handlePrivate("/oidc/userinfo", r.OidcUserinfo)
 	handle("/token", r.OidcToken)
 	handle("/revoke", r.OidcRevoke)
 
@@ -300,25 +305,25 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 	}
 
 	if !u.Static {
-		handle("/password", r.ChangePassword)
-		handle("/set-password", r.SetPassword)
+		handlePrivate("/password", r.ChangePassword)
+		handlePrivate("/set-password", r.SetPassword)
 	}
 
 	if u.UserAdminGroup != "" {
-		handle("/admin", r.AdminPanel)
-		handle("/admin/users/api", r.AdminUsersAPI)
+		handlePrivate("/admin", r.AdminPanel)
+		handlePrivate("/admin/users/api", r.AdminUsersAPI)
 		if !u.Static {
-			handle("/admin/register", r.AdminRegister)
-			handle("/admin/users/delete", r.AdminDeleteUser)
-			handle("/admin/users/reset-password", r.AdminResetPassword)
-			handle("/admin/users/update-groups", r.AdminUpdateUserGroups)
-			handle("/admin/users/reset-link", r.AdminCreateResetLink)
+			handlePrivate("/admin/register", r.AdminRegister)
+			handlePrivate("/admin/users/delete", r.AdminDeleteUser)
+			handlePrivate("/admin/users/reset-password", r.AdminResetPassword)
+			handlePrivate("/admin/users/update-groups", r.AdminUpdateUserGroups)
+			handlePrivate("/admin/users/reset-link", r.AdminCreateResetLink)
 		}
 	} else {
 		slog.Warn("user admin group is not set; admin routes are disabled")
 	}
 
-	return mux
+	return routes.SecurityHeaders(mux)
 }
 
 // baseRoutesConfig is the part of the routes configuration that follows from
