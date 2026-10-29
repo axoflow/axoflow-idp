@@ -392,6 +392,29 @@ func startSweeper(interval time.Duration, stores ...cleaner) (stop func()) {
 	}
 }
 
+// maxRequestBytes bounds a request's body and its headers; the largest form
+// the IdP takes, a sign-in or an admin's user edit, is far smaller.
+const maxRequestBytes = 64 << 10
+
+// newServer is the HTTP server for handler, listening on LISTEN_ADDR (default
+// ":8080"). Without the timeouts a client that sends its request slowly, or
+// never reads the response, holds a connection and its goroutine forever.
+func newServer(handler http.Handler) *http.Server {
+	addr := os.Getenv("LISTEN_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	return &http.Server{
+		Addr:              addr,
+		Handler:           http.MaxBytesHandler(handler, maxRequestBytes),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    maxRequestBytes,
+	}
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
@@ -449,10 +472,10 @@ func main() {
 	stopSweeper := startSweeper(sweepInterval, storeCleaners(sessions, codes, tokens, resetTokens)...)
 	defer stopSweeper()
 
-	mux := newMux(r, pathPrefix, u)
+	srv := newServer(newMux(r, pathPrefix, u))
 
-	slog.Info("listening", "addr", "http://localhost:8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	slog.Info("listening", "addr", srv.Addr)
+	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}

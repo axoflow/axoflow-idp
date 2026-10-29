@@ -699,3 +699,63 @@ func TestStoreCleaners(t *testing.T) {
 		t.Error("the token store holds an expired revocation")
 	}
 }
+
+// TestNewServer: a slow or oversized request must not hold a connection or
+// memory without bound.
+func TestNewServer(t *testing.T) {
+	t.Run("limits", func(t *testing.T) {
+		t.Setenv("LISTEN_ADDR", "")
+		srv := newServer(http.NotFoundHandler())
+		if srv.Addr != ":8080" {
+			t.Errorf("Addr = %q, want :8080", srv.Addr)
+		}
+		for _, tc := range []struct {
+			name      string
+			got, want time.Duration
+		}{
+			{"ReadHeaderTimeout", srv.ReadHeaderTimeout, 5 * time.Second},
+			{"ReadTimeout", srv.ReadTimeout, 30 * time.Second},
+			{"WriteTimeout", srv.WriteTimeout, 30 * time.Second},
+			{"IdleTimeout", srv.IdleTimeout, 120 * time.Second},
+		} {
+			if tc.got != tc.want {
+				t.Errorf("%s = %v, want %v", tc.name, tc.got, tc.want)
+			}
+		}
+		if srv.MaxHeaderBytes != 64<<10 {
+			t.Errorf("MaxHeaderBytes = %d, want %d", srv.MaxHeaderBytes, 64<<10)
+		}
+	})
+
+	t.Run("LISTEN_ADDR", func(t *testing.T) {
+		t.Setenv("LISTEN_ADDR", "127.0.0.1:9999")
+		if addr := newServer(http.NotFoundHandler()).Addr; addr != "127.0.0.1:9999" {
+			t.Errorf("Addr = %q, want 127.0.0.1:9999", addr)
+		}
+	})
+
+	t.Run("request body", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			size   int
+			wantOK bool
+		}{
+			{"at the limit", 64 << 10, true},
+			{"over the limit", 64<<10 + 1, false},
+		} {
+			srv := newServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+				if err := req.ParseForm(); err != nil {
+					http.Error(res, err.Error(), http.StatusBadRequest)
+				}
+			}))
+			body := "a=" + strings.Repeat("x", tc.size-2)
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+			if gotOK := rec.Code == http.StatusOK; gotOK != tc.wantOK {
+				t.Errorf("%s: a %d-byte form = %d, want ok %v", tc.name, tc.size, rec.Code, tc.wantOK)
+			}
+		}
+	})
+}
