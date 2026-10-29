@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -819,7 +820,7 @@ func TestNewServer(t *testing.T) {
 // that shows an account, a secret or a form for one, its errors included, must
 // not be kept by a browser or proxy cache.
 func TestSecurityHeaders(t *testing.T) {
-	u, err := user.New(user.Config{UserAdminGroup: "admin"})
+	u, err := user.New(user.Config{UserAdminGroup: "admin", SelfRegistration: true})
 	if err != nil {
 		t.Fatalf("user.New: %v", err)
 	}
@@ -843,9 +844,16 @@ func TestSecurityHeaders(t *testing.T) {
 		t.Fatalf("login = %d, no session cookie", rec.Code)
 	}
 
+	code := url.Values{"scope": {"openid"}, "response_type": {"code"}, "client_id": {"c"}, "redirect_uri": {"https://rp/cb"}}
+	implicit := url.Values{"scope": {"openid"}, "response_type": {"id_token"}, "client_id": {"c"}, "redirect_uri": {"https://rp/cb"}, "nonce": {"n"}}
+	registration := func(confirm string) url.Values {
+		return url.Values{"username": {"carol"}, "email": {"carol@example.com"}, "password": {"carolpass1"}, "password_confirm": {confirm}}
+	}
 	tests := []struct {
 		method, path string
 		authed       bool
+		form         url.Values
+		wantStatus   int // checked when set
 		wantNoStore  bool
 	}{
 		{method: "GET", path: "/idp/", authed: true, wantNoStore: true},
@@ -864,9 +872,17 @@ func TestSecurityHeaders(t *testing.T) {
 		{method: "GET", path: "/idp/set-password", wantNoStore: true},
 		{method: "POST", path: "/idp/set-password", wantNoStore: true},
 		{method: "GET", path: "/idp/oidc/userinfo", wantNoStore: true},
-		{method: "GET", path: "/idp/login"},
+		{method: "GET", path: "/idp/oidc/auth?" + code.Encode(), authed: true, wantStatus: http.StatusFound, wantNoStore: true},
+		{method: "GET", path: "/idp/oidc/auth?" + implicit.Encode(), authed: true, wantStatus: http.StatusFound, wantNoStore: true},
+		{method: "GET", path: "/idp/oidc/auth?" + code.Encode(), wantStatus: http.StatusOK, wantNoStore: true},
+		{method: "GET", path: "/idp/login", wantNoStore: true},
+		{method: "POST", path: "/idp/login", form: form, wantStatus: http.StatusFound, wantNoStore: true},
+		{method: "POST", path: "/idp/login", form: url.Values{"username": {"alice"}, "password": {"wrong"}}, wantStatus: http.StatusUnauthorized, wantNoStore: true},
+		{method: "POST", path: "/idp/register", form: registration("carolpass1"), wantStatus: http.StatusCreated, wantNoStore: true},
+		{method: "POST", path: "/idp/register", form: registration("other"), wantStatus: http.StatusBadRequest, wantNoStore: true},
+		{method: "POST", path: "/idp/logout", authed: true, wantStatus: http.StatusFound, wantNoStore: true},
 		{method: "GET", path: "/idp/.well-known/openid-configuration"},
-		{method: "POST", path: "/idp/token"},
+		{method: "POST", path: "/idp/token", wantStatus: http.StatusBadRequest, wantNoStore: true},
 		{method: "GET", path: "/idp/nonexistent", wantNoStore: true},
 		{method: "GET", path: "/idp"},
 		{method: "GET", path: "/outside"},
@@ -876,14 +892,25 @@ func TestSecurityHeaders(t *testing.T) {
 		if tc.authed {
 			name += " signed in"
 		}
+		if tc.wantStatus != 0 {
+			name += " " + strconv.Itoa(tc.wantStatus)
+		}
 		t.Run(name, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.form.Encode()))
+			if tc.form != nil {
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
 			if tc.authed {
 				req.AddCookie(session)
 			}
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
-			h := rec.Header()
+			if tc.wantStatus != 0 && rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			// the headers sent with the status, not the map a handler could
+			// still change after it
+			h := rec.Result().Header
 			for name, want := range map[string]string{
 				"Content-Security-Policy": "frame-ancestors 'none'",
 				"X-Frame-Options":         "DENY",

@@ -273,7 +273,8 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) http.Handler {
 	handle := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pathPrefix+pattern, handler)
 	}
-	// for the routes that show an account, a secret or a form for one
+	// for the routes that show an account, a secret or a form for one, or
+	// that sign in or out
 	handlePrivate := func(pattern string, handler http.HandlerFunc) {
 		handle(pattern, routes.NoStore(handler))
 	}
@@ -287,12 +288,12 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) http.Handler {
 		r.Index(res, req)
 	})
 	handle("/.well-known/openid-configuration", r.WellKnownOpenIdConfiguration)
-	handle("/login", r.Login)
-	handle("/logout", r.Logout)
-	handle("/oidc/auth", r.OidcAuth)
+	handlePrivate("/login", r.Login)
+	handlePrivate("/logout", r.Logout)
+	handlePrivate("/oidc/auth", r.OidcAuth)
 	handle("/oidc/jwks", r.OidcJwks)
 	handlePrivate("/oidc/userinfo", r.OidcUserinfo)
-	handle("/token", r.OidcToken)
+	handlePrivate("/token", r.OidcToken)
 	handle("/revoke", r.OidcRevoke)
 
 	// In static mode the user database is read-only, so no route that mutates
@@ -308,7 +309,7 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) http.Handler {
 		} else {
 			slog.Info("bootstrap registration is enabled while the user database is empty")
 		}
-		handle("/register", r.Register)
+		handlePrivate("/register", r.Register)
 	}
 
 	if !u.Static {
