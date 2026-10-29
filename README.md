@@ -91,8 +91,23 @@ offline accepts it, with the groups it was issued with, until its `exp`. A
 password reset does not revoke outstanding codes or tokens either.
 
 A public client cannot call `/revoke` (`401 invalid_client`); its tokens expire
-instead. A revocation is kept for the maximum token lifetime (24 hours),
-whatever the client's `tokenTTL`, and pruned on a later valid access-token revocation.
+instead. With `revocations.filePath` set, a revocation is kept for the maximum
+token lifetime (24 hours), whatever the client's `tokenTTL`, and pruned on a
+later valid access-token revocation; it is written to that file at every
+revocation, so a restart still refuses the token. The file holds each revoked
+token's `jti` with the time of the revocation, is owner-only (`0600`) and is
+replaced whole; its directory must exist, and a malformed file fails the
+start. If a write fails, the revocation is still refused until the next
+restart, `/revoke` answers `200` as before, and the failure is logged as an
+error. Without `revocations.filePath`, revocations are kept in memory only and
+last until the next restart: after it a revoked token is accepted again until
+its `exp`, and the server warns about this at start.
+
+```json
+"revocations": {
+    "filePath": "/data/revocations.json"
+}
+```
 
 `tokenTTL` sets the lifetime of a client's ID and access tokens as a Go
 duration string such as `"1h"`; the tokens are signed when the code is
