@@ -130,6 +130,19 @@ A client that is not public must have a `clientSecret`.
 > tokens signed with the previous key no longer validated against the restarted
 > provider (a verifier that still held the old key was not affected).
 
+> Upgrading: `/token` and `/revoke` read the client's credentials and the
+> secrets of the exchange from the `application/x-www-form-urlencoded` POST
+> body only, as a URL reaches access logs and proxies. `/token` reads
+> `client_id`, `client_secret`, `code` and `code_verifier` there; `/revoke`
+> reads `client_id`, `client_secret` and `token`. A copy in the URL query is
+> ignored, so a client that sent one of them only in the query now gets
+> `401 invalid_client` for its id or secret, `400 invalid_grant` for the code,
+> and for the verifier `400 invalid_request` (public client) or
+> `400 invalid_grant` (a confidential client's PKCE code, which is then
+> spent). `/revoke` without a `token` in the body is now
+> `400 invalid_request`, not `200`. The client authentication methods this
+> server supports are `client_secret_post` and, for public clients, `none`.
+
 ### Sessions
 
 Signing in sets a `session` cookie. The optional `session` block bounds it,
