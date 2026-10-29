@@ -164,3 +164,31 @@ func TestClientSecretFailures(t *testing.T) {
 		t.Errorf("warnings = %q, want one for app with failures 1", got)
 	}
 }
+
+// The cooldown warning names a username by a bounded form: a 60 KiB one
+// does not reach the log whole. The line is measured without its timestamp,
+// whose length depends on the clock and the zone.
+func TestLoginFailed_LogsABoundedUsername(t *testing.T) {
+	r := newTestRoutes(t, false)
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if len(groups) == 0 && a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	username := "mallory" + strings.Repeat("x", 60<<10)
+	for range throttle.FreeFailures {
+		r.loginFailed(username)
+	}
+	line := strings.TrimSuffix(buf.String(), "\n")
+	t.Logf("warning of %d bytes: %s", len(line), line)
+	if strings.Count(line, "\n") != 0 || len(line) >= 200 || !strings.Contains(line, `"username":"mallory`) {
+		t.Errorf("warning of %d bytes, want one line under 200 naming the username's start: %.300s", len(line), line)
+	}
+}

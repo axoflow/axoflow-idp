@@ -14,14 +14,34 @@
 
 package routes
 
-import "log/slog"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"log/slog"
+	"unicode/utf8"
+)
 
 // loginFailed counts a failed sign-in of username, and logs when it puts the
-// username in cooldown.
+// username in cooldown. A username is as long as the request body allows, so
+// the log gets its first 64 bytes, and a digest prefix that tells apart two
+// which share them.
 func (r *Routes) loginFailed(username string) {
 	if cooldown := r.logins.Fail(username); cooldown > 0 {
-		slog.Warn("repeated failed sign-ins; username in cooldown", "username", username, "cooldown", cooldown.String())
+		sum := sha256.Sum256([]byte(username))
+		slog.Warn("username in cooldown", "username", truncate(username, 64),
+			"username_sha256", hex.EncodeToString(sum[:6]), "cooldown", cooldown.String())
 	}
+}
+
+// truncate cuts s to at most n bytes, at a rune boundary, and marks the cut.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
 }
 
 // clientSecretFailed counts an invalid_client at /token or /revoke when it

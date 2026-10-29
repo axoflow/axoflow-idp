@@ -15,7 +15,9 @@
 package throttle
 
 import (
+	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,8 +116,77 @@ func TestLimiterBounded(t *testing.T) {
 	if n := l.Len(); n != MaxKeys {
 		t.Errorf("Len = %d after one more key, want %d", n, MaxKeys)
 	}
-	if _, ok := l.entries["user0"]; ok {
+	if _, ok := l.entries[digestOf("user0")]; ok {
 		t.Error("the least recently failed key was kept")
+	}
+}
+
+// A username is attacker-sized, up to the request body bound: 10k distinct
+// 60 KiB ones, each failed once, must not be retained. The retained bytes
+// are the map keys plus the live heap the limiter added, measured as
+// HeapAlloc after a GC, with only the limiter still reachable, minus
+// HeapAlloc after a GC before the first failure.
+func TestLimiterRetainsNoUsername(t *testing.T) {
+	if testing.Short() {
+		t.Skip("hashes 600 MiB")
+	}
+	const budget = 10 << 20
+	l, _ := newTestLimiter()
+	name := []byte(strings.Repeat("u", 60<<10))
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for i := range MaxKeys {
+		copy(name, strconv.Itoa(i)+"-")
+		l.Fail(string(name))
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(name)
+
+	if n := l.Len(); n > MaxKeys {
+		t.Errorf("Len = %d, want at most %d", n, MaxKeys)
+	}
+	var keyBytes int
+	for k := range l.entries {
+		keyBytes += len(k)
+	}
+	heap := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	t.Logf("%d keys: %d key bytes, heap grew by %d bytes", l.Len(), keyBytes, heap)
+	if int64(keyBytes)+heap > budget {
+		t.Errorf("retained %d key bytes and %d heap bytes, want under %d together", keyBytes, heap, budget)
+	}
+}
+
+// An entry whose window and cooldown have both passed is dropped by the
+// next failure of any key, or the next Wait; one whose cooldown still runs
+// is kept.
+func TestLimiterDropsIdleEntries(t *testing.T) {
+	for _, next := range []string{"fail", "wait"} {
+		t.Run(next, func(t *testing.T) {
+			l, c := newTestLimiter()
+			l.Fail("idle")
+			for range FreeFailures + 2 {
+				l.Fail("cooling") // its cooldown reaches 30s
+			}
+			c.advance(Window - time.Second)
+			l.Fail("cooling") // the window has not passed: a 30s cooldown
+			c.advance(time.Second)
+			want := 1 // "cooling"
+			if next == "fail" {
+				l.Fail("other")
+				want++
+			} else {
+				l.Wait("other")
+			}
+			if n := l.Len(); n != want {
+				t.Errorf("Len = %d, want %d: the idle entry was kept", n, want)
+			}
+			if l.Wait("cooling") == 0 {
+				t.Error("an entry in cooldown was dropped")
+			}
+		})
 	}
 }
 
