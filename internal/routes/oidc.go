@@ -353,8 +353,9 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 
 	if err := r.oidc.ValidateRevocationRequest(revocationRequest); err != nil {
 		// Per RFC 7009 an invalid/unknown token still returns 200 OK, but a
-		// failed client authentication is a 401 invalid_client.
-		if errors.Is(err, oidc.ErrInvalidClient) {
+		// failed client authentication is a 401 invalid_client, and a request
+		// without the token it requires (§2.1) a 400 invalid_request.
+		if errors.Is(err, oidc.ErrInvalidClient) || errors.Is(err, oidc.ErrInvalidRequest) {
 			writeTokenError(res, err)
 			return
 		}

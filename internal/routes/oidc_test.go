@@ -556,10 +556,11 @@ func TestOidcAuth_ImplicitLoginLiveUser(t *testing.T) {
 	}
 }
 
-// TestUserinfo_TokenClaims refuses an access token this server's key signed
-// but whose claims do not name this issuer, a registered client and an
-// audience of that client.
-func TestUserinfo_TokenClaims(t *testing.T) {
+// newSameKeyRoutes returns routes whose provider registers the confidential
+// "app" with a resource, and a foreign provider that signs with the same key
+// under another issuer.
+func newSameKeyRoutes(t *testing.T) (*Routes, *oidc.Oidc) {
+	t.Helper()
 	keyPath := filepath.Join(t.TempDir(), "signing-key.json")
 	provider := func(baseURL string) *oidc.Oidc {
 		o, err := oidc.New(oidc.Config{
@@ -577,7 +578,14 @@ func TestUserinfo_TokenClaims(t *testing.T) {
 	r := newTestRoutes(t, false)
 	r.oidc = provider("https://idp.example.com")
 	r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
-	foreign := provider("https://other.example.com") // the same key on disk, another issuer
+	return r, provider("https://other.example.com")
+}
+
+// TestUserinfo_TokenClaims refuses an access token this server's key signed
+// but whose claims do not name this issuer, a registered client and an
+// audience of that client.
+func TestUserinfo_TokenClaims(t *testing.T) {
+	r, foreign := newSameKeyRoutes(t)
 	bob, _ := r.user.Get("bob")
 
 	tests := []struct {
@@ -742,7 +750,7 @@ func TestOidcRevoke_CredentialsInQuery(t *testing.T) {
 	}{
 		{"client_secret", http.StatusUnauthorized},
 		{"client_id", http.StatusUnauthorized},
-		{"token", http.StatusOK}, // no token is the RFC 7009 unknown token
+		{"token", http.StatusBadRequest}, // the body lacks the token RFC 7009 §2.1 requires
 	}
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
@@ -765,6 +773,57 @@ func TestOidcRevoke_CredentialsInQuery(t *testing.T) {
 			_, claims := verifiedClaims(t, r, access)
 			if r.tokenStore.IsRevoked(claims["jti"].(string)) {
 				t.Errorf("revoke with %s in the query recorded the revocation", tt.key)
+			}
+		})
+	}
+}
+
+// TestOidcRevoke_TokenParameter refuses an authenticated request without a
+// token as malformed, since RFC 7009 §2.1 requires the parameter, and records
+// nothing for a token another issuer signed with this server's key.
+func TestOidcRevoke_TokenParameter(t *testing.T) {
+	tests := []struct {
+		name        string
+		token       func(r *Routes, foreign *oidc.Oidc, bob user.UserInfo) (string, error)
+		wantStatus  int
+		wantRevoked bool
+	}{
+		{"absent", nil, http.StatusBadRequest, false},
+		{"empty", func(*Routes, *oidc.Oidc, user.UserInfo) (string, error) { return "", nil }, http.StatusBadRequest, false},
+		{"foreign issuer", func(_ *Routes, foreign *oidc.Oidc, bob user.UserInfo) (string, error) {
+			return foreign.GenerateAccessToken(bob, "app", "")
+		}, http.StatusOK, false},
+		{"own", func(r *Routes, _ *oidc.Oidc, bob user.UserInfo) (string, error) {
+			return r.oidc.GenerateAccessToken(bob, "app", "")
+		}, http.StatusOK, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, foreign := newSameKeyRoutes(t)
+			bob, _ := r.user.Get("bob")
+			form := url.Values{"client_id": {"app"}, "client_secret": {"s3cret"}}
+			token := ""
+			if tt.token != nil {
+				var err error
+				if token, err = tt.token(r, foreign, bob); err != nil {
+					t.Fatalf("token: %v", err)
+				}
+				form.Set("token", token)
+			}
+
+			rec := postRevoke(t, r, form)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("revoke = %d %s, want %d", rec.Code, rec.Body.String(), tt.wantStatus)
+			}
+			if tt.wantStatus == http.StatusBadRequest && tokenBody(t, rec)["error"] != "invalid_request" {
+				t.Errorf("revoke body = %s, want invalid_request", rec.Body.String())
+			}
+			if token == "" {
+				return
+			}
+			_, claims := verifiedClaims(t, r, token)
+			if got := r.tokenStore.IsRevoked(claims["jti"].(string)); got != tt.wantRevoked {
+				t.Errorf("IsRevoked = %v, want %v", got, tt.wantRevoked)
 			}
 		})
 	}

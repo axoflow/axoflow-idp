@@ -636,6 +636,11 @@ func (o *Oidc) AccessTokenIdentity(tokenString string) (jti, clientID string, er
 	if claims.JWTID == "" {
 		return "", "", errors.New("access token without jti")
 	}
+	// the key proves only who signed; a token naming another issuer is not one of this provider's. The expiry
+	// is not checked, so revoking an expired token of its own stays an ordinary success.
+	if claims.Issuer != o.baseUrl {
+		return "", "", errors.New("access token not issued by this provider")
+	}
 	return claims.JWTID, claims.ClientID, nil
 }
 
