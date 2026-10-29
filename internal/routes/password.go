@@ -66,10 +66,11 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			r.renderChangePassword(res, sessionCookie.Value, "Too many attempts; try again later")
 			return
 		}
-		if r.hooks.beforePasswordCheck != nil {
-			r.hooks.beforePasswordCheck()
+		changePassword := r.user.ChangePassword
+		if r.hooks.changePassword != nil {
+			changePassword = r.hooks.changePassword
 		}
-		newHash, err := r.user.ChangePassword(u.ID, currentPassword, newPassword)
+		newHash, err := changePassword(u.ID, currentPassword, newPassword)
 		if cooldown := done(errors.Is(err, user.ErrInvalidOldPassword)); cooldown > 0 {
 			r.loginFailed(u.Username, cooldown)
 		}

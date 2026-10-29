@@ -78,9 +78,10 @@ func TestLogin_Cooldown(t *testing.T) {
 	})
 }
 
-// heldChecks holds each request the cooldown admits before its password
-// check until release is closed, so the requests of a burst all ask the
-// cooldown before any of them records a failure.
+// heldChecks holds each password derivation, the Verify of a sign-in and
+// the ChangePassword of /password, until release is closed, so the requests
+// of a burst all ask the cooldown before any of them records a failure. n
+// counts the derivations, wherever a request reaches them.
 type heldChecks struct {
 	entered, release chan struct{}
 	n                atomic.Int32
@@ -88,7 +89,7 @@ type heldChecks struct {
 
 func holdPasswordChecks(r *Routes) *heldChecks {
 	h := &heldChecks{entered: make(chan struct{}), release: make(chan struct{})}
-	r.hooks.beforePasswordCheck = func() {
+	hold := func() {
 		h.n.Add(1)
 		select {
 		case h.entered <- struct{}{}:
@@ -96,7 +97,29 @@ func holdPasswordChecks(r *Routes) *heldChecks {
 		case <-h.release:
 		}
 	}
+	r.hooks.verify = func(username, password string) (user.UserInfo, error) {
+		hold()
+		return r.user.Verify(username, password)
+	}
+	r.hooks.changePassword = func(userID, oldPassword, newPassword string) (string, error) {
+		hold()
+		return r.user.ChangePassword(userID, oldPassword, newPassword)
+	}
 	return h
+}
+
+// countPasswordChecks counts the password derivations without holding them.
+func countPasswordChecks(r *Routes) *atomic.Int32 {
+	var n atomic.Int32
+	r.hooks.verify = func(username, password string) (user.UserInfo, error) {
+		n.Add(1)
+		return r.user.Verify(username, password)
+	}
+	r.hooks.changePassword = func(userID, oldPassword, newPassword string) (string, error) {
+		n.Add(1)
+		return r.user.ChangePassword(userID, oldPassword, newPassword)
+	}
+	return &n
 }
 
 type attempt struct {
@@ -143,7 +166,7 @@ func TestLogin_CooldownBurst(t *testing.T) {
 	}
 
 	if n := held.n.Load(); n != throttle.FreeFailures {
-		t.Errorf("%d password checks for a burst of 20, want %d", n, throttle.FreeFailures)
+		t.Errorf("%d password derivations for a burst of 20, want %d", n, throttle.FreeFailures)
 	}
 	for _, a := range refused {
 		if a.status != http.StatusUnauthorized || a.retryAfter == "" {
@@ -178,7 +201,70 @@ func TestLogin_CooldownBurstRefusesTheRightPassword(t *testing.T) {
 		t.Errorf("the right password in the burst = %d Retry-After %q signed in %v, want 401 with Retry-After", a.status, a.retryAfter, a.signedIn)
 	}
 	if n := held.n.Load(); n != throttle.FreeFailures {
-		t.Errorf("%d password checks, want %d", n, throttle.FreeFailures)
+		t.Errorf("%d password derivations, want %d", n, throttle.FreeFailures)
+	}
+}
+
+// A burst of wrong passwords at each door that checks an existing password,
+// and at two of them at once for one username, derives five and refuses the
+// rest before their derivation.
+func TestCooldownBurst_EveryDoor(t *testing.T) {
+	type door func(r *Routes, cookie *http.Cookie, csrf string) attempt
+	signIn := func(r *Routes, _ *http.Cookie, _ string) attempt {
+		status, retry, signedIn := loginAs(r, "bob", "wrong")
+		return attempt{status, retry, signedIn}
+	}
+	authForm := func(r *Routes, _ *http.Cookie, _ string) attempt {
+		q := url.Values{"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}}
+		rec := postForm(r.OidcAuth, "/oidc/auth?"+q.Encode(), nil, url.Values{"username": {"bob"}, "password": {"wrong"}})
+		return attempt{rec.Code, rec.Header().Get("Retry-After"), sessionCookieOf(rec) != nil}
+	}
+	changePassword := func(r *Routes, cookie *http.Cookie, csrf string) attempt {
+		rec := changePasswordAs(r, cookie, csrf, "wrong")
+		return attempt{rec.Code, rec.Header().Get("Retry-After"), false}
+	}
+	tests := []struct {
+		name  string
+		doors []door
+	}{
+		{"/login", []door{signIn}},
+		{"the /oidc/auth login form", []door{authForm}},
+		{"/password", []door{changePassword}},
+		{"/login and /password together", []door{signIn, changePassword}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, _ := newOidcTestRoutes(t)
+			cookie, csrf := r.authed("bob")
+			held := holdPasswordChecks(r)
+			answers := make(chan attempt, 20)
+			for i := range 20 {
+				go func() { answers <- tt.doors[i%len(tt.doors)](r, cookie, csrf) }()
+			}
+			refused := held.settle(20, answers)
+			close(held.release)
+			var derived []attempt
+			for range 20 - len(refused) {
+				derived = append(derived, <-answers)
+			}
+
+			if n := held.n.Load(); n != throttle.FreeFailures {
+				t.Errorf("%d password derivations for a burst of 20, want %d", n, throttle.FreeFailures)
+			}
+			if len(derived) != throttle.FreeFailures {
+				t.Errorf("%d answered after their derivation, want %d", len(derived), throttle.FreeFailures)
+			}
+			for _, a := range refused {
+				if (a.status != http.StatusUnauthorized && a.status != http.StatusTooManyRequests) || a.retryAfter == "" || a.signedIn {
+					t.Errorf("a refused attempt = %+v, want 401 or 429 with Retry-After", a)
+				}
+			}
+			for _, a := range derived {
+				if (a.status != http.StatusUnauthorized && a.status != http.StatusBadRequest) || a.retryAfter != "" || a.signedIn {
+					t.Errorf("a derived attempt = %+v, want a miss without Retry-After", a)
+				}
+			}
+		})
 	}
 }
 
@@ -208,8 +294,7 @@ func changePasswordAs(r *Routes, cookie *http.Cookie, csrf, current string) *htt
 func TestChangePassword_Cooldown(t *testing.T) {
 	t.Run("five wrong current passwords", func(t *testing.T) {
 		r := newTestRoutes(t, false)
-		var checks atomic.Int32
-		r.hooks.beforePasswordCheck = func() { checks.Add(1) }
+		checks := countPasswordChecks(r)
 		warnings := captureWarnings(t)
 		cookie, csrf := r.authed("bob")
 		for i := range throttle.FreeFailures {
@@ -246,8 +331,7 @@ func TestChangePassword_Cooldown(t *testing.T) {
 		for range throttle.FreeFailures {
 			loginAs(r, "bob", "wrong")
 		}
-		var checks atomic.Int32
-		r.hooks.beforePasswordCheck = func() { checks.Add(1) }
+		checks := countPasswordChecks(r)
 		cookie, csrf := r.authed("bob")
 		if rec := changePasswordAs(r, cookie, csrf, "bobpass1"); rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
 			t.Errorf("/password in cooldown = %d Retry-After %q, want 429 with Retry-After", rec.Code, rec.Header().Get("Retry-After"))

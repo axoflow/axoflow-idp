@@ -143,10 +143,11 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 		r.renderLoginFailed(res)
 		return nil
 	}
-	if r.hooks.beforePasswordCheck != nil {
-		r.hooks.beforePasswordCheck()
+	verify := r.user.Verify
+	if r.hooks.verify != nil {
+		verify = r.hooks.verify
 	}
-	account, err := r.user.Verify(username, password)
+	account, err := verify(username, password)
 	// a busy refusal derived nothing, so it is no guess
 	if cooldown := done(err != nil && !errors.Is(err, user.ErrBusy)); cooldown > 0 {
 		r.loginFailed(username, cooldown)
