@@ -44,7 +44,6 @@ const passwordResetLinkTTL = time.Hour
 // session.cookieTTL says otherwise.
 const defaultCookieTTL = 7 * 24 * time.Hour
 
-// minClientSecretLen is the clientSecret length under which Validate warns.
 const minClientSecretLen = 16
 
 // sweepInterval is how often the in-memory stores drop what has expired.
@@ -218,7 +217,8 @@ func (c *config) Validate() error {
 		if !client.Public && client.ClientSecret == "" {
 			return fmt.Errorf("client %d (%s): clientSecret is required unless the client is public", i, client.Id)
 		}
-		// a failed secret is logged, not refused, so only its length bounds a guesser
+		// a failed secret is logged, not refused, so only its randomness bounds a
+		// guesser; a short one cannot have enough
 		if !client.Public && len(client.ClientSecret) < minClientSecretLen {
 			slog.Warn("clientSecret is short enough to guess; use a random one of at least 16 characters", "client_id", client.Id, "length", len(client.ClientSecret))
 		}

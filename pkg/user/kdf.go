@@ -29,7 +29,7 @@ var ErrBusy = errors.New("too many password checks in progress")
 // parseArgon2id), so unbounded concurrent sign-ins would exhaust the memory
 // of a small pod. A fixed number of slots run at once, a bounded number of
 // callers wait for one up to a deadline, and the rest are refused before
-// allocating anything.
+// allocating the KDF buffer.
 type kdfGate struct {
 	slots, waiters chan struct{}
 	wait           time.Duration
@@ -97,7 +97,6 @@ var testOnDummy func()
 // never verify. Such a user keeps the password they have.
 var ErrIDTooLong = errors.New("the user ID is too long to salt a password hash")
 
-// gatedHash is hash run through kdf.
 func gatedHash(salt []byte, password string) (string, error) {
 	if len(salt) > maxSaltLen {
 		return "", ErrIDTooLong

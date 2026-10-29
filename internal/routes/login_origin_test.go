@@ -36,7 +36,6 @@ var originHeaders = map[string]map[string]string{
 	"foreign Origin":                    {"Origin": "https://evil.example"},
 }
 
-// crossOrigin reports whether originHeaders[name] is a page of another origin.
 func crossOrigin(name string) bool {
 	return strings.Contains(name, "cross-site") || strings.Contains(name, "same-site") || strings.Contains(name, "foreign")
 }

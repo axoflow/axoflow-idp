@@ -266,11 +266,14 @@ request within 30; a response must be written within 30 seconds, and an idle
 keep-alive connection is closed after 120. Headers and body are each limited
 to 64 KiB, and a larger request is refused.
 
-Every response carries `Content-Security-Policy: frame-ancestors 'none'`,
-`X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`, so no page can
-be framed by another site. The profile page, the admin pages and their JSON
-API, `/password`, `/set-password` and `/oidc/userinfo`, their errors included,
-carry `Cache-Control: no-store`; `/token` sends `no-store` with its tokens.
+Every response of the IdP's handlers carries `Content-Security-Policy:
+frame-ancestors 'none'`, `X-Frame-Options: DENY` and `X-Content-Type-Options:
+nosniff`, so no page can be framed by another site (a request Go's HTTP server
+refuses before any handler runs, such as one with oversized headers, gets its
+own answer). The profile page, the admin pages and their JSON API, `/password`,
+`/set-password`, `/oidc/userinfo`, `/oidc/auth`, `/login`, `/register`,
+`/logout` and `/token`, their errors included, carry `Cache-Control:
+no-store`.
 
 A `baseUrl` path such as `/idp` scopes the routes and the session cookie, not
 who can use them: another application served from the same host name can send
@@ -282,28 +285,33 @@ host name of its own.
 A form on another site's page could sign the user's browser in to an account
 of that site's choosing. `POST /login`, `POST /register` and the login form of
 `/oidc/auth` therefore refuse with `403` a request the browser marks as sent
-from another origin (`Sec-Fetch-Site`, or an `Origin` whose host is not the
-request's `Host`). A request with neither header, from a non-browser client,
-is accepted. A reverse proxy must pass the `Host` header through unchanged for
-browsers that send `Origin` but not `Sec-Fetch-Site`. A relying party's own
-authorization request, sent as a cross-site `POST` to `/oidc/auth` without
-credentials, is not affected.
+from another origin: a `Sec-Fetch-Site` other than `same-origin` or `none`
+or, from a browser that sends only `Origin`, an `Origin` that is neither the
+request's `Host` nor the origin of `baseUrl` (its scheme and host, such as
+`https://console.example` for `https://console.example/idp`), so a reverse
+proxy may rewrite `Host`. A request with neither header, from a non-browser
+client, is accepted. A relying party's own authorization request, sent as a
+cross-site `POST` to `/oidc/auth` without credentials, is not affected.
 
-The login fields and the `csrf_token` of every form are read from the request
-body only, never from the URL. The `/oidc/auth` login form signs the user in
-only after the authorization request has been validated, so a refused request
-leaves no session behind.
+The `csrf_token` of every form, the login fields, the registration's
+username, email and passwords, every new or current password and the reset
+token of a `/set-password` submission are read from the request body only,
+never from the URL; the reset link itself still carries its token. The
+`/oidc/auth` login form signs the user in only after the authorization request
+has been validated, so a refused request leaves no session behind.
 
 ### Password checks under load
 
 Checking or setting a password derives an argon2id hash, which takes about
 15 MiB of memory for the default parameters (up to 32 MiB for a stored hash
-with other ones). At most 4 derivations run at once; up to 32 more requests
-wait for one, for at most 2 seconds. Any other request that would derive one
-(a sign-in, a registration, a password change or reset) is answered with `503`
-and `Retry-After: 2` before anything is allocated; a reset link it carried
-stays usable. Size the memory limit for at least 4 × 32 MiB on top of the
-server's own use.
+with other ones), or runs bcrypt. At most 4 derivations run at once; up to 32
+more requests wait for one, for at most 2 seconds. Any other request that would
+derive one (a sign-in, a registration, a password change or reset) is answered
+with `503` and `Retry-After: 2` before the KDF buffer is allocated; a reset
+link it carried stays usable. This bounds the derivations running at once. It
+is not a limit on the rate of requests, and not a bound on the process's
+memory: 4 × 32 MiB is a planning figure, not a measured peak, and buffers not
+yet collected, the request and store state and the runtime come on top.
 
 ### Failed sign-ins
 
@@ -312,8 +320,15 @@ cooldown: for 10 seconds every sign-in attempt for it, the right password
 included, gets the same "Invalid username or password" page with a
 `Retry-After` header, and the password is not checked. Each failure after a
 cooldown doubles it, up to 30 seconds; a successful sign-in clears the count.
-The count is kept in memory per username, for at most 10,000 usernames (the
-least recently failed is dropped first), so a restart clears it.
+The count is kept in memory per exact username (byte for byte, as the
+password check matches it), under a SHA-256 digest of the username rather than
+the username itself, for at most 10,000 usernames: an entry whose 10 minutes
+and cooldown have both passed is dropped, and past the bound the least recently
+failed is. A restart clears it. Failing once each with 10,000 other usernames
+pushes a username out, so the cooldown slows down guessing against one account;
+it does not stop someone who can send that many failed sign-ins. The cooldown
+warning logs the first 64 bytes of the username and 12 hex digits of its
+digest.
 
 This is a trade-off: someone who knows a username can keep that account in
 cooldown for as long as they keep failing to sign in to it. The account's
@@ -323,9 +338,11 @@ continued attempts put the username back in cooldown.
 
 A confidential client is not throttled: a wrong `client_secret` at `/token`
 or `/revoke` is counted and logged as a warning, at most once a minute per
-client with the count, and the client is otherwise unaffected. The secret's
-length is what bounds a guesser, so the server warns at start for a
-`clientSecret` under 16 characters; use a long random one.
+client with the count, and the client is otherwise unaffected. Only the
+secret's randomness bounds a guesser: use a long random one, such as 32 bytes
+from a CSPRNG, base64-encoded. A long secret that can be predicted is guessed
+anyway; the server warns at start only for a `clientSecret` under 16
+characters.
 
 ### Password hashes
 
@@ -357,9 +374,9 @@ stored with the default argon2id parameters.
 > `m=65536`), `t` above 10, `p` above 4 or a salt over 256 bytes, and a bcrypt
 > hash with a cost above 15, no longer verify, and a bcrypt user can no longer
 > sign in with a password over 72 bytes; give such users a new password before
-> upgrading. A sign-in or registration posted from another
-> site's page, a login form or `csrf_token` sent in the URL instead of the body,
-> and a request body over 64 KiB are now refused.
+> upgrading. A sign-in or registration posted from another site's page, a
+> password, reset token, registration field or `csrf_token` sent in the URL
+> instead of the body, and a request body over 64 KiB are now refused.
 
 ## Releases
 
