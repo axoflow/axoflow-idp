@@ -168,7 +168,8 @@ panel:
 
 Existing accounts are not checked against these rules. A database holding both
 `alice` and `Alice` keeps loading, and login, seed users and loading match a
-username byte for byte.
+username byte for byte. The duplicate check does trim the existing names: an
+older account named `" alice "` blocks a new `alice` or `Alice`.
 
 The email is what the registrant typed. The IdP does not verify it and emits no
 `email_verified` claim, so it is no proof that the user controls the mailbox. A

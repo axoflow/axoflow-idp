@@ -339,14 +339,18 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 			bootstrapAdmin = true
 		}
 
+		// Existing names are compared trimmed as well: a database written
+		// before newAccountIdentity may hold " alice ", which must still
+		// block a new "alice" or "Alice". Stored values and byte-exact login
+		// are untouched.
 		if slices.IndexFunc(users, func(u UserInfo) bool {
-			return strings.EqualFold(u.Username, username)
+			return strings.EqualFold(strings.TrimSpace(u.Username), username)
 		}) != -1 {
 			return nil, errors.New("username already exists")
 		}
 
 		if email != "" && slices.IndexFunc(users, func(u UserInfo) bool {
-			return strings.EqualFold(u.Email, email)
+			return strings.EqualFold(strings.TrimSpace(u.Email), email)
 		}) != -1 {
 			return nil, errors.New("email already registered")
 		}

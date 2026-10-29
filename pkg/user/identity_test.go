@@ -22,6 +22,7 @@ import (
 func TestRegister_NewAccountIdentity(t *testing.T) {
 	const existing = `[
 		{"ID":"alice","Username":"alice","Email":"alice@example.com"},
+		{"ID":"carol","Username":" carol ","Email":" carol@example.com "},
 		{"ID":"dave","Username":"dave"}
 	]`
 
@@ -34,6 +35,8 @@ func TestRegister_NewAccountIdentity(t *testing.T) {
 		{name: "case variant of a username", username: "Alice", email: "a2@example.com", wantErr: "username already exists"},
 		{name: "whitespace variant of a username", username: " alice\t", email: "a2@example.com", wantErr: "username already exists"},
 		{name: "case variant of an email", username: "bob", email: "ALICE@Example.com", wantErr: "email already registered"},
+		{name: "trimmed variant of a legacy username", username: "Carol", email: "c2@example.com", wantErr: "username already exists"},
+		{name: "trimmed variant of a legacy email", username: "bob", email: "carol@example.com", wantErr: "email already registered"},
 		{name: "empty username", username: "", email: "bob@example.com", wantErr: "username is required"},
 		{name: "blank username", username: "  ", email: "bob@example.com", wantErr: "username is required"},
 		{name: "blank email", username: "bob", email: "  ", wantErr: "email must not be blank"},
@@ -55,8 +58,8 @@ func TestRegister_NewAccountIdentity(t *testing.T) {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("RegisterLocked error = %v, want %q", err, tt.wantErr)
 				}
-				if u.Count() != 2 {
-					t.Errorf("Count = %d after a refused registration, want 2", u.Count())
+				if u.Count() != 3 {
+					t.Errorf("Count = %d after a refused registration, want 3", u.Count())
 				}
 				return
 			}
