@@ -329,8 +329,10 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 
 	// the revocation is recorded under the verified token's jti, not its bytes: an access token has more
 	// than one valid spelling, its id has one. A token this server did not sign as an access token (the ID
-	// token is not a credential here) is the RFC 7009 unknown token: 200 and nothing recorded.
-	if id, err := r.oidc.AccessTokenID(revocationRequest.Token); err == nil {
+	// token is not a credential here), or one issued to another client (RFC 7009 §2.1 lets a client revoke
+	// only its own), is answered as the RFC 7009 unknown token: 200 and nothing recorded, so the answer does
+	// not tell the caller whose token it was.
+	if id, clientID, err := r.oidc.AccessTokenIdentity(revocationRequest.Token); err == nil && clientID == revocationRequest.ClientID {
 		r.tokenStore.Revoke(id)
 	}
 

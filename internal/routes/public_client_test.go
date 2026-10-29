@@ -48,7 +48,7 @@ func pkceChallenge() string {
 
 // newPublicClientRoutes registers the CLI-shaped public client "cli", a
 // second public client "cli2" sharing its callback and resource, and the
-// confidential "app".
+// confidential "app" and "app2".
 func newPublicClientRoutes(t *testing.T) (*Routes, *http.Cookie) {
 	t.Helper()
 	r := newTestRoutes(t, false)
@@ -58,6 +58,7 @@ func newPublicClientRoutes(t *testing.T) (*Routes, *http.Cookie) {
 			{Id: "cli", RedirectUris: []string{loopbackCallback, localhostCallback}, Public: true, Resources: []string{cliResource}},
 			{Id: "cli2", RedirectUris: []string{loopbackCallback}, Public: true, Resources: []string{cliResource}, TokenTTL: "1h"},
 			{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s3cret"},
+			{Id: "app2", RedirectUri: testRedirectURI, ClientSecret: "s3cret2"},
 		},
 		Keychain:          keychain.New(),
 		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),

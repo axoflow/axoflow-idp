@@ -71,6 +71,8 @@ one), and it carries `client_id`. The ID token's `aud` stays the client id.
 `/oidc/userinfo` answers to the access token only; the ID token is refused
 there. A revocation is recorded under the access token's `jti`, so every
 spelling of the revoked token is refused; revoking an ID token records nothing.
+A client can revoke only the access tokens issued to it: another client's
+token is answered `200` like an unknown token and stays valid.
 
 The tokens are signed from the user's record when the code is redeemed, not
 when the user logged in: a user deleted in between gets `invalid_grant`, and a

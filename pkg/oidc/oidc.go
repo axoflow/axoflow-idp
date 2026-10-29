@@ -607,25 +607,32 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 // or not. It is the identity a revocation is recorded under: the token's bytes have more than one valid
 // spelling (whitespace, JSON serialization, unused padding bits), the id has one.
 func (o *Oidc) AccessTokenID(tokenString string) (string, error) {
+	jti, _, err := o.AccessTokenIdentity(tokenString)
+	return jti, err
+}
+
+// AccessTokenIdentity returns the jti and the client_id of a token this provider signed as an access token,
+// expired or not; /revoke needs the client to tell the token's owner from another client.
+func (o *Oidc) AccessTokenIdentity(tokenString string) (jti, clientID string, err error) {
 	token, err := jose.ParseSigned(tokenString)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse token: %w", err)
+		return "", "", fmt.Errorf("failed to parse token: %w", err)
 	}
 	if len(token.Signatures) != 1 || token.Signatures[0].Header.ExtraHeaders[jose.HeaderType] != "at+jwt" {
-		return "", errors.New("not an access token")
+		return "", "", errors.New("not an access token")
 	}
 	payload, err := token.Verify(o.keychain.GetAll()[0].Public().Key)
 	if err != nil {
-		return "", fmt.Errorf("failed to verify token: %w", err)
+		return "", "", fmt.Errorf("failed to verify token: %w", err)
 	}
 	var claims AccessTokenPayload
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", fmt.Errorf("failed to unmarshal claims: %w", err)
+		return "", "", fmt.Errorf("failed to unmarshal claims: %w", err)
 	}
 	if claims.JWTID == "" {
-		return "", errors.New("access token without jti")
+		return "", "", errors.New("access token without jti")
 	}
-	return claims.JWTID, nil
+	return claims.JWTID, claims.ClientID, nil
 }
 
 // GetUserinfoFromToken serves /oidc/userinfo from an access token. Only a token with the typ at+jwt

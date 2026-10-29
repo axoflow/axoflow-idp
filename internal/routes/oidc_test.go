@@ -484,3 +484,75 @@ func TestUserinfo_TokenClaims(t *testing.T) {
 		})
 	}
 }
+
+func postRevoke(t *testing.T, r *Routes, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.OidcRevoke(rec, req)
+	return rec
+}
+
+// TestOidcRevoke_Ownership lets a client revoke its own access tokens only:
+// another client's token is the RFC 7009 unknown token, so the request
+// succeeds and nothing is recorded.
+func TestOidcRevoke_Ownership(t *testing.T) {
+	appToken := func(t *testing.T, r *Routes, cookie *http.Cookie) string {
+		code := issueCode(t, r, cookie, url.Values{
+			"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI},
+		})
+		rec := postToken(t, r, url.Values{
+			"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+		}
+		return tokenBody(t, rec)["access_token"].(string)
+	}
+	cliToken := func(t *testing.T, r *Routes, cookie *http.Cookie) string {
+		rec := postToken(t, r, tfTokenForm(issueCode(t, r, cookie, cliAuthQuery())))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+		}
+		return tokenBody(t, rec)["access_token"].(string)
+	}
+
+	tests := []struct {
+		name        string
+		token       func(t *testing.T, r *Routes, cookie *http.Cookie) string
+		client      url.Values
+		wantStatus  int
+		wantRevoked bool
+	}{
+		{"the owner", appToken, url.Values{"client_id": {"app"}, "client_secret": {"s3cret"}}, http.StatusOK, true},
+		{"another confidential client", appToken, url.Values{"client_id": {"app2"}, "client_secret": {"s3cret2"}}, http.StatusOK, false},
+		{"a public owner", cliToken, url.Values{"client_id": {"cli"}}, http.StatusUnauthorized, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, cookie := newPublicClientRoutes(t)
+			r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
+			access := tt.token(t, r, cookie)
+			form := url.Values{"token": {access}}
+			for k, v := range tt.client {
+				form[k] = v
+			}
+
+			if rec := postRevoke(t, r, form); rec.Code != tt.wantStatus {
+				t.Fatalf("revoke = %d %s, want %d", rec.Code, rec.Body.String(), tt.wantStatus)
+			}
+			_, claims := verifiedClaims(t, r, access)
+			if got := r.tokenStore.IsRevoked(claims["jti"].(string)); got != tt.wantRevoked {
+				t.Errorf("IsRevoked = %v, want %v", got, tt.wantRevoked)
+			}
+			wantUserinfo := http.StatusOK
+			if tt.wantRevoked {
+				wantUserinfo = http.StatusUnauthorized
+			}
+			if got := userinfoGet(t, r, access); got.Code != wantUserinfo {
+				t.Errorf("userinfo after the revoke = %d, want %d", got.Code, wantUserinfo)
+			}
+		})
+	}
+}
