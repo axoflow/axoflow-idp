@@ -105,10 +105,13 @@ full fails the start rather than loading part of it: a malformed file, a
 time, or a file of 16 MiB or more (some 260,000 revocations). An empty
 object, `{}`, is no revocations. If a write fails, the revocation is still
 refused until the next restart, `/revoke` answers `200` as before, and the
-failure is logged as an error. Without `revocations.filePath`, revocations
-are kept in memory only and last until the next restart: after it a revoked
-token is accepted again until its `exp`, and the server warns about this at
-start.
+failure is logged as an error. The server never writes a file of 16 MiB or
+more: it keeps the old file and logs an error, and revocations recorded from
+then on last until the next restart. Once enough of them have expired, the
+next revocation writes the file again. Without `revocations.filePath`,
+revocations are kept in memory only and last until the next restart: after it
+a revoked token is accepted again until its `exp`, and the server warns about
+this at start.
 
 ```json
 "revocations": {

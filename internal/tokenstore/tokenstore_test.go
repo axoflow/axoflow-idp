@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -353,6 +354,85 @@ func TestRevokeOnlyWarnsWhenTheDirectoryCannotBeSynced(t *testing.T) {
 		t.Errorf("%d warnings logged, want 1:\n%s", n, logs.String())
 	}
 	openRevoked(t, path, "jti-1")
+}
+
+// Revoke stamps its token with time.Now(), which encodes to 20 to 35 bytes; these are the two ends.
+var (
+	shortestStamp = time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	longestStamp  = time.Date(2026, 10, 29, 12, 0, 0, 123456789, time.FixedZone("", 3600))
+)
+
+// padTo adds a revocation with a jti long enough that the set, once token is revoked at a time encoding
+// as long as stamp, encodes to size bytes. It returns that jti.
+func padTo(t *testing.T, s *TokenStore, token string, stamp time.Time, size int) string {
+	t.Helper()
+	set := maps.Clone(s.revokedTokens)
+	set["pad"] = time.Now().Add(-time.Minute)
+	set[token] = stamp
+	data, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	jti := "pad" + strings.Repeat("x", size-len(data))
+	s.revokedTokens[jti] = set["pad"]
+	return jti
+}
+
+func TestRevokeWritesASetJustUnderTheBound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "revocations.json")
+	s, err := Open(time.Hour, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	jti := padTo(t, s, "jti-1", longestStamp, maxRevocationsFile-1)
+	logs := captureLogs(t)
+
+	s.Revoke("jti-1")
+
+	if n := strings.Count(logs.String(), `"level":"ERROR"`); n != 0 {
+		t.Errorf("%d errors logged, want 0:\n%s", n, logs.String())
+	}
+	openRevoked(t, path, jti, "jti-1")
+}
+
+// A set the next start would refuse is not written: the old file keeps the earlier revocations for a
+// restart, and the new one is refused until then.
+func TestRevokeKeepsTheOldFileWhenTheSetReachesTheBound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "revocations.json")
+	s, err := Open(time.Hour, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s.Revoke("jti-0")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	jti := padTo(t, s, "jti-1", shortestStamp, maxRevocationsFile)
+	logs := captureLogs(t)
+
+	s.Revoke("jti-1")
+
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+		t.Errorf("file after a set at the bound = %d bytes (%v), want it unchanged %q", len(after), err, before)
+	}
+	if !s.IsRevoked("jti-1") {
+		t.Error("the revocation was dropped with the unwritten set")
+	}
+	if n := strings.Count(logs.String(), `"level":"ERROR"`); n != 1 {
+		t.Errorf("%d errors logged, want 1:\n%.500s", n, logs.String())
+	}
+	openRevoked(t, path, "jti-0")
+
+	s.mu.Lock()
+	s.revokedTokens[jti] = time.Now().Add(-2 * time.Hour)
+	s.mu.Unlock()
+	s.Revoke("jti-2")
+
+	if n := strings.Count(logs.String(), `"level":"ERROR"`); n != 1 {
+		t.Errorf("%d errors logged after the set was pruned, want 1:\n%.500s", n, logs.String())
+	}
+	openRevoked(t, path, "jti-0", "jti-1", "jti-2")
 }
 
 // The first write is held at its rename until the others are done: if the

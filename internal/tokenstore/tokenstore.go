@@ -106,7 +106,8 @@ func Open(ttl time.Duration, filePath string) (*TokenStore, error) {
 }
 
 // maxRevocationsFile bounds what Open reads, so a damaged or oversized file cannot exhaust memory at
-// start. A revocation takes about 64 bytes, so 16 MiB holds some 260,000 of them.
+// start, and what Revoke writes, so the server never writes a file its next start refuses. A revocation
+// takes about 64 bytes, so 16 MiB holds some 260,000 of them.
 const maxRevocationsFile = 16 << 20
 
 // load reads the revocations filePath holds, none for a missing file. A file it cannot use in full
@@ -146,7 +147,8 @@ func load(filePath string) (map[string]time.Time, error) {
 
 // Revoke records the token and drops the revocations older than the token lifetime: the list grows only
 // here, and a token that old is refused by its own expiry. With a file, a revocation that cannot be
-// written is still refused until a restart; the failure is logged, and the next Revoke writes it again.
+// written, or whose set reaches maxRevocationsFile, is still refused until a restart; the failure is
+// logged, and the next Revoke that can write the set writes it again.
 func (s *TokenStore) Revoke(token string) {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
@@ -163,6 +165,11 @@ func (s *TokenStore) Revoke(token string) {
 	s.mu.Unlock()
 
 	if s.filePath == "" {
+		return
+	}
+	if err == nil && len(data) >= maxRevocationsFile {
+		// the old file stays, so the revocations it holds still survive a restart
+		slog.Error("revocations file is at its bound: revocations recorded from now on last until the next restart", "path", s.filePath, "bound", maxRevocationsFile)
 		return
 	}
 	if err == nil {
