@@ -60,6 +60,7 @@ type entry struct {
 	key      digest
 	first    time.Time // of the failures counted
 	failures int
+	inFlight int // attempts admitted and not yet done
 	cooldown time.Duration
 	until    time.Time
 }
@@ -68,21 +69,32 @@ func New() *Limiter {
 	return &Limiter{now: time.Now, order: list.New(), entries: map[digest]*list.Element{}}
 }
 
-// live reports whether e still counts at now: its window is open or its
-// cooldown still runs.
-func (e *entry) live(now time.Time) bool {
+// counting reports whether e's failures still count at now: its window is
+// open or its cooldown still runs.
+func (e *entry) counting(now time.Time) bool {
 	return now.Sub(e.first) < Window || now.Before(e.until)
 }
 
-// dropIdle drops the entries that no longer count. Fail checks every entry:
-// it follows a failed derivation, which the KDF gate bounds. Wait costs no
-// derivation, so it stops at the least recently failed entry still live.
+// live reports whether e is still needed at now. An entry with attempts in
+// flight is, so their done finds it.
+func (e *entry) live(now time.Time) bool {
+	return e.inFlight > 0 || (e.failures > 0 && e.counting(now))
+}
+
+// forget drops e's failures and cooldown, as a new entry has none.
+func (e *entry) forget() {
+	e.first, e.failures, e.cooldown, e.until = time.Time{}, 0, 0, time.Time{}
+}
+
+// dropIdle drops the entries that no longer count. A failed attempt's done
+// checks every entry: it follows a failed derivation, which the KDF gate
+// bounds. Begin costs no derivation, so it stops at the least recently failed
+// entry still live.
 func (l *Limiter) dropIdle(now time.Time, all bool) {
 	for el := l.order.Back(); el != nil; {
 		prev := el.Prev()
 		if e := el.Value.(*entry); !e.live(now) {
-			l.order.Remove(el)
-			delete(l.entries, e.key)
+			l.remove(el)
 		} else if !all {
 			return
 		}
@@ -90,42 +102,90 @@ func (l *Limiter) dropIdle(now time.Time, all bool) {
 	}
 }
 
-// Wait returns how long key is refused for, zero when it may try.
-func (l *Limiter) Wait(key string) time.Duration {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	l.dropIdle(l.now(), false)
-	el, ok := l.entries[digestOf(key)]
-	if !ok {
-		return 0
-	}
-	return max(el.Value.(*entry).until.Sub(l.now()), 0)
+func (l *Limiter) remove(el *list.Element) {
+	l.order.Remove(el)
+	delete(l.entries, el.Value.(*entry).key)
 }
 
-// Fail records a failure of key and returns the cooldown it started, zero
-// when it started none.
-func (l *Limiter) Fail(key string) time.Duration {
+// Begin admits an attempt of key, or refuses it for wait. An admitted attempt
+// is counted until done is called with whether it failed; done returns the
+// cooldown the failure started, zero when it started none. Counting the
+// attempts in flight bounds a concurrent burst as a sequential run is bounded:
+// no more than FreeFailures attempts before the first cooldown, and one at a
+// time after a cooldown has run, as its failure starts the next.
+func (l *Limiter) Begin(key string) (wait time.Duration, done func(failed bool) time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	now := l.now()
-	l.dropIdle(now, true)
+	l.dropIdle(now, false)
 	d := digestOf(key)
 	el, ok := l.entries[d]
-	if ok {
-		l.order.MoveToFront(el)
-	} else {
-		if l.order.Len() >= MaxKeys {
-			oldest := l.order.Back()
-			l.order.Remove(oldest)
-			delete(l.entries, oldest.Value.(*entry).key)
+	if !ok {
+		if l.order.Len() >= MaxKeys && !l.evict() {
+			// Every entry has an attempt in flight, which the KDF gate keeps
+			// far below MaxKeys; this one is let through without counting it.
+			return 0, func(bool) time.Duration { return 0 }
 		}
-		el = l.order.PushFront(&entry{key: d, first: now})
+		el = l.order.PushFront(&entry{key: d})
 		l.entries[d] = el
 	}
 	e := el.Value.(*entry)
+	if !e.counting(now) {
+		e.forget()
+	}
+	if now.Before(e.until) {
+		return e.until.Sub(now), nil
+	}
+	if e.inFlight > 0 && e.failures+e.inFlight >= FreeFailures {
+		return FirstCooldown, nil
+	}
+	e.inFlight++
+	return 0, func(failed bool) time.Duration { return l.done(el, failed) }
+}
 
+// evict drops the least recently failed entry with no attempt in flight, and
+// reports whether there was one.
+func (l *Limiter) evict() bool {
+	for el := l.order.Back(); el != nil; el = el.Prev() {
+		if el.Value.(*entry).inFlight == 0 {
+			l.remove(el)
+			return true
+		}
+	}
+	return false
+}
+
+// done ends an attempt Begin admitted, recording its failure. The entry is
+// still in the map: one with an attempt in flight is neither dropped nor
+// evicted.
+func (l *Limiter) done(el *list.Element, failed bool) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	e := el.Value.(*entry)
+	e.inFlight--
+	if !failed {
+		if !e.live(now) {
+			l.remove(el)
+		}
+		return 0
+	}
+	cooldown := e.fail(now)
+	l.order.MoveToFront(el)
+	l.dropIdle(now, true)
+	return cooldown
+}
+
+// fail records a failure of e and returns the cooldown it started.
+func (e *entry) fail(now time.Time) time.Duration {
+	if !e.counting(now) {
+		e.forget()
+	}
+	if e.failures == 0 {
+		e.first = now
+	}
 	e.failures++
 	if e.failures < FreeFailures {
 		return 0
@@ -135,15 +195,17 @@ func (l *Limiter) Fail(key string) time.Duration {
 	return e.cooldown
 }
 
-// Succeed forgets the failures of key.
+// Succeed forgets the failures of key. An entry with attempts in flight is
+// kept for their done.
 func (l *Limiter) Succeed(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	d := digestOf(key)
-	if el, ok := l.entries[d]; ok {
-		l.order.Remove(el)
-		delete(l.entries, d)
+	if el, ok := l.entries[digestOf(key)]; ok {
+		el.Value.(*entry).forget()
+		if el.Value.(*entry).inFlight == 0 {
+			l.remove(el)
+		}
 	}
 }
 

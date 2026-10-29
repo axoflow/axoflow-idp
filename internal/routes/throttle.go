@@ -18,19 +18,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"time"
 	"unicode/utf8"
 )
 
-// loginFailed counts a failed sign-in of username, and logs when it puts the
-// username in cooldown. A username is as long as the request body allows, so
-// the log gets its first 64 bytes and a 12-hex-character digest prefix. The
-// prefix helps correlate log lines; at 48 bits it does not identify a username.
-func (r *Routes) loginFailed(username string) {
-	if cooldown := r.logins.Fail(username); cooldown > 0 {
-		sum := sha256.Sum256([]byte(username))
-		slog.Warn("username in cooldown", "username", truncate(username, 64),
-			"username_sha256", hex.EncodeToString(sum[:6]), "cooldown", cooldown.String())
-	}
+// loginFailed logs that a failed sign-in put username in cooldown. A username
+// is as long as the request body allows, so the log gets its first 64 bytes
+// and a 12-hex-character digest prefix. The prefix helps correlate log lines;
+// at 48 bits it does not identify a username.
+func (r *Routes) loginFailed(username string, cooldown time.Duration) {
+	sum := sha256.Sum256([]byte(username))
+	slog.Warn("username in cooldown", "username", truncate(username, 64),
+		"username_sha256", hex.EncodeToString(sum[:6]), "cooldown", cooldown.String())
 }
 
 // truncate cuts s to at most n bytes, at a rune boundary, and marks the cut.

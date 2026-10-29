@@ -79,6 +79,9 @@ type Routes struct {
 		afterResetConsume  func()
 		beforeIssueSession func()
 		afterCreateSession func()
+		// beforePasswordCheck runs as a request the cooldown admitted is
+		// about to derive the password it was sent.
+		beforePasswordCheck func()
 	}
 }
 

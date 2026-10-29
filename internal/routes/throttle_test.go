@@ -21,10 +21,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/throttle"
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 func loginAs(r *Routes, username, password string) (status int, retryAfter string, signedIn bool) {
@@ -73,6 +75,126 @@ func TestLogin_Cooldown(t *testing.T) {
 			t.Errorf("login after 4+4 failures with a success between = %d Retry-After %q, want 302", status, retry)
 		}
 	})
+}
+
+// heldChecks holds each request the cooldown admits before its password
+// check until release is closed, so the requests of a burst all ask the
+// cooldown before any of them records a failure.
+type heldChecks struct {
+	entered, release chan struct{}
+	n                atomic.Int32
+}
+
+func holdPasswordChecks(r *Routes) *heldChecks {
+	h := &heldChecks{entered: make(chan struct{}), release: make(chan struct{})}
+	r.hooks.beforePasswordCheck = func() {
+		h.n.Add(1)
+		select {
+		case h.entered <- struct{}{}:
+			<-h.release
+		case <-h.release:
+		}
+	}
+	return h
+}
+
+type attempt struct {
+	status     int
+	retryAfter string
+	signedIn   bool
+}
+
+func goLogin(r *Routes, username, password string, answers chan<- attempt) {
+	go func() {
+		status, retry, signedIn := loginAs(r, username, password)
+		answers <- attempt{status, retry, signedIn}
+	}()
+}
+
+// settle waits until n more requests are held or answered, and returns the
+// answers.
+func (h *heldChecks) settle(n int, answers <-chan attempt) []attempt {
+	var got []attempt
+	for range n {
+		select {
+		case <-h.entered:
+		case a := <-answers:
+			got = append(got, a)
+		}
+	}
+	return got
+}
+
+// A concurrent burst of wrong passwords gets no more password checks than a
+// sequential one: five, and the rest are refused with Retry-After before
+// any is checked.
+func TestLogin_CooldownBurst(t *testing.T) {
+	r := newTestRoutes(t, false)
+	held := holdPasswordChecks(r)
+	answers := make(chan attempt, 20)
+	for range 20 {
+		goLogin(r, "bob", "wrong", answers)
+	}
+	refused := held.settle(20, answers)
+	close(held.release)
+	for range 20 - len(refused) {
+		<-answers
+	}
+
+	if n := held.n.Load(); n != throttle.FreeFailures {
+		t.Errorf("%d password checks for a burst of 20, want %d", n, throttle.FreeFailures)
+	}
+	for _, a := range refused {
+		if a.status != http.StatusUnauthorized || a.retryAfter == "" {
+			t.Errorf("a refused attempt = %d Retry-After %q, want 401 with Retry-After", a.status, a.retryAfter)
+		}
+	}
+	if status, retry, _ := loginAs(r, "bob", "bobpass1"); status != http.StatusUnauthorized || retry == "" {
+		t.Errorf("after the burst = %d Retry-After %q, want 401 with Retry-After", status, retry)
+	}
+}
+
+// The right password sent while five wrong ones are being checked is
+// refused, not checked: the burst cannot reach it.
+func TestLogin_CooldownBurstRefusesTheRightPassword(t *testing.T) {
+	r := newTestRoutes(t, false)
+	held := holdPasswordChecks(r)
+	wrong, right := make(chan attempt, throttle.FreeFailures), make(chan attempt, 1)
+	for range throttle.FreeFailures {
+		goLogin(r, "bob", "wrong", wrong)
+	}
+	if early := held.settle(throttle.FreeFailures, wrong); len(early) != 0 {
+		t.Fatalf("%d of the first five were answered before their check: %+v", len(early), early)
+	}
+	goLogin(r, "bob", "bobpass1", right)
+	answered := held.settle(1, right)
+	close(held.release)
+	if len(answered) == 0 {
+		answered = append(answered, <-right)
+	}
+
+	if a := answered[0]; a.status != http.StatusUnauthorized || a.retryAfter == "" || a.signedIn {
+		t.Errorf("the right password in the burst = %d Retry-After %q signed in %v, want 401 with Retry-After", a.status, a.retryAfter, a.signedIn)
+	}
+	if n := held.n.Load(); n != throttle.FreeFailures {
+		t.Errorf("%d password checks, want %d", n, throttle.FreeFailures)
+	}
+}
+
+// A sign-in the derivation gate refuses derived nothing, so it is not a
+// failure: any number of them leave the username out of cooldown.
+func TestLogin_BusyIsNotAFailure(t *testing.T) {
+	r := newTestRoutes(t, false)
+	restore := user.SetKDFGate(0, 0, 0)
+	for i := range 2 * throttle.FreeFailures {
+		if status, _, _ := loginAs(r, "bob", "wrong"); status != http.StatusServiceUnavailable {
+			t.Fatalf("busy attempt %d = %d, want 503", i+1, status)
+		}
+	}
+	restore()
+	if status, retry, signedIn := loginAs(r, "bob", "bobpass1"); status != http.StatusFound || !signedIn {
+		t.Errorf("login after busy refusals = %d Retry-After %q, want 302 and a session", status, retry)
+	}
 }
 
 // An admin's password reset, or one through a reset link, ends the cooldown.
@@ -204,7 +326,10 @@ func TestLoginFailed_LogsABoundedUsername(t *testing.T) {
 
 			username := tc.prefix + strings.Repeat("x", 60<<10)
 			for range throttle.FreeFailures {
-				r.loginFailed(username)
+				_, done := r.logins.Begin(username)
+				if cooldown := done(true); cooldown > 0 {
+					r.loginFailed(username, cooldown)
+				}
 			}
 			line := strings.TrimSuffix(buf.String(), "\n")
 			t.Logf("warning of %d bytes: %s", len(line), line)
