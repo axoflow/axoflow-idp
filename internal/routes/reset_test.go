@@ -56,9 +56,10 @@ func redeem(r *Routes, token, password string) int {
 }
 
 // A reset link carries its issuer's authority and the target's credential
-// generation at the moment it was minted: whatever takes the authority away
-// or writes the target's password, before the redemption or while it runs,
-// makes the link refuse.
+// generation at the moment it was minted, and the redemption's writer
+// transaction checks both: an issuer whose authority is gone at that check,
+// or a write of the target's password that takes the writer lock first, makes
+// the link refuse. A demotion after the commit does not undo the reset.
 func TestSetPassword_LinkRefusedOnceRevoked(t *testing.T) {
 	type routesAndIssuer struct {
 		r      *Routes

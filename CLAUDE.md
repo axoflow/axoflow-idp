@@ -129,9 +129,10 @@ whose `aud` is the requested RFC 8707 `resource`, or the client id without one.
   from its `resources` list (an empty value counts as omitted), and anything
   else is `invalid_target`.
 - `session` (`cookieTTL`, `idleTTL`, `absoluteTTL`, duration strings): the
-  cookie lasts 168h by default; idle expiry is off; `absoluteTTL` defaults
-  to the cookie TTL, so a session never outlives its cookie; `"0"` disables
-  idle or absolute expiry. A user holds at most 50 sessions (the oldest is
+  cookie lasts 168h by default, counted in whole seconds; idle expiry is off;
+  `absoluteTTL` defaults to the cookie TTL in whole seconds, so by default a
+  session does not outlive its cookie (a longer `absoluteTTL`, or `"0"`, lets
+  it); `"0"` disables idle or absolute expiry. A user holds at most 50 sessions (the oldest is
   evicted). An hourly sweeper in `main.go` calls `CleanUp` on the session,
   code, token and reset-link stores.
 - Config is loaded from the path in `CONFIG` (default `config.json`).

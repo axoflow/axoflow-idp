@@ -518,9 +518,9 @@ func TestSetPassword_ValidTokenDeletedUser(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
-	// SetPassword failed (user gone) before the token was consumed, so the link
-	// stays valid for a retry.
+	// SetPassword failed (user gone) before the token was consumed, so the
+	// token is retained in the token store but unusable for the deleted target.
 	if _, ok := r.resetTokens.Peek(tok); !ok {
-		t.Error("token should remain valid after a failed SetPassword")
+		t.Error("token should be retained in the token store after a failed SetPassword")
 	}
 }
