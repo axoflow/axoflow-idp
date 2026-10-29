@@ -196,6 +196,12 @@ func TestLogin_CooldownBurstRefusesTheRightPassword(t *testing.T) {
 	if len(answered) == 0 {
 		answered = append(answered, <-right)
 	}
+	// Drain the wrong attempts: their derivations and cooldown log lines
+	// must not outlive the test. SetKDFGate forbids derivations in flight,
+	// and later tests capture the default logger.
+	for range throttle.FreeFailures {
+		<-wrong
+	}
 
 	if a := answered[0]; a.status != http.StatusUnauthorized || a.retryAfter == "" || a.signedIn {
 		t.Errorf("the right password in the burst = %d Retry-After %q signed in %v, want 401 with Retry-After", a.status, a.retryAfter, a.signedIn)
