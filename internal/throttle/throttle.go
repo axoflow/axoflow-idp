@@ -112,7 +112,10 @@ func (l *Limiter) remove(el *list.Element) {
 // cooldown the failure started, zero when it started none. Counting the
 // attempts in flight bounds a concurrent burst as a sequential run is bounded:
 // no more than FreeFailures attempts before the first cooldown, and one at a
-// time after a cooldown has run, as its failure starts the next.
+// time after a cooldown has run, as its failure starts the next. The key's
+// entry is made here, evicting another at the bound, also for an attempt the
+// derivation gate then refuses as busy; an entry with an attempt in flight is
+// never dropped or evicted.
 func (l *Limiter) Begin(key string) (wait time.Duration, done func(failed bool) time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -123,8 +126,9 @@ func (l *Limiter) Begin(key string) (wait time.Duration, done func(failed bool) 
 	el, ok := l.entries[d]
 	if !ok {
 		if l.order.Len() >= MaxKeys && !l.evict() {
-			// Every entry has an attempt in flight, which the KDF gate keeps
-			// far below MaxKeys; this one is let through without counting it.
+			// Every entry has an attempt in flight, and none can make room:
+			// this one is let through without counting it. Nothing bounds the
+			// attempts in flight below MaxKeys; this is an accepted residual.
 			return 0, func(bool) time.Duration { return 0 }
 		}
 		el = l.order.PushFront(&entry{key: d})

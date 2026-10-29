@@ -372,11 +372,13 @@ The count is kept in memory per exact username (byte for byte, as the
 password check matches it), under a SHA-256 digest of the username rather than
 the username itself, for at most 10,000 usernames: an entry whose 10 minutes
 and cooldown have both passed is dropped, and past the bound the least recently
-failed is. A restart clears it. Failing once each with 10,000 other usernames
-pushes a username out, so the cooldown slows down guessing against one account;
-it does not stop someone who can send that many failed sign-ins. The cooldown
-warning logs the first 64 bytes of the username and 12 hex digits of its
-digest.
+failed is. An entry with an attempt in flight is never dropped or pushed out,
+so while all 10,000 have one, a sign-in for another username is let through
+without being counted. A restart clears it. Failing once each with 10,000
+other usernames pushes a username out, so the cooldown slows down guessing
+against one account; it does not stop someone who can send that many failed
+sign-ins. The cooldown warning logs the first 64 bytes of the username and 12
+hex digits of its digest.
 
 The cooldown also covers the current-password check of `/password`, keyed by
 the account's username, so a stolen session cannot guess the password faster
