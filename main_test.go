@@ -526,7 +526,14 @@ func TestLogSessionLimits(t *testing.T) {
 
 type countingCleaner struct{ calls chan struct{} }
 
-func (c countingCleaner) CleanUp() { c.calls <- struct{}{} }
+// CleanUp records the call without blocking, so a full channel cannot hold
+// the sweeper (and with it stop).
+func (c countingCleaner) CleanUp() {
+	select {
+	case c.calls <- struct{}{}:
+	default:
+	}
+}
 
 func TestSweeperCleansEveryStore(t *testing.T) {
 	a, b := countingCleaner{make(chan struct{}, 8)}, countingCleaner{make(chan struct{}, 8)}
@@ -539,5 +546,69 @@ func TestSweeperCleansEveryStore(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("a store was not cleaned")
 		}
+	}
+}
+
+// stop returns once the sweeper goroutine has, and no store is cleaned after.
+func TestSweeperStops(t *testing.T) {
+	c := countingCleaner{make(chan struct{}, 8)}
+	stop := startSweeper(time.Millisecond, c)
+	select {
+	case <-c.calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the store was not cleaned")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not return")
+	}
+	for len(c.calls) > 0 {
+		<-c.calls
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := len(c.calls); n != 0 {
+		t.Errorf("the store was cleaned %d times after stop returned", n)
+	}
+}
+
+// main sweeps the four stores it builds; each package tests its own CleanUp.
+// Where the expiry is observable from here, an expired entry is gone after
+// the returned cleaners run.
+func TestStoreCleaners(t *testing.T) {
+	sessions := session.New(session.Config{AbsoluteTTL: time.Millisecond})
+	codes := codestore.New()
+	tokens := tokenstore.New(time.Millisecond)
+	resets := resettoken.New(time.Millisecond)
+
+	cleaners := storeCleaners(sessions, codes, tokens, resets)
+
+	want := []cleaner{sessions, codes, tokens, resets}
+	if len(cleaners) != len(want) {
+		t.Fatalf("storeCleaners returned %d cleaners, want %d", len(cleaners), len(want))
+	}
+	for i := range want {
+		if cleaners[i] != want[i] {
+			t.Errorf("cleaner %d is %T %p, want %T %p", i, cleaners[i], cleaners[i], want[i], want[i])
+		}
+	}
+
+	sessions.Create("alice")
+	tokens.Revoke("revoked-token")
+	time.Sleep(5 * time.Millisecond)
+	for _, c := range cleaners {
+		c.CleanUp()
+	}
+	if n := sessions.Count("alice"); n != 0 {
+		t.Errorf("the session store holds %d expired sessions", n)
+	}
+	if tokens.IsRevoked("revoked-token") {
+		t.Error("the token store holds an expired revocation")
 	}
 }

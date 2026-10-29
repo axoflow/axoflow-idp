@@ -347,12 +347,20 @@ func logSessionLimits(log *slog.Logger, l sessionLimits, clients []oidc.Client, 
 // cleaner is an in-memory store that can drop its expired entries.
 type cleaner interface{ CleanUp() }
 
+// storeCleaners is the list of stores main sweeps.
+func storeCleaners(sessions *session.Session, codes *codestore.CodeStore, tokens *tokenstore.TokenStore, resets *resettoken.Store) []cleaner {
+	return []cleaner{sessions, codes, tokens, resets}
+}
+
 // startSweeper calls CleanUp on every store each interval until stop is
 // called: an entry nobody presents again is otherwise held until a restart.
+// stop returns once the sweeper has, so no CleanUp runs after it.
 func startSweeper(interval time.Duration, stores ...cleaner) (stop func()) {
 	ticker := time.NewTicker(interval)
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		for {
 			select {
 			case <-ticker.C:
@@ -367,6 +375,7 @@ func startSweeper(interval time.Duration, stores ...cleaner) (stop func()) {
 	return func() {
 		ticker.Stop()
 		close(done)
+		<-stopped
 	}
 }
 
@@ -431,7 +440,7 @@ func main() {
 		slog.Error("failed to create routes", "error", err)
 		os.Exit(1)
 	}
-	stopSweeper := startSweeper(sweepInterval, sessions, codes, tokens, resetTokens)
+	stopSweeper := startSweeper(sweepInterval, storeCleaners(sessions, codes, tokens, resetTokens)...)
 	defer stopSweeper()
 
 	mux := newMux(r, pathPrefix, u)
