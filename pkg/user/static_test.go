@@ -51,9 +51,10 @@ func newStaticStore(t *testing.T) *User {
 func TestStaticRejectsAllMutations(t *testing.T) {
 	u := newStaticStore(t)
 
+	_, changeErr := u.ChangePassword("bob", "bobpass", "new")
 	checks := map[string]error{
 		"Register":              u.Register("carol", "pw", nil, "carol@x"),
-		"ChangePassword":        u.ChangePassword("bob", "bobpass", "new"),
+		"ChangePassword":        changeErr,
 		"SetPassword":           u.SetPassword("bob", "new"),
 		"AdminResetPassword":    u.AdminResetPassword("admin1", "bob", "new"),
 		"AdminUpdateUserGroups": u.AdminUpdateUserGroups("admin1", "bob", []string{"x"}),

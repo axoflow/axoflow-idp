@@ -49,6 +49,16 @@ func validatePassword(p string) error {
 	return nil
 }
 
+// HashNewPassword checks password against the policy and returns the hash
+// that would be stored for userID, so a caller can run the ~100ms argon2id
+// before a transaction such as SetPasswordByReset rather than inside it.
+func HashNewPassword(userID, password string) (string, error) {
+	if err := validatePassword(password); err != nil {
+		return "", err
+	}
+	return hash([]byte(userID), password), nil
+}
+
 // hash returns an argon2id PHC string: $argon2id$v=<v>$m=<m>,t=<t>,p=<p>$<salt>$<hash>
 func hash(salt []byte, password string) string {
 	h := argon2.IDKey([]byte(password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)

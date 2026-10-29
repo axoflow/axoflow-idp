@@ -78,6 +78,29 @@ func TestPop_ExpiredCodeIsRejectedAndSpent(t *testing.T) {
 	}
 }
 
+// The entries go straight into the map with their creation time set, so no
+// Create runs cleanUp first and no test waits out the minute.
+func TestCleanUpDropsExpiredCodes(t *testing.T) {
+	s := New()
+	now := time.Now()
+	for id, age := range map[string]time.Duration{"expired-1": 2 * time.Minute, "expired-2": time.Hour, "fresh-1": 0, "fresh-2": 30 * time.Second} {
+		s.codes[id] = code{createdAt: now.Add(-age), clientID: "app", redirectURI: cb}
+	}
+
+	s.CleanUp()
+
+	for _, id := range []string{"expired-1", "expired-2"} {
+		if _, ok := s.codes[id]; ok {
+			t.Errorf("%s is still held after CleanUp", id)
+		}
+	}
+	for _, id := range []string{"fresh-1", "fresh-2"} {
+		if _, ok := s.codes[id]; !ok {
+			t.Errorf("%s was dropped by CleanUp", id)
+		}
+	}
+}
+
 // No assertions: this fails only under -race, as a regression for the
 // unsynchronized map access.
 func TestConcurrentAccess(_ *testing.T) {

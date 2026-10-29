@@ -17,10 +17,11 @@ package session
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCreateGetDelete(t *testing.T) {
-	s := New()
+	s := New(Config{})
 
 	id := s.Create("user-1")
 	if id == "" {
@@ -45,7 +46,7 @@ func TestCreateGetDelete(t *testing.T) {
 }
 
 func TestDeleteUserSessions(t *testing.T) {
-	s := New()
+	s := New(Config{})
 
 	a1 := s.Create("alice")
 	a2 := s.Create("alice")
@@ -68,7 +69,7 @@ func TestDeleteUserSessions(t *testing.T) {
 // detector (go test -race) catches unsynchronized map access, which in Go
 // panics with "concurrent map read and map write" at runtime.
 func TestConcurrentAccess(_ *testing.T) {
-	s := New()
+	s := New(Config{})
 
 	const workers = 50
 	var wg sync.WaitGroup
@@ -85,4 +86,165 @@ func TestConcurrentAccess(_ *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// clock is a settable time source for the store.
+type clock struct{ t time.Time }
+
+func (c *clock) now() time.Time { return c.t }
+
+func newClockedStore(cfg Config) (*Session, *clock) {
+	c := &clock{t: time.Unix(1_700_000_000, 0)}
+	s := New(cfg)
+	s.now = c.now
+	return s, c
+}
+
+func TestLifetime(t *testing.T) {
+	tests := []struct {
+		name  string
+		cfg   Config
+		steps []time.Duration // advance the clock, then Get, for each step
+		want  bool            // whether the last Get resolves
+	}{
+		{"no limits", Config{}, []time.Duration{10_000 * time.Hour}, true},
+		{"within absolute", Config{AbsoluteTTL: time.Hour}, []time.Duration{59 * time.Minute}, true},
+		{"past absolute", Config{AbsoluteTTL: time.Hour}, []time.Duration{61 * time.Minute}, false},
+		{"use does not extend absolute", Config{AbsoluteTTL: time.Hour, IdleTTL: 30 * time.Minute}, []time.Duration{20 * time.Minute, 20 * time.Minute, 20 * time.Minute, 5 * time.Minute}, false},
+		{"within idle", Config{IdleTTL: 30 * time.Minute}, []time.Duration{29 * time.Minute}, true},
+		{"past idle", Config{IdleTTL: 30 * time.Minute}, []time.Duration{31 * time.Minute}, false},
+		{"use refreshes idle", Config{IdleTTL: 30 * time.Minute}, []time.Duration{20 * time.Minute, 20 * time.Minute, 20 * time.Minute, 20 * time.Minute}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, c := newClockedStore(tt.cfg)
+			id := s.Create("alice")
+			var err error
+			for _, step := range tt.steps {
+				c.t = c.t.Add(step)
+				_, err = s.Get(id)
+			}
+			if got := err == nil; got != tt.want {
+				t.Errorf("session resolves = %v (%v), want %v", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanUp(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		cfg       Config
+		wantStale bool // whether the stale session survives CleanUp
+	}{
+		{"absolute", Config{AbsoluteTTL: time.Hour}, false},
+		{"idle", Config{IdleTTL: time.Hour}, false},
+		{"no limits", Config{}, true},
+	} {
+		// Both sessions are alice's and created while live: a Create after the
+		// stale one expired would prune it and leave CleanUp nothing to do.
+		t.Run(tt.name, func(t *testing.T) {
+			s, c := newClockedStore(tt.cfg)
+			stale := s.Create("alice")
+			c.t = c.t.Add(30 * time.Minute)
+			fresh := s.Create("alice")
+			c.t = c.t.Add(45 * time.Minute)
+
+			held := func(id string) (inStore, inIndex bool) {
+				_, inStore = s.sessions[id]
+				_, inIndex = s.byUser["alice"][id]
+				return inStore, inIndex
+			}
+			if inStore, inIndex := held(stale); !inStore || !inIndex {
+				t.Fatalf("stale session before CleanUp: in store %v, in index %v; want both", inStore, inIndex)
+			}
+
+			s.CleanUp()
+
+			if inStore, inIndex := held(stale); inStore != tt.wantStale || inIndex != tt.wantStale {
+				t.Errorf("stale session after CleanUp: in store %v, in index %v; want %v", inStore, inIndex, tt.wantStale)
+			}
+			if inStore, inIndex := held(fresh); !inStore || !inIndex {
+				t.Errorf("fresh session after CleanUp: in store %v, in index %v; want both", inStore, inIndex)
+			}
+		})
+	}
+}
+
+func TestCreateEvictsOldestBeyondCap(t *testing.T) {
+	s, c := newClockedStore(Config{})
+	bob := s.Create("bob")
+	ids := make([]string, MaxPerUser+1)
+	for i := range ids {
+		c.t = c.t.Add(time.Second)
+		ids[i] = s.Create("alice")
+	}
+
+	if _, err := s.Get(ids[0]); err == nil {
+		t.Error("the oldest session survived going over the cap")
+	}
+	for _, id := range ids[1:] {
+		if _, err := s.Get(id); err != nil {
+			t.Fatalf("a session within the cap is gone: %v", err)
+		}
+	}
+	if _, err := s.Get(bob); err != nil {
+		t.Error("another user's session was evicted")
+	}
+	if n := len(s.byUser["alice"]); n != MaxPerUser {
+		t.Errorf("alice holds %d sessions, want %d", n, MaxPerUser)
+	}
+}
+
+// Expired sessions do not count toward the cap: an old session kept alive by
+// use outlives 49 younger ones that went idle.
+func TestCreateDropsExpiredBeforeTheCap(t *testing.T) {
+	s, c := newClockedStore(Config{IdleTTL: 30 * time.Minute})
+	old := s.Create("alice")
+	bob := s.Create("bob")
+	idle := make([]string, MaxPerUser-1)
+	for i := range idle {
+		c.t = c.t.Add(time.Second)
+		idle[i] = s.Create("alice")
+	}
+	c.t = c.t.Add(20 * time.Minute)
+	if _, err := s.Get(old); err != nil {
+		t.Fatalf("refresh the old session: %v", err)
+	}
+	c.t = c.t.Add(20 * time.Minute) // the idle ones and bob's are now expired
+
+	fresh := s.Create("alice")
+
+	if _, err := s.Get(old); err != nil {
+		t.Errorf("the live old session was evicted: %v", err)
+	}
+	for _, id := range idle {
+		if _, ok := s.sessions[id]; ok {
+			t.Fatal("an expired session is still held after Create")
+		}
+	}
+	if _, ok := s.sessions[bob]; !ok {
+		t.Error("another user's session was touched")
+	}
+	if got := s.byUser["alice"]; len(got) != 2 {
+		t.Errorf("alice's index holds %d ids, want 2 (old and fresh)", len(got))
+	}
+	if _, err := s.Get(fresh); err != nil {
+		t.Errorf("the new session does not resolve: %v", err)
+	}
+}
+
+// When every session of the user has expired, the new one still lands in the
+// user's index, so DeleteUserSessions reaches it.
+func TestCreateAfterAllExpiredIsIndexed(t *testing.T) {
+	s, c := newClockedStore(Config{IdleTTL: 30 * time.Minute})
+	s.Create("alice")
+	c.t = c.t.Add(time.Hour)
+
+	fresh := s.Create("alice")
+	s.DeleteUserSessions("alice")
+
+	if _, err := s.Get(fresh); err == nil {
+		t.Error("the new session survived DeleteUserSessions")
+	}
 }

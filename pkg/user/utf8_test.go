@@ -43,8 +43,8 @@ func TestRegister_InvalidUTF8RoundTrips(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 
-			_, err1 := u.SelfRegister(tt.first, "password123", []string{RoleUser}, "one@example.com")
-			_, err2 := u.SelfRegister(tt.second, "password123", []string{RoleUser}, "two@example.com")
+			_, _, err1 := u.SelfRegister(tt.first, "password123", []string{RoleUser}, "one@example.com")
+			_, _, err2 := u.SelfRegister(tt.second, "password123", []string{RoleUser}, "two@example.com")
 			if err1 == nil && err2 == nil {
 				t.Error("both registrations accepted, want the invalid UTF-8 one refused")
 			}

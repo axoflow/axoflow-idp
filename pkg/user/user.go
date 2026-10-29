@@ -145,6 +145,17 @@ type User struct {
 	saveMu sync.Mutex   // serializes writers
 	users  []UserInfo
 	fsys   fileSystem // nil means the OS
+
+	// generations counts, per user ID, the commits that wrote the user's
+	// password or deleted the user, whether or not the hash changed. A reset
+	// link records it when minted and is refused once it moved. It lives in
+	// memory only, as the links do, and an entry is never reset or removed,
+	// so a deleted ID keeps its count. Written by commit under saveMu and mu.
+	generations map[string]uint64
+
+	// afterVerify, when set, runs between ChangePassword's verification and
+	// its commit, so a test can commit a competing change there.
+	afterVerify func()
 }
 
 func ensureUserID(users []UserInfo) []UserInfo {
@@ -220,7 +231,7 @@ func (u *User) applySeedPasswords() error {
 	defer u.saveMu.Unlock()
 
 	users := u.snapshot()
-	var updated []string
+	var updated, updatedIDs []string
 	for _, s := range seed {
 		i := slices.IndexFunc(users, func(ui UserInfo) bool { return ui.Username == s.Username })
 		missing := i == -1
@@ -231,12 +242,13 @@ func (u *User) applySeedPasswords() error {
 
 		users[i].Password = s.Password
 		updated = append(updated, s.Username)
+		updatedIDs = append(updatedIDs, users[i].ID)
 	}
 
 	if len(updated) == 0 {
 		return nil
 	}
-	if err := u.commit(users); err != nil {
+	if err := u.commit(users, updatedIDs...); err != nil {
 		return err
 	}
 	for _, username := range updated {
@@ -259,6 +271,16 @@ func getIndex(users []UserInfo, id string) (int, bool) {
 	return i, true
 }
 
+// CredentialGeneration reports userID's credential generation (see
+// User.generations) and whether the user exists.
+func (u *User) CredentialGeneration(userID string) (uint64, bool) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
+	_, ok := getIndex(u.users, userID)
+	return u.generations[userID], ok
+}
+
 func (u *User) Get(id string) (UserInfo, bool) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -271,31 +293,51 @@ func (u *User) Get(id string) (UserInfo, bool) {
 	return u.users[i].clone(), true
 }
 
+// getWithGeneration is Get together with the user's credential generation,
+// read in one critical section so no commit can fall between the two.
+func (u *User) getWithGeneration(id string) (UserInfo, uint64, bool) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
+	i, ok := getIndex(u.users, id)
+	if !ok {
+		return UserInfo{}, 0, false
+	}
+
+	return u.users[i].clone(), u.generations[id], true
+}
+
 // Register creates a user for an already-authorized caller; it does not
 // consult RegistrationOpen.
 func (u *User) Register(username string, password string, groups []string, email string) error {
-	_, err := u.registerWithPassword(username, password, groups, email, nil)
+	_, _, err := u.registerWithPassword(username, password, groups, email, nil)
 	return err
 }
 
 // SelfRegister creates a user through the public registration form and returns
-// the new user's ID. It checks RegistrationOpen as it adds the account and
-// returns ErrRegistrationClosed when the form is closed.
-func (u *User) SelfRegister(username string, password string, groups []string, email string) (string, error) {
+// the new user's ID and the password hash it stored, which the session issued
+// to the registrant proves. It checks RegistrationOpen as it adds the account
+// and returns ErrRegistrationClosed when the form is closed.
+func (u *User) SelfRegister(username string, password string, groups []string, email string) (id, passwordHash string, err error) {
 	return u.registerWithPassword(username, password, groups, email, u.selfServiceOpen)
 }
 
-func (u *User) registerWithPassword(username, password string, groups []string, email string, authorize func(users []UserInfo) error) (string, error) {
+func (u *User) registerWithPassword(username, password string, groups []string, email string, authorize func(users []UserInfo) error) (string, string, error) {
 	if u.Static {
-		return "", ErrReadOnly
+		return "", "", ErrReadOnly
 	}
 	if err := validatePassword(password); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	return u.register(id, username, hash([]byte(id), password), groups, email, authorize)
+	passwordHash := hash([]byte(id), password)
+	id, err := u.register(id, username, passwordHash, groups, email, authorize)
+	if err != nil {
+		return "", "", err
+	}
+	return id, passwordHash, nil
 }
 
 // RegisterLocked creates a user whose password cannot be matched (see
@@ -362,7 +404,7 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 			Password: hashedPassword,
 			Groups:   newGroups,
 		}), nil
-	})
+	}, id)
 	if err != nil {
 		return "", err
 	}
@@ -419,38 +461,55 @@ func (u *User) KnownGroups() []string {
 	return slices.Sorted(maps.Keys(seen))
 }
 
-func (u *User) ChangePassword(userID string, oldPassword, newPassword string) error {
+// ChangePassword sets userID's password after verifying oldPassword, and
+// returns the new hash so the caller can prove it when it issues a session.
+func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (string, error) {
 	if u.Static {
-		return ErrReadOnly
+		return "", ErrReadOnly
 	}
 	if err := validatePassword(newPassword); err != nil {
-		return err
+		return "", err
 	}
 
-	user, ok := u.Get(userID)
+	user, generation, ok := u.getWithGeneration(userID)
 	if !ok {
-		return errors.New("user not found")
+		return "", errors.New("user not found")
 	}
 
 	// verifyPassword and hash run argon2id (~100ms each); keep them out of the lock.
 	if !verifyPassword(user, oldPassword) {
-		return errors.New("invalid old password")
+		return "", errors.New("invalid old password")
 	}
 	newHash := hash([]byte(user.ID), newPassword)
+	if u.afterVerify != nil {
+		u.afterVerify()
+	}
 
-	return u.update(func(users []UserInfo) ([]UserInfo, error) {
+	err := u.update(func(users []UserInfo) ([]UserInfo, error) {
 		i, ok := getIndex(users, userID)
 		if !ok {
 			return nil, errors.New("user not found")
 		}
+		// oldPassword was checked against a snapshot; a password write that
+		// committed since then wins, even one that set the same hash, which
+		// a hash comparison would miss (the hash is deterministic per user).
+		// saveMu, held here, orders this read after every commit.
+		if u.generations[userID] != generation {
+			return nil, errors.New("invalid old password")
+		}
 		users[i].Password = newHash
 		return users, nil
-	})
+	}, userID)
+	if err != nil {
+		return "", err
+	}
+	return newHash, nil
 }
 
-// SetPassword sets a user's password without requiring the current one. It is
-// used by admin-initiated reset flows (e.g. the password-reset link), where the
-// caller has already been authorized out of band.
+// SetPassword sets a user's password without requiring the current one or any
+// authority. It is the library and test-fixture mutator; no route calls it
+// (the reset link goes through SetPasswordByReset), and it does not touch the
+// reset links or sessions a route would end.
 func (u *User) SetPassword(userID, newPassword string) error {
 	if u.Static {
 		return ErrReadOnly
@@ -474,7 +533,7 @@ func (u *User) SetPassword(userID, newPassword string) error {
 		}
 		users[i].Password = newHash
 		return users, nil
-	})
+	}, userID)
 }
 
 func (u *User) Authenticate(username, password string) (UserInfo, bool) {

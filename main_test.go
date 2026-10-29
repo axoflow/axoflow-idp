@@ -16,12 +16,14 @@ package main
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,7 +232,7 @@ func newTestMux(t *testing.T, baseUrl string) *http.ServeMux {
 
 	r, err := routes.New(routes.Config{
 		Oidc:        o,
-		Session:     session.New(),
+		Session:     session.New(session.Config{}),
 		User:        u,
 		CodeStore:   codestore.New(),
 		TokenStore:  tokenstore.New(time.Hour),
@@ -410,5 +412,235 @@ func TestValidateRefusesIneffectiveSettings(t *testing.T) {
 				t.Fatalf("Validate() = %v, want an error containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestSessionLimits: the session block takes Go duration strings; an omitted
+// field takes its default, "0" disables the idle or absolute limit, and a
+// value the server could not honor is refused.
+func TestSessionLimits(t *testing.T) {
+	const week = 168 * time.Hour
+	tests := []struct {
+		name    string
+		session *sessionConfig
+		want    sessionLimits
+		wantErr bool
+	}{
+		{name: "omitted block", want: sessionLimits{cookie: week, Config: session.Config{AbsoluteTTL: week}}},
+		{name: "empty block", session: &sessionConfig{}, want: sessionLimits{cookie: week, Config: session.Config{AbsoluteTTL: week}}},
+		{name: "absolute follows the cookie", session: &sessionConfig{CookieTTL: "12h"}, want: sessionLimits{cookie: 12 * time.Hour, Config: session.Config{AbsoluteTTL: 12 * time.Hour}}},
+		{name: "all set", session: &sessionConfig{CookieTTL: "168h", IdleTTL: "30m", AbsoluteTTL: "24h"}, want: sessionLimits{cookie: week, Config: session.Config{IdleTTL: 30 * time.Minute, AbsoluteTTL: 24 * time.Hour}}},
+		{name: "zero disables idle and absolute", session: &sessionConfig{IdleTTL: "0", AbsoluteTTL: "0"}, want: sessionLimits{cookie: week}},
+		{name: "days are not a Go duration", session: &sessionConfig{CookieTTL: "7d"}, wantErr: true},
+		{name: "bare number", session: &sessionConfig{AbsoluteTTL: "3600"}, wantErr: true},
+		{name: "negative idle", session: &sessionConfig{IdleTTL: "-1h"}, wantErr: true},
+		{name: "negative absolute", session: &sessionConfig{AbsoluteTTL: "-1s"}, wantErr: true},
+		{name: "negative cookie", session: &sessionConfig{CookieTTL: "-168h"}, wantErr: true},
+		{name: "overflowing cookie", session: &sessionConfig{CookieTTL: "10000000h"}, wantErr: true},
+		{name: "zero cookie", session: &sessionConfig{CookieTTL: "0"}, wantErr: true},
+		{name: "cookie under a second", session: &sessionConfig{CookieTTL: "500ms"}, wantErr: true},
+		{name: "cookie of one second", session: &sessionConfig{CookieTTL: "1s"}, want: sessionLimits{cookie: time.Second, Config: session.Config{AbsoluteTTL: time.Second}}},
+		{name: "cookie counted in whole seconds", session: &sessionConfig{CookieTTL: "1500ms"}, want: sessionLimits{cookie: time.Second, Config: session.Config{AbsoluteTTL: time.Second}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{{Id: "cli", Public: true, RedirectUris: []string{"http://127.0.0.1/callback"}}}, Session: tc.session}
+			cfg.SigningKey.FilePath = "signing-key.json"
+			cfg.SigningKey.GenerateIfMissing = true
+			if err := cfg.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			got, err := cfg.Session.limits()
+			if err != nil || got != tc.want {
+				t.Errorf("limits() = %+v, %v; want %+v", got, err, tc.want)
+			}
+		})
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"session":{"cookieTTL":604800}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG", cfgPath)
+	if _, err := LoadConfig(); err == nil {
+		t.Error("LoadConfig accepted a JSON number for cookieTTL; it must be a duration string")
+	}
+}
+
+func TestLogSessionLimits(t *testing.T) {
+	clients := []oidc.Client{{Id: "default"}, {Id: "short", TokenTTL: "1h"}}
+	tokenTTL := func(id string) time.Duration {
+		if id == "short" {
+			return time.Hour
+		}
+		return oidc.DefaultTokenTTL
+	}
+	tests := []struct {
+		name       string
+		limits     sessionLimits
+		wantLimits string
+		wantWarned []string
+	}{
+		{"defaults", sessionLimits{cookie: 168 * time.Hour, Config: session.Config{AbsoluteTTL: 168 * time.Hour}},
+			`"cookie":"168h0m0s","idle":"disabled","absolute":"168h0m0s"`, nil},
+		{"absolute between the token lifetimes", sessionLimits{cookie: 168 * time.Hour, Config: session.Config{IdleTTL: 15 * time.Minute, AbsoluteTTL: 8 * time.Hour}},
+			`"cookie":"168h0m0s","idle":"15m0s","absolute":"8h0m0s"`, []string{"default"}},
+		{"absolute below both", sessionLimits{cookie: time.Hour, Config: session.Config{AbsoluteTTL: 30 * time.Minute}},
+			`"absolute":"30m0s"`, []string{"default", "short"}},
+		{"absolute disabled", sessionLimits{cookie: time.Minute},
+			`"cookie":"1m0s","idle":"disabled","absolute":"disabled"`, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			logSessionLimits(slog.New(slog.NewJSONHandler(&buf, nil)), tc.limits, clients, tokenTTL)
+
+			out := buf.String()
+			if !strings.Contains(out, tc.wantLimits) {
+				t.Errorf("log lacks %s:\n%s", tc.wantLimits, out)
+			}
+			var warned []string
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				var rec struct {
+					Level, Msg string
+					ClientID   string `json:"client_id"`
+				}
+				if err := json.Unmarshal([]byte(line), &rec); err != nil {
+					t.Fatalf("log line %q: %v", line, err)
+				}
+				if rec.Level == "WARN" {
+					if !strings.Contains(rec.Msg, "id_token outlives the session") {
+						t.Errorf("warning %q", rec.Msg)
+					}
+					warned = append(warned, rec.ClientID)
+				}
+			}
+			if strings.Join(warned, ",") != strings.Join(tc.wantWarned, ",") {
+				t.Errorf("warned for %v, want %v", warned, tc.wantWarned)
+			}
+		})
+	}
+}
+
+type countingCleaner struct{ calls chan struct{} }
+
+// CleanUp records the call without blocking, so a full channel cannot hold
+// the sweeper (and with it stop).
+func (c countingCleaner) CleanUp() {
+	select {
+	case c.calls <- struct{}{}:
+	default:
+	}
+}
+
+func TestSweeperCleansEveryStore(t *testing.T) {
+	a, b := countingCleaner{make(chan struct{}, 8)}, countingCleaner{make(chan struct{}, 8)}
+	stop := startSweeper(time.Millisecond, a, b)
+	defer stop()
+
+	for _, c := range []countingCleaner{a, b} {
+		select {
+		case <-c.calls:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a store was not cleaned")
+		}
+	}
+}
+
+// blockingCleaner reports entering CleanUp and then holds it until release is
+// closed, so stop can be called while a cleanup is in progress.
+type blockingCleaner struct {
+	entered, left, release chan struct{}
+	calls                  atomic.Int64
+}
+
+func (c *blockingCleaner) CleanUp() {
+	c.calls.Add(1)
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	<-c.release
+	select {
+	case c.left <- struct{}{}:
+	default:
+	}
+}
+
+// stop waits for a cleanup in progress to finish, and no store is cleaned
+// after it returns.
+func TestSweeperStops(t *testing.T) {
+	c := &blockingCleaner{entered: make(chan struct{}, 1), left: make(chan struct{}, 1), release: make(chan struct{})}
+	stop := startSweeper(time.Millisecond, c)
+	select {
+	case <-c.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the store was not cleaned")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Error("stop returned while a cleanup was in progress")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(c.release)
+	select {
+	case <-c.left:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cleanup did not finish after its release")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not return after the cleanup finished")
+	}
+	n := c.calls.Load()
+	time.Sleep(20 * time.Millisecond)
+	if after := c.calls.Load() - n; after != 0 {
+		t.Errorf("the store was cleaned %d times after stop returned", after)
+	}
+}
+
+// main sweeps the four stores it builds; each package tests its own CleanUp.
+// Where the expiry is observable from here, an expired entry is gone after
+// the returned cleaners run.
+func TestStoreCleaners(t *testing.T) {
+	sessions := session.New(session.Config{AbsoluteTTL: time.Millisecond})
+	codes := codestore.New()
+	tokens := tokenstore.New(time.Millisecond)
+	resets := resettoken.New(time.Millisecond)
+
+	cleaners := storeCleaners(sessions, codes, tokens, resets)
+
+	want := []cleaner{sessions, codes, tokens, resets}
+	if len(cleaners) != len(want) {
+		t.Fatalf("storeCleaners returned %d cleaners, want %d", len(cleaners), len(want))
+	}
+	for i := range want {
+		if cleaners[i] != want[i] {
+			t.Errorf("cleaner %d is %T %p, want %T %p", i, cleaners[i], cleaners[i], want[i], want[i])
+		}
+	}
+
+	sessions.Create("alice")
+	tokens.Revoke("revoked-token")
+	time.Sleep(5 * time.Millisecond)
+	for _, c := range cleaners {
+		c.CleanUp()
+	}
+	if n := sessions.Count("alice"); n != 0 {
+		t.Errorf("the session store holds %d expired sessions", n)
+	}
+	if tokens.IsRevoked("revoked-token") {
+		t.Error("the token store holds an expired revocation")
 	}
 }

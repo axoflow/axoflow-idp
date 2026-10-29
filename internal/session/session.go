@@ -18,20 +18,43 @@ import (
 	"crypto/rand"
 	"errors"
 	"sync"
+	"time"
 )
 
+// MaxPerUser bounds the sessions one user holds: every login adds one and
+// nothing else removes them before they expire, so without it a user who
+// signs in in a loop grows the store without limit.
+const MaxPerUser = 50
+
+// Config bounds a session's server-side lifetime. A zero TTL disables that
+// bound; the zero Config keeps a session until it is deleted.
+type Config struct {
+	// IdleTTL ends a session not used for this long.
+	IdleTTL time.Duration
+	// AbsoluteTTL ends a session this long after it was created, used or not.
+	AbsoluteTTL time.Duration
+}
+
 type session struct {
-	userID string
+	userID    string
+	createdAt time.Time
+	lastSeen  time.Time
 }
 
 type Session struct {
-	mu       sync.RWMutex
+	mu       sync.Mutex
+	cfg      Config
+	now      func() time.Time
 	sessions map[string]session
+	byUser   map[string]map[string]struct{} // userID -> its session ids
 }
 
-func New() *Session {
+func New(cfg Config) *Session {
 	return &Session{
+		cfg:      cfg,
+		now:      time.Now,
 		sessions: map[string]session{},
+		byUser:   map[string]map[string]struct{}{},
 	}
 }
 
@@ -41,27 +64,92 @@ func (s *Session) Create(userId string) string {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[id] = session{userID: userId}
+
+	// Expired sessions go first, or the cap would evict a live one for them.
+	// That can empty the user's index and drop it, so look it up afterwards.
+	now := s.now()
+	for id := range s.byUser[userId] {
+		if s.expired(s.sessions[id], now) {
+			s.remove(id)
+		}
+	}
+	ids := s.byUser[userId]
+	if ids == nil {
+		ids = map[string]struct{}{}
+		s.byUser[userId] = ids
+	}
+	if len(ids) >= MaxPerUser {
+		s.evictOldest(ids)
+	}
+
+	s.sessions[id] = session{userID: userId, createdAt: now, lastSeen: now}
+	ids[id] = struct{}{}
 
 	return id
 }
 
-func (s *Session) Get(sessionId string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// evictOldest deletes the oldest of ids. The caller holds mu.
+func (s *Session) evictOldest(ids map[string]struct{}) {
+	var oldest string
+	for id := range ids {
+		if oldest == "" || s.sessions[id].createdAt.Before(s.sessions[oldest].createdAt) {
+			oldest = id
+		}
+	}
+	s.remove(oldest)
+}
 
-	session, ok := s.sessions[sessionId]
+func (s *Session) Get(sessionId string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ses, ok := s.sessions[sessionId]
 	if !ok {
 		return "", errors.New("session not found")
 	}
 
-	return session.userID, nil
+	now := s.now()
+	if s.expired(ses, now) {
+		s.remove(sessionId)
+		return "", errors.New("session expired")
+	}
+	if s.cfg.IdleTTL > 0 {
+		ses.lastSeen = now
+		s.sessions[sessionId] = ses
+	}
+
+	return ses.userID, nil
+}
+
+func (s *Session) expired(ses session, now time.Time) bool {
+	if s.cfg.AbsoluteTTL > 0 && now.After(ses.createdAt.Add(s.cfg.AbsoluteTTL)) {
+		return true
+	}
+	return s.cfg.IdleTTL > 0 && now.After(ses.lastSeen.Add(s.cfg.IdleTTL))
+}
+
+// CleanUp deletes every expired session. Get deletes an expired session it is
+// asked about; this catches the ones whose cookie never comes back.
+func (s *Session) CleanUp() {
+	if s.cfg.IdleTTL == 0 && s.cfg.AbsoluteTTL == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	for id, ses := range s.sessions {
+		if s.expired(ses, now) {
+			s.remove(id)
+		}
+	}
 }
 
 func (s *Session) Delete(sessionId string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.sessions, sessionId)
+	s.remove(sessionId)
 }
 
 // DeleteUserSessions removes every session belonging to userID. It is used to
@@ -69,9 +157,31 @@ func (s *Session) Delete(sessionId string) {
 func (s *Session) DeleteUserSessions(userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, ses := range s.sessions {
-		if ses.userID == userID {
-			delete(s.sessions, id)
-		}
+	for id := range s.byUser[userID] {
+		delete(s.sessions, id)
+	}
+	delete(s.byUser, userID)
+}
+
+// Count reports how many sessions userID holds, expired ones included until
+// they are removed. A refused issuance sends no cookie, so tests use it to
+// see that the store kept nothing for the user either.
+func (s *Session) Count(userID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.byUser[userID])
+}
+
+// remove deletes the session id, if any. The caller holds mu.
+func (s *Session) remove(id string) {
+	ses, ok := s.sessions[id]
+	if !ok {
+		return
+	}
+	delete(s.sessions, id)
+	ids := s.byUser[ses.userID]
+	delete(ids, id)
+	if len(ids) == 0 {
+		delete(s.byUser, ses.userID)
 	}
 }

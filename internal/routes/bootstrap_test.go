@@ -48,7 +48,7 @@ func newBootstrapRoutes(t *testing.T, users string, cfg user.Config) *Routes {
 	}
 
 	return &Routes{
-		session:  session.New(),
+		session:  session.New(session.Config{}),
 		user:     u,
 		oidc:     &oidc.Oidc{},
 		template: tpl,

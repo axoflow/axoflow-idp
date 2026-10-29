@@ -77,18 +77,29 @@ var mutators = []struct {
 	run  func(u *User) error
 }{
 	{"SelfRegister", func(u *User) error {
-		_, err := u.SelfRegister("dave", "davepass1", []string{RoleUser}, "dave@example.com")
+		_, _, err := u.SelfRegister("dave", "davepass1", []string{RoleUser}, "dave@example.com")
 		return err
 	}},
 	{"Register", func(u *User) error { return u.Register("dave", "davepass1", nil, "") }},
 	{"RegisterLocked", func(u *User) error { _, err := u.RegisterLocked("dave", nil, ""); return err }},
 	{"AdminRegister", func(u *User) error { return u.AdminRegister("alice", "dave", "davepass1", nil, "") }},
 	{"AdminRegisterLocked", func(u *User) error { _, err := u.AdminRegisterLocked("alice", "dave", nil, ""); return err }},
-	{"ChangePassword", func(u *User) error { return u.ChangePassword("bob", "bobpass123", "newpass123") }},
+	{"ChangePassword", func(u *User) error { _, err := u.ChangePassword("bob", "bobpass123", "newpass123"); return err }},
 	{"SetPassword", func(u *User) error { return u.SetPassword("bob", "newpass123") }},
 	{"AdminDelete", func(u *User) error { return u.AdminDelete("alice", "bob") }},
 	{"AdminResetPassword", func(u *User) error { return u.AdminResetPassword("alice", "bob", "newpass123") }},
 	{"AdminUpdateUserGroups", func(u *User) error { return u.AdminUpdateUserGroups("alice", "bob", []string{"ops"}) }},
+	{"SetPasswordByReset", setBobsPasswordByReset},
+}
+
+// setBobsPasswordByReset redeems a link alice minted for bob just now.
+func setBobsPasswordByReset(u *User) error {
+	generation, _ := u.CredentialGeneration("bob")
+	newHash, err := HashNewPassword("bob", "newpass123")
+	if err != nil {
+		return err
+	}
+	return u.SetPasswordByReset("bob", "alice", generation, newHash)
 }
 
 // Each mutator writes its own change, owner-only, so memory and the file
@@ -466,6 +477,62 @@ func TestCommit_Faults(t *testing.T) {
 			}
 			if names := dirEntries(t, path); !slices.Equal(names, []string{"users.json"}) {
 				t.Errorf("directory holds %v, want only users.json", names)
+			}
+		})
+	}
+}
+
+// A redemption whose write fails before the rename leaves the password, the
+// file and the generation as they were; once the file is installed the write
+// counts, as every other write does, and the generation moves.
+func TestSetPasswordByReset_Faults(t *testing.T) {
+	tests := []struct {
+		fail          string
+		wantCommitted bool
+	}{
+		{fail: "create"},
+		{fail: "write"},
+		{fail: "sync file"},
+		{fail: "rename"},
+		{fail: "sync dir", wantCommitted: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fail, func(t *testing.T) {
+			u, path := persistFixture(t)
+			u.fsys = faultFS{fail: tt.fail}
+			before := memory(u)
+			generation, _ := u.CredentialGeneration("bob")
+
+			err := setBobsPasswordByReset(u)
+
+			_, set := u.Authenticate("bob", "newpass123")
+			after, _ := u.CredentialGeneration("bob")
+			if tt.wantCommitted {
+				if err != nil {
+					t.Fatalf("SetPasswordByReset: %v", err)
+				}
+				if !set {
+					t.Error("the new password does not authenticate")
+				}
+				if after != generation+1 {
+					t.Errorf("bob's generation = %d, want %d", after, generation+1)
+				}
+				if disk := readUsers(t, path); !reflect.DeepEqual(disk, memory(u)) {
+					t.Errorf("file differs from memory:\nfile   %+v\nmemory %+v", disk, memory(u))
+				}
+				return
+			}
+			if !errors.Is(err, ErrPersist) || !errors.Is(err, errInjected) {
+				t.Fatalf("error = %v, want ErrPersist wrapping the injected failure", err)
+			}
+			if got := memory(u); !reflect.DeepEqual(got, before) {
+				t.Errorf("memory changed:\nbefore %+v\nafter  %+v", before, got)
+			}
+			if disk := readUsers(t, path); !reflect.DeepEqual(disk, before) {
+				t.Errorf("file changed:\nbefore %+v\nfile   %+v", before, disk)
+			}
+			if after != generation {
+				t.Errorf("bob's generation moved from %d to %d on a failed write", generation, after)
 			}
 		})
 	}

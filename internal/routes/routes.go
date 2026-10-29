@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/internal/resettoken"
@@ -41,6 +42,8 @@ type Config struct {
 	BaseURL       string
 	PathPrefix    string
 	SecureCookies bool
+	// CookieTTL is the session cookie's Max-Age, at least one second.
+	CookieTTL time.Duration
 }
 
 type Routes struct {
@@ -54,7 +57,17 @@ type Routes struct {
 	baseURL       string
 	prefix        string
 	secureCookies bool
+	cookieTTL     time.Duration
 	csrfKey       []byte
+
+	// hooks are seams where a test stops a request to let a concurrent one
+	// change the user database; all nil in production.
+	hooks struct {
+		beforeResetConsume func()
+		afterResetConsume  func()
+		beforeIssueSession func()
+		afterCreateSession func()
+	}
 }
 
 // templateFuncs are the helpers available to every HTML template.
@@ -103,6 +116,7 @@ func New(config Config) (*Routes, error) {
 		baseURL:       config.BaseURL,
 		prefix:        config.PathPrefix,
 		secureCookies: config.SecureCookies,
+		cookieTTL:     config.CookieTTL,
 		csrfKey:       generateCSRFKey(),
 	}, nil
 }
