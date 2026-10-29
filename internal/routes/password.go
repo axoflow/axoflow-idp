@@ -234,6 +234,9 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 
 		// From here the link is spent whatever happens: two presentations
 		// cannot both set a password, and an admin re-mints a refused one.
+		if r.hooks.beforeResetConsume != nil {
+			r.hooks.beforeResetConsume()
+		}
 		grant, ok := r.resetTokens.Consume(token)
 		if !ok || grant.UserID != userID {
 			r.renderSetPasswordInvalid(res)

@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 )
 
 // addAdmin registers a second admin, so admin1 can demote or delete it.
@@ -276,25 +277,49 @@ func TestSetPassword_LinkRefusedForAReRegisteredUsername(t *testing.T) {
 	assertOnlyPassword(t, r, "newbob123", "linkpass1")
 }
 
-// Two presentations of one link set at most one password.
+// Two presentations of one link set at most one password, even when both
+// have passed Peek, the user lookup and the hashing before either consumes.
 func TestSetPassword_ConcurrentRedemptionsOneWins(t *testing.T) {
 	r := newTestRoutes(t, false)
 	tok := mintLink(t, r, "admin1", "bob")
+	before, _ := r.user.CredentialGeneration("bob")
 
 	passwords := []string{"firstpass1", "secondpass2"}
+	var atConsume sync.WaitGroup
+	atConsume.Add(len(passwords))
+	release := make(chan struct{})
+	go func() {
+		atConsume.Wait()
+		close(release)
+	}()
+	r.hooks.beforeResetConsume = func() {
+		atConsume.Done()
+		select {
+		case <-release:
+		case <-time.After(10 * time.Second):
+			t.Error("the other redemption never reached Consume")
+		}
+	}
+
 	codes := make([]int, len(passwords))
-	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i, pw := range passwords {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			<-start
 			codes[i] = redeem(r, tok, pw)
 		}()
 	}
-	close(start)
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the redemptions did not finish")
+	}
 
 	won := 0
 	for i, code := range codes {
@@ -315,5 +340,8 @@ func TestSetPassword_ConcurrentRedemptionsOneWins(t *testing.T) {
 	}
 	if won != 1 {
 		t.Errorf("%d redemptions answered 303 (codes %v), want exactly 1", won, codes)
+	}
+	if after, _ := r.user.CredentialGeneration("bob"); after != before+1 {
+		t.Errorf("bob's generation went from %d to %d, want exactly one commit", before, after)
 	}
 }
