@@ -233,10 +233,18 @@ be combined with `users.static`; the server refuses to start otherwise.
 > database is never reseeded) or remove the option before upgrading.
 
 > Upgrading: with `users.updateSeedPasswords: true`, a seed entry without an
-> `ID` now refuses the start. Before upgrading, look up each seed user in
-> `users.filePath`: the `"ID"` of the entry with that `"Username"` is the one
-> to copy into its seed entry in `users.users`. The start used to put the seed
-> password on whichever account had the username.
+> `ID` now refuses the start. The start used to put the seed password on
+> whichever account had the username, so before upgrading, find the account
+> each seed entry created and copy its `"ID"` from `users.filePath` into that
+> seed entry in `users.users`. A username alone is not enough: the seed
+> account may have been deleted and the username registered again by someone
+> else. Confirm that the account is the one the seed created from a record
+> you trust, such as the provisioning record, a backup taken before any
+> deletion, or the account's creation history. If the seed account was
+> deleted or replaced, or you cannot tell, do not copy the `ID` of the account
+> that has the username now: remove the seed entry, or turn
+> `updateSeedPasswords` off. Do the same when no account in `users.filePath`
+> has the seed's username.
 
 ```json
 "users": {
