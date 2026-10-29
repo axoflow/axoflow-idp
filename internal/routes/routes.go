@@ -63,6 +63,7 @@ type Routes struct {
 	secureCookies bool
 	cookieTTL     time.Duration
 	csrfKey       []byte
+	signInOrigin  *http.CrossOriginProtection
 
 	// logins puts a username that keeps failing to sign in in cooldown.
 	logins *throttle.Limiter
@@ -116,6 +117,10 @@ func New(config Config) (*Routes, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse templates in %s: %w", dir, err)
 	}
+	signInOrigin, err := newSignInOrigin(config.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("baseUrl %q as a trusted origin: %w", config.BaseURL, err)
+	}
 	confidential := map[string]bool{}
 	for _, c := range config.Clients {
 		if !c.Public {
@@ -135,6 +140,7 @@ func New(config Config) (*Routes, error) {
 		secureCookies: config.SecureCookies,
 		cookieTTL:     config.CookieTTL,
 		csrfKey:       generateCSRFKey(),
+		signInOrigin:  signInOrigin,
 		logins:        throttle.New(),
 		confidential:  confidential,
 		// a guessing client is logged once a minute, with its count

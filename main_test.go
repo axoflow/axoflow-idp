@@ -302,6 +302,61 @@ func TestSecureCookieFromScheme(t *testing.T) {
 	}
 }
 
+// TestSignInTrustsTheConfiguredOrigin signs in through the server's wiring
+// behind a proxy that rewrites Host: a browser that sends Origin but no
+// Sec-Fetch-Site names the public origin of baseUrl, which is trusted; one
+// that says the request is cross-site is not, and neither is another
+// server's origin.
+func TestSignInTrustsTheConfiguredOrigin(t *testing.T) {
+	const console, other = "https://console.example/idp", "https://other.example"
+	tests := []struct {
+		name, baseUrl string
+		headers       map[string]string
+		wantSignIn    bool
+	}{
+		{"the public Origin", console, map[string]string{"Origin": "https://console.example"}, true},
+		{"the public Origin, cross-site", console, map[string]string{"Origin": "https://console.example", "Sec-Fetch-Site": "cross-site"}, false},
+		{"the public Origin, same-origin", console, map[string]string{"Origin": "https://console.example", "Sec-Fetch-Site": "same-origin"}, true},
+		{"a foreign Origin", console, map[string]string{"Origin": "https://evil.example"}, false},
+		{"no headers", console, nil, true},
+		{"another server's Origin", console, map[string]string{"Origin": "https://other.example"}, false},
+		{"this server's Origin at the other", other, map[string]string{"Origin": "https://console.example"}, false},
+		{"the other's own Origin", other, map[string]string{"Origin": "https://other.example"}, true},
+		{"a baseUrl with capitals and the default port", "https://Console.Example:443/idp", map[string]string{"Origin": "https://console.example"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := user.New(user.Config{})
+			if err != nil {
+				t.Fatalf("user.New: %v", err)
+			}
+			if err := u.Register("alice", "alicepass1", nil, ""); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			mux := newTestMuxWithUsers(t, tc.baseUrl, u)
+
+			parsed, _ := url.Parse(tc.baseUrl)
+			form := url.Values{"username": {"alice"}, "password": {"alicepass1"}}
+			req := httptest.NewRequest(http.MethodPost, parsed.Path+"/login", strings.NewReader(form.Encode()))
+			req.Host = "axoidp:8080"
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			want := http.StatusForbidden
+			if tc.wantSignIn {
+				want = http.StatusFound
+			}
+			if rec.Code != want {
+				t.Errorf("login = %d, want %d", rec.Code, want)
+			}
+		})
+	}
+}
+
 // TestMuxWiring exercises the pattern registration under a prefix and at the
 // host root: the prefix subtree serves, everything outside it 404s, and the
 // bare prefix redirects onto the subtree root (which is what makes the cookie

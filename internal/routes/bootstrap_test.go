@@ -47,15 +47,20 @@ func newBootstrapRoutes(t *testing.T, users string, cfg user.Config) *Routes {
 	if err != nil {
 		t.Fatalf("parse templates: %v", err)
 	}
+	signInOrigin, err := newSignInOrigin("https://idp.example.com")
+	if err != nil {
+		t.Fatalf("newSignInOrigin: %v", err)
+	}
 
 	return &Routes{
-		session:  session.New(session.Config{}),
-		user:     u,
-		oidc:     &oidc.Oidc{},
-		template: tpl,
-		baseURL:  "https://idp.example.com",
-		csrfKey:  generateCSRFKey(),
-		logins:   throttle.New(),
+		session:      session.New(session.Config{}),
+		user:         u,
+		oidc:         &oidc.Oidc{},
+		template:     tpl,
+		baseURL:      "https://idp.example.com",
+		csrfKey:      generateCSRFKey(),
+		signInOrigin: signInOrigin,
+		logins:       throttle.New(),
 	}
 }
 
