@@ -396,6 +396,18 @@ func TestPublicClient_AuthorizeRefusals(t *testing.T) {
 	twoResources := cliAuthQuery()
 	twoResources.Add("resource", "https://api.example/other")
 
+	t.Run("unregistered redirect is refused before the login", func(t *testing.T) {
+		q := cliAuthQuery()
+		q.Set("redirect_uri", "http://127.0.0.1:9999/callback")
+		rec := loginPost(t, r, q)
+		if rec.Code != http.StatusBadRequest || rec.Header().Get("Location") != "" {
+			t.Fatalf("status = %d Location %q, want 400 and no redirect", rec.Code, rec.Header().Get("Location"))
+		}
+		if c := rec.Header().Get("Set-Cookie"); c != "" {
+			t.Errorf("Set-Cookie = %q, want no session for a refused request", c)
+		}
+	})
+
 	t.Run("unregistered loopback port is refused in place", func(t *testing.T) {
 		q := cliAuthQuery()
 		q.Set("redirect_uri", "http://127.0.0.1:9999/callback")

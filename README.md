@@ -50,6 +50,11 @@ go run main.go
 > `redirectUri`; any request whose `redirect_uri` is not an exact match is
 > rejected.
 
+> The implicit flow (`response_type=id_token`) requires a `nonce` and delivers
+> its response, the ID token or an error, in the redirect's fragment
+> (`#id_token=…&state=…`), never in the query; `response_mode` is ignored. The
+> code flow keeps the query (`?code=…&state=…`).
+
 ### Public clients
 
 A client that cannot keep a secret, such as a command-line tool, is

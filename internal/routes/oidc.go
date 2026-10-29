@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
@@ -72,10 +73,25 @@ func authRequest(values url.Values) oidc.AuthenticationRequest {
 	}
 }
 
+// fragmentResponse reports whether the response to responseType goes in the
+// redirect's fragment: one that carries a token does (the default of OAuth 2.0
+// Multiple Response Type Encoding Practices), so the token reaches no server
+// log or Referer. A request's errors go where its success would.
+func fragmentResponse(responseType string) bool {
+	return slices.ContainsFunc(strings.Fields(responseType), func(t string) bool {
+		return t == "id_token" || t == "token"
+	})
+}
+
 // authRedirect sends a 302 back to redirectUri with params merged into its
-// query string, all properly percent-encoded. It must only be called with a
-// redirect_uri that has already passed ValidateRedirect.
-func authRedirect(res http.ResponseWriter, req *http.Request, redirectUri string, params url.Values) {
+// query string, or as its fragment, all properly percent-encoded. It must only
+// be called with a redirect_uri that has already passed ValidateRedirect.
+func authRedirect(res http.ResponseWriter, req *http.Request, redirectUri string, params url.Values, fragment bool) {
+	// config validation refuses a registered URI with a fragment; url.URL.Fragment would encode it twice
+	if fragment {
+		http.Redirect(res, req, redirectUri+"#"+params.Encode(), http.StatusFound)
+		return
+	}
 	u, err := url.Parse(redirectUri)
 	if err != nil {
 		http.Error(res, "invalid redirect_uri", http.StatusBadRequest)
@@ -93,17 +109,18 @@ func authRedirect(res http.ResponseWriter, req *http.Request, redirectUri string
 
 // authError redirects an authorization error back to the client, echoing the
 // request's state when present (RFC 6749 §4.1.2.1).
-func authError(res http.ResponseWriter, req *http.Request, authReq oidc.AuthenticationRequest, errCode string) {
+func authError(res http.ResponseWriter, req *http.Request, authReq oidc.AuthenticationRequest, errCode string, fragment bool) {
 	params := url.Values{"error": {errCode}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
 	}
-	authRedirect(res, req, authReq.RedirectUri, params)
+	authRedirect(res, req, authReq.RedirectUri, params, fragment)
 }
 
 func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	var user *user.UserInfo
 	var authReq oidc.AuthenticationRequest
+	loginForm := false
 	switch req.Method {
 	case http.MethodGet:
 		authReq = authRequest(req.URL.Query())
@@ -115,9 +132,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 
 		if req.Form.Has("username") {
 			// GET -> login form
-			if user = r.login(res, req); user == nil {
-				return // failure, handled in r.login
-			}
+			loginForm = true
 			authReq = authRequest(req.URL.Query())
 		} else {
 			// POST based auth flow
@@ -130,15 +145,24 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	}
 
 	// Validate the client and redirect_uri before redirecting anything back to
-	// it; an unregistered URI is rejected in place rather than turned into an
-	// open redirect (RFC 6749 §4.1.2.1).
+	// it, or signing anyone in for it; an unregistered URI is rejected in place
+	// rather than turned into an open redirect (RFC 6749 §4.1.2.1).
 	if err := r.oidc.ValidateRedirect(authReq.ClientID, authReq.RedirectUri); err != nil {
 		r.renderError(res, req, http.StatusBadRequest, "Invalid Request", err.Error())
 		return
 	}
 
+	if loginForm {
+		if user = r.login(res, req); user == nil {
+			return // failure, handled in r.login
+		}
+	}
+
+	// chosen once, so that no path of this request delivers in the other part of the redirect
+	fragment := fragmentResponse(authReq.ResponseType)
+
 	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
-		authError(res, req, authReq, err.Error())
+		authError(res, req, authReq, err.Error(), fragment)
 		return
 	}
 
@@ -162,14 +186,14 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	if authReq.ResponseType == "id_token" {
 		idToken, err := r.oidc.GenerateIDToken(*user, authReq.ClientID, authReq.Nonce)
 		if err != nil {
-			authError(res, req, authReq, "server_error")
+			authError(res, req, authReq, "server_error", fragment)
 			return
 		}
 		params := url.Values{"id_token": {idToken}}
 		if authReq.State != "" {
 			params.Set("state", authReq.State)
 		}
-		authRedirect(res, req, authReq.RedirectUri, params)
+		authRedirect(res, req, authReq.RedirectUri, params, fragment)
 		return
 	}
 
@@ -186,7 +210,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
 	}
-	authRedirect(res, req, authReq.RedirectUri, params)
+	authRedirect(res, req, authReq.RedirectUri, params, fragment)
 }
 
 func (r *Routes) OidcJwks(res http.ResponseWriter, _ *http.Request) {

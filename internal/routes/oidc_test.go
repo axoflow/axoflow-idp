@@ -104,6 +104,22 @@ func TestOidcAuth_CodeSuccessEncodesState(t *testing.T) {
 	}
 }
 
+// splitLocation returns the query and the fragment parameters of the
+// redirect, each decoded once.
+func splitLocation(t *testing.T, rec *httptest.ResponseRecorder) (url.Values, url.Values) {
+	t.Helper()
+	base, fragment, _ := strings.Cut(rec.Header().Get("Location"), "#")
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("parse Location %q: %v", base, err)
+	}
+	f, err := url.ParseQuery(fragment)
+	if err != nil {
+		t.Fatalf("parse fragment %q: %v", fragment, err)
+	}
+	return u.Query(), f
+}
+
 func TestOidcAuth_IDTokenSuccessEchoesState(t *testing.T) {
 	r, cookie := newOidcTestRoutes(t)
 	state := "x y&z"
@@ -114,17 +130,81 @@ func TestOidcAuth_IDTokenSuccessEchoesState(t *testing.T) {
 		"client_id":     {"app"},
 		"redirect_uri":  {testRedirectURI},
 		"state":         {state},
+		"nonce":         {"n1"},
 	})
 
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
 	}
-	q := locationQuery(t, rec)
-	if got := q.Get("state"); got != state {
+	q, f := splitLocation(t, rec)
+	if len(q) != 0 {
+		t.Errorf("query = %v, want the response in the fragment only", q)
+	}
+	if got := f.Get("state"); got != state {
 		t.Errorf("state = %q, want %q", got, state)
 	}
-	if q.Get("id_token") == "" {
-		t.Error("id_token must be present on success")
+	if f.Get("id_token") == "" {
+		t.Fatal("id_token must be present on success")
+	}
+	if _, claims := verifiedClaims(t, r, f.Get("id_token")); claims["nonce"] != "n1" {
+		t.Errorf("id_token nonce = %v, want n1", claims["nonce"])
+	}
+}
+
+// TestOidcAuth_ResponseMode delivers an implicit response, success or error,
+// in the fragment and a code response in the query; response_mode cannot
+// move a token into the query.
+func TestOidcAuth_ResponseMode(t *testing.T) {
+	state := "a b%c+d&e=f#g"
+	request := func(responseType string, extra ...string) url.Values {
+		q := url.Values{
+			"scope": {"openid"}, "response_type": {responseType}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "state": {state},
+		}
+		for i := 0; i < len(extra); i += 2 {
+			q.Set(extra[i], extra[i+1])
+		}
+		return q
+	}
+	tests := []struct {
+		name         string
+		q            url.Values
+		wantFragment bool
+		wantError    string // empty: success, carrying wantParam
+		wantParam    string
+	}{
+		{"implicit", request("id_token", "nonce", "n1"), true, "", "id_token"},
+		{"implicit with response_mode=query", request("id_token", "nonce", "n1", "response_mode", "query"), true, "", "id_token"},
+		{"implicit without nonce", request("id_token"), true, "invalid_request", ""},
+		{"implicit error", request("id_token", "nonce", "n1", "scope", "profile"), true, "invalid_scope", ""},
+		{"code", request("code"), false, "", "code"},
+		{"code error", request("code", "scope", "profile"), false, "invalid_scope", ""},
+	}
+	r, cookie := newOidcTestRoutes(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := authGet(t, r, cookie, tt.q)
+			if rec.Code != http.StatusFound {
+				t.Fatalf("status = %d, want 302: %s", rec.Code, rec.Body.String())
+			}
+			params, other := splitLocation(t, rec)
+			if tt.wantFragment {
+				params, other = other, params
+			}
+			if len(other) != 0 {
+				t.Errorf("parameters %v in the wrong part of %q", other, rec.Header().Get("Location"))
+			}
+			if got := params.Get("state"); got != state {
+				t.Errorf("state = %q, want %q", got, state)
+			}
+			if got := params.Get("error"); got != tt.wantError {
+				t.Errorf("error = %q, want %q", got, tt.wantError)
+			}
+			for _, p := range []string{"id_token", "code"} {
+				if got := params.Get(p) != ""; got != (p == tt.wantParam) {
+					t.Errorf("%s present = %v, want %v", p, got, p == tt.wantParam)
+				}
+			}
+		})
 	}
 }
 

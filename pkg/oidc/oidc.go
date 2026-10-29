@@ -390,6 +390,10 @@ func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
 	if client.Public && req.ResponseType != "code" {
 		return errors.New("unsupported_response_type")
 	}
+	// the nonce is the only binding of an implicit ID token to the request (OpenID Connect Core §3.2.2.1)
+	if req.ResponseType == "id_token" && req.Nonce == "" {
+		return errors.New("invalid_request")
+	}
 
 	if req.CodeChallenge != "" || req.CodeChallengeMethod != "" {
 		if req.CodeChallengeMethod != CodeChallengeMethodS256 || !validCodeChallenge(req.CodeChallenge) {
