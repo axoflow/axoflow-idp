@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -56,20 +57,52 @@ func Open(ttl time.Duration, filePath string) (*TokenStore, error) {
 	}
 	s := New(ttl)
 	s.filePath = filePath
-	data, err := os.ReadFile(filePath)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
-		return nil, fmt.Errorf("read revocations file: %w", err)
-	default:
-		var saved map[string]time.Time
-		if err := json.Unmarshal(data, &saved); err != nil {
-			return nil, fmt.Errorf("revocations file %q is malformed: %w", filePath, err)
-		}
-		maps.Copy(s.revokedTokens, saved)
+	saved, err := load(filePath)
+	if err != nil {
+		return nil, err
 	}
+	maps.Copy(s.revokedTokens, saved)
 	s.prune(time.Now())
 	return s, nil
+}
+
+// maxRevocationsFile bounds what Open reads, so a damaged or oversized file cannot exhaust memory at
+// start. A revocation takes about 64 bytes, so 16 MiB holds some 260,000 of them.
+const maxRevocationsFile = 16 << 20
+
+// load reads the revocations filePath holds, none for a missing file. A file it cannot use in full
+// fails the start: loading part of it, or nothing, would accept revoked tokens again.
+func load(filePath string) (map[string]time.Time, error) {
+	f, err := os.Open(filePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read revocations file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxRevocationsFile))
+	if err != nil {
+		return nil, fmt.Errorf("read revocations file: %w", err)
+	}
+	if len(data) >= maxRevocationsFile {
+		return nil, fmt.Errorf("revocations file %q is %d bytes or more; remove expired revocations or the file", filePath, maxRevocationsFile)
+	}
+	var saved map[string]time.Time
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return nil, fmt.Errorf("revocations file %q is malformed: %w", filePath, err)
+	}
+	// null decodes without an error, to no map or to the zero time, and the zero time is pruned at
+	// once: both would drop revocations silently
+	if saved == nil {
+		return nil, fmt.Errorf("revocations file %q is malformed: null, want an object", filePath)
+	}
+	for _, revokedAt := range saved {
+		if revokedAt.IsZero() {
+			return nil, fmt.Errorf("revocations file %q is malformed: an entry has no revocation time", filePath)
+		}
+	}
+	return saved, nil
 }
 
 // Revoke records the token and drops the revocations older than the token lifetime: the list grows only

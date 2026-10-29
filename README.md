@@ -99,12 +99,16 @@ token lifetime (24 hours), whatever the client's `tokenTTL`, and pruned on a
 later valid access-token revocation; it is written to that file at every
 revocation, so a restart still refuses the token. The file holds each revoked
 token's `jti` with the time of the revocation, is owner-only (`0600`) and is
-replaced whole; its directory must exist, and a malformed file fails the
-start. If a write fails, the revocation is still refused until the next
-restart, `/revoke` answers `200` as before, and the failure is logged as an
-error. Without `revocations.filePath`, revocations are kept in memory only and
-last until the next restart: after it a revoked token is accepted again until
-its `exp`, and the server warns about this at start.
+replaced whole; its directory must exist. A file the server cannot use in
+full fails the start rather than loading part of it: a malformed file, a
+`null` in place of the object or of a revocation time, a zero revocation
+time, or a file of 16 MiB or more (some 260,000 revocations). An empty
+object, `{}`, is no revocations. If a write fails, the revocation is still
+refused until the next restart, `/revoke` answers `200` as before, and the
+failure is logged as an error. Without `revocations.filePath`, revocations
+are kept in memory only and last until the next restart: after it a revoked
+token is accepted again until its `exp`, and the server warns about this at
+start.
 
 ```json
 "revocations": {

@@ -120,19 +120,54 @@ func TestOpenDropsRevocationsOlderThanTheTokenLifetime(t *testing.T) {
 	}
 }
 
+func padded(size int) string {
+	return "{}" + strings.Repeat(" ", size-2)
+}
+
 func TestOpenRefusesWhatItCannotUse(t *testing.T) {
 	dir := t.TempDir()
-	malformed := filepath.Join(dir, "malformed.json")
-	if err := os.WriteFile(malformed, []byte(`{"jti":`), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	for name, path := range map[string]string{
-		"a malformed file":    malformed,
-		"a missing directory": filepath.Join(dir, "missing", "revocations.json"),
+	for name, content := range map[string]string{
+		"a malformed file":      `{"jti":`,
+		"a null root":           `null`,
+		"a null timestamp":      `{"jti-1":"2026-10-29T12:00:00Z","jti-2":null}`,
+		"a zero timestamp":      `{"jti-1":"0001-01-01T00:00:00Z"}`,
+		"a file at the bound":   padded(maxRevocationsFile),
+		"a file over the bound": padded(maxRevocationsFile + 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Open(time.Hour, path); err == nil {
+			path := filepath.Join(dir, name+".json")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if _, err := Open(0, path); err == nil {
 				t.Error("Open succeeded")
+			}
+		})
+	}
+	t.Run("a missing directory", func(t *testing.T) {
+		if _, err := Open(time.Hour, filepath.Join(dir, "missing", "revocations.json")); err == nil {
+			t.Error("Open succeeded")
+		}
+	})
+}
+
+func TestOpenAcceptsAnEmptySet(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"an empty object":             `{}`,
+		"a file just under the bound": padded(maxRevocationsFile - 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, name+".json")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			s, err := Open(time.Hour, path)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			if n := len(s.revokedTokens); n != 0 {
+				t.Errorf("%d revocations loaded, want 0", n)
 			}
 		})
 	}
