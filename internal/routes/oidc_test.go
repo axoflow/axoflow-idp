@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -878,6 +879,47 @@ func TestOidcToken_CredentialsInQuery(t *testing.T) {
 				t.Errorf("token with %s in the query = %d %s, want %d %s", tt.key, rec.Code, rec.Body.String(), tt.wantStatus, tt.wantError)
 			}
 		})
+	}
+}
+
+// TestOidcRevoke_WriteFails revokes with a revocations file that cannot be
+// written: the client is still answered 200 and the token is refused for as
+// long as the process runs.
+func TestOidcRevoke_WriteFails(t *testing.T) {
+	r, cookie := newPublicClientRoutes(t)
+	dir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	tokens, err := tokenstore.Open(r.oidc.IDTokenTTL(), filepath.Join(dir, "revocations.json"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	r.tokenStore = tokens
+	// gone after Open, so every write fails at its temp file
+	if err := os.Remove(dir); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	code := issueCode(t, r, cookie, url.Values{
+		"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI},
+	})
+	rec := postToken(t, r, url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+	}
+	access := tokenBody(t, rec)["access_token"].(string)
+	logs := captureWarnings(t)
+
+	if rec := postRevoke(t, r, url.Values{"token": {access}, "client_id": {"app"}, "client_secret": {"s3cret"}}); rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	if got := logs(); len(got) != 1 || !strings.Contains(got[0], "revocation not saved") {
+		t.Errorf("logged %q, want the one failed write", got)
+	}
+	if got := userinfoGet(t, r, access); got.Code != http.StatusUnauthorized {
+		t.Errorf("userinfo after the revoke = %d, want 401", got.Code)
 	}
 }
 

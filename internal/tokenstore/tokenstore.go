@@ -15,6 +15,15 @@
 package tokenstore
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
+	"maps"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -23,6 +32,50 @@ type TokenStore struct {
 	revokedTokens map[string]time.Time
 	mu            sync.RWMutex
 	ttl           time.Duration
+
+	// filePath, when set, holds the revocations as jti -> revokedAt, so a
+	// restart still refuses a revoked token. Lock order: saveMu, then mu.
+	filePath string
+	saveMu   sync.Mutex // serializes the writes of filePath
+	fsys     fileSystem // nil means the OS
+}
+
+// fileSystem is what writeFile goes through, as in pkg/user; tests swap in one that fails at a chosen
+// step.
+type fileSystem interface {
+	CreateTemp(dir, pattern string) (tempFile, error)
+	Rename(oldpath, newpath string) error
+	SyncDir(dir string) error
+}
+
+type tempFile interface {
+	Name() string
+	Chmod(mode fs.FileMode) error
+	Write(b []byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type osFileSystem struct{}
+
+func (osFileSystem) CreateTemp(dir, pattern string) (tempFile, error) {
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+func (osFileSystem) Rename(oldpath, newpath string) error { return os.Rename(oldpath, newpath) }
+
+func (osFileSystem) SyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	_ = d.Close()
+	return err
 }
 
 // New keeps a revocation for ttl, the lifetime of the tokens it is asked about; a zero ttl keeps every one.
@@ -34,19 +87,137 @@ func New(ttl time.Duration) *TokenStore {
 	}
 }
 
-// Revoke records the token and drops the revocations older than the token lifetime: the list grows only
-// here, and a token that old is refused by its own expiry.
-func (s *TokenStore) Revoke(token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Open is New keeping the revocations in filePath too. It loads what the file holds, a missing file
+// holding none, without the revocations older than ttl; every Revoke writes the whole set back.
+func Open(ttl time.Duration, filePath string) (*TokenStore, error) {
+	// as users.filePath, a directory that is not there fails the start, not the first revocation
+	if info, err := os.Stat(filepath.Dir(filePath)); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("revocations file %q: its directory does not exist", filePath)
+	}
+	s := New(ttl)
+	s.filePath = filePath
+	saved, err := load(filePath)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(s.revokedTokens, saved)
+	s.prune(time.Now())
+	return s, nil
+}
 
+// maxRevocationsFile bounds what Open reads, so a damaged or oversized file cannot exhaust memory at
+// start, and what Revoke writes, so the server never writes a file its next start refuses. A revocation
+// takes about 64 bytes, so 16 MiB holds some 260,000 of them.
+const maxRevocationsFile = 16 << 20
+
+// load reads the revocations filePath holds, none for a missing file. A file it cannot use in full
+// fails the start: loading part of it, or nothing, would accept revoked tokens again.
+func load(filePath string) (map[string]time.Time, error) {
+	f, err := os.Open(filePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read revocations file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxRevocationsFile))
+	if err != nil {
+		return nil, fmt.Errorf("read revocations file: %w", err)
+	}
+	if len(data) >= maxRevocationsFile {
+		return nil, fmt.Errorf("revocations file %q is %d bytes or more; remove expired revocations or the file", filePath, maxRevocationsFile)
+	}
+	var saved map[string]time.Time
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return nil, fmt.Errorf("revocations file %q is malformed: %w", filePath, err)
+	}
+	// null decodes without an error, to no map or to the zero time, and the zero time is pruned at
+	// once: both would drop revocations silently
+	if saved == nil {
+		return nil, fmt.Errorf("revocations file %q is malformed: null, want an object", filePath)
+	}
+	for _, revokedAt := range saved {
+		if revokedAt.IsZero() {
+			return nil, fmt.Errorf("revocations file %q is malformed: an entry has no revocation time", filePath)
+		}
+	}
+	return saved, nil
+}
+
+// Revoke records the token and drops the revocations older than the token lifetime: the list grows only
+// here, and a token that old is refused by its own expiry. With a file, a revocation that cannot be
+// written, or whose set reaches maxRevocationsFile, is still refused until a restart; the failure is
+// logged, and the next Revoke that can write the set writes it again.
+func (s *TokenStore) Revoke(token string) {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
+	s.mu.Lock()
 	now := time.Now()
 	s.prune(now)
 	s.revokedTokens[token] = now
+	var data []byte
+	var err error
+	if s.filePath != "" {
+		data, err = json.Marshal(s.revokedTokens)
+	}
+	s.mu.Unlock()
+
+	if s.filePath == "" {
+		return
+	}
+	if err == nil && len(data) >= maxRevocationsFile {
+		// the old file stays, so the revocations it holds still survive a restart
+		slog.Error("revocations file is at its bound: revocations recorded from now on last until the next restart", "path", s.filePath, "bound", maxRevocationsFile)
+		return
+	}
+	if err == nil {
+		err = s.writeFile(data)
+	}
+	if err != nil {
+		slog.Error("revocation not saved: a restart accepts the token again until it expires", "path", s.filePath, "error", err)
+	}
+}
+
+// writeFile replaces filePath with data as pkg/user's writeFile replaces users.json: a fresh owner-only
+// temp file in the same directory, synced, renamed over filePath, then the directory synced. The rename
+// is the commit; before it the old file stays in place.
+func (s *TokenStore) writeFile(data []byte) error {
+	fsys := s.fsys
+	if fsys == nil {
+		fsys = osFileSystem{}
+	}
+	path := s.filePath
+	dir := filepath.Dir(path)
+	// a fresh name created with O_EXCL: a fixed one could be a planted symlink
+	tmp, err := fsys.CreateTemp(dir, ".revocations-*.json")
+	if err != nil {
+		return err
+	}
+	if err = tmp.Chmod(0o600); err == nil {
+		if _, err = tmp.Write(data); err == nil {
+			err = tmp.Sync()
+		}
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = fsys.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := fsys.SyncDir(dir); err != nil {
+		slog.Warn("revocations written but their directory could not be synced; the change may not survive a crash", "path", path, "error", err)
+	}
+	return nil
 }
 
 // CleanUp drops the revocations older than the token lifetime, as Revoke does, for a server that sees no
-// revocation for a long time.
+// revocation for a long time. It prunes memory only; the next Revoke rewrites the file.
 func (s *TokenStore) CleanUp() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

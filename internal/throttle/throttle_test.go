@@ -16,6 +16,7 @@ package throttle
 
 import (
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,6 +32,28 @@ func newTestLimiter() (*Limiter, *clock) {
 	l := New()
 	l.now = c.now
 	return l, c
+}
+
+func fail(t *testing.T, l *Limiter, key string) {
+	t.Helper()
+	wait, done := l.Begin(key)
+	if done == nil {
+		t.Fatalf("Begin(%q) refused for %v", key, wait)
+	}
+	done(true)
+}
+
+// wait is how long key's cooldown refuses it for, read without starting an
+// attempt.
+func wait(l *Limiter, key string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	el, ok := l.entries[digestOf(key)]
+	if !ok {
+		return 0
+	}
+	return max(el.Value.(*entry).until.Sub(l.now()), 0)
 }
 
 // Each step acts on the key "alice" and checks what it is refused for after.
@@ -79,15 +102,15 @@ func TestLimiter(t *testing.T) {
 				c.advance(s.advance)
 				switch s.action {
 				case "fail":
-					l.Fail("alice")
+					fail(t, l, "alice")
 				case "succeed":
 					l.Succeed("alice")
 				}
-				if got := l.Wait("alice"); got != s.wantWait {
+				if got := wait(l, "alice"); got != s.wantWait {
 					t.Fatalf("step %d (%s after %v): Wait = %v, want %v", i, s.action, s.advance, got, s.wantWait)
 				}
 			}
-			if got := l.Wait("bob"); got != 0 {
+			if got := wait(l, "bob"); got != 0 {
 				t.Errorf("another key waits %v, want 0", got)
 			}
 		})
@@ -97,22 +120,22 @@ func TestLimiter(t *testing.T) {
 // The limiter keeps at most MaxKeys keys, dropping the least recently failed.
 func TestLimiterBounded(t *testing.T) {
 	l, _ := newTestLimiter()
-	for range FreeFailures {
-		l.Fail("target")
+	for range FreeFailures - 1 {
+		fail(t, l, "target")
 	}
 	for i := range MaxKeys {
-		l.Fail("user" + strconv.Itoa(i))
+		fail(t, l, "user"+strconv.Itoa(i))
 		if i == MaxKeys/2 {
-			l.Fail("target") // recently failed again, so it is kept longer
+			fail(t, l, "target") // recently failed again, so it is kept longer
 		}
 	}
 	if n := l.Len(); n != MaxKeys {
 		t.Errorf("Len = %d, want %d", n, MaxKeys)
 	}
-	if l.Wait("target") == 0 {
+	if wait(l, "target") == 0 {
 		t.Error("a recently failed key was dropped")
 	}
-	l.Fail("one more")
+	fail(t, l, "one more")
 	if n := l.Len(); n != MaxKeys {
 		t.Errorf("Len = %d after one more key, want %d", n, MaxKeys)
 	}
@@ -139,7 +162,7 @@ func TestLimiterRetainsNoUsername(t *testing.T) {
 	runtime.ReadMemStats(&before)
 	for i := range MaxKeys {
 		copy(name, strconv.Itoa(i)+"-")
-		l.Fail(string(name))
+		fail(t, l, string(name))
 	}
 	runtime.GC()
 	runtime.ReadMemStats(&after)
@@ -160,33 +183,149 @@ func TestLimiterRetainsNoUsername(t *testing.T) {
 }
 
 // An entry whose window and cooldown have both passed is dropped by the
-// next failure of any key, or the next Wait; one whose cooldown still runs
-// is kept.
+// next failure of any key, or the next Begin; one whose cooldown still runs
+// is kept, and so is one with an attempt in flight.
 func TestLimiterDropsIdleEntries(t *testing.T) {
-	for _, next := range []string{"fail", "wait"} {
+	for _, next := range []string{"fail", "begin"} {
 		t.Run(next, func(t *testing.T) {
 			l, c := newTestLimiter()
-			l.Fail("idle")
-			for range FreeFailures + 2 {
-				l.Fail("cooling") // its cooldown reaches 30s
+			fail(t, l, "idle")
+			_, held := l.Begin("in flight") // older than every other entry, never failed
+			for range FreeFailures {
+				fail(t, l, "cooling")
 			}
-			c.advance(Window - time.Second)
-			l.Fail("cooling") // the window has not passed: a 30s cooldown
+			for range 2 {
+				c.advance(MaxCooldown)
+				fail(t, l, "cooling") // its cooldown reaches 30s
+			}
+			c.advance(Window - time.Second - 2*MaxCooldown)
+			fail(t, l, "cooling") // the window has not passed: a 30s cooldown
 			c.advance(time.Second)
-			want := 1 // "cooling"
+			want := 2 // "cooling" and "in flight"
 			if next == "fail" {
-				l.Fail("other")
+				fail(t, l, "other")
 				want++
 			} else {
-				l.Wait("other")
+				_, done := l.Begin("other")
+				done(false)
 			}
 			if n := l.Len(); n != want {
 				t.Errorf("Len = %d, want %d: the idle entry was kept", n, want)
 			}
-			if l.Wait("cooling") == 0 {
+			if wait(l, "cooling") == 0 {
 				t.Error("an entry in cooldown was dropped")
 			}
+			if _, ok := l.entries[digestOf("in flight")]; !ok {
+				t.Fatal("an entry with an attempt in flight was dropped")
+			}
+			if cooldown := held(true); cooldown != 0 || l.Len() != want {
+				t.Errorf("the held attempt's failure = %v, Len %d; want 0 and %d", cooldown, l.Len(), want)
+			}
 		})
+	}
+}
+
+// The attempts in flight count as failures would: a concurrent burst gets
+// FreeFailures attempts before the first cooldown, and one at a time after
+// a cooldown has run.
+func TestLimiterBurst(t *testing.T) {
+	l, c := newTestLimiter()
+	var dones []func(bool) time.Duration
+	for i := range 20 {
+		wait, done := l.Begin("alice")
+		if (done != nil) != (i < FreeFailures) {
+			t.Fatalf("attempt %d: admitted %v, want %v", i+1, done != nil, i < FreeFailures)
+		}
+		if done == nil && wait != FirstCooldown {
+			t.Errorf("attempt %d refused for %v, want %v", i+1, wait, FirstCooldown)
+		}
+		if done != nil {
+			dones = append(dones, done)
+		}
+	}
+	if wait, _ := l.Begin("bob"); wait != 0 {
+		t.Errorf("another key is refused for %v", wait)
+	}
+	var cooldowns []time.Duration
+	for _, done := range dones {
+		cooldowns = append(cooldowns, done(true))
+	}
+	if want := []time.Duration{0, 0, 0, 0, FirstCooldown}; !slices.Equal(cooldowns, want) {
+		t.Errorf("cooldowns started = %v, want %v", cooldowns, want)
+	}
+
+	c.advance(FirstCooldown)
+	_, first := l.Begin("alice")
+	if first == nil {
+		t.Fatal("the attempt after the cooldown was refused")
+	}
+	if wait, done := l.Begin("alice"); done != nil || wait != FirstCooldown {
+		t.Errorf("a second attempt beside it: admitted %v, wait %v; want refused for %v", done != nil, wait, FirstCooldown)
+	}
+	if cooldown := first(true); cooldown != 2*FirstCooldown {
+		t.Errorf("its failure started %v, want %v", cooldown, 2*FirstCooldown)
+	}
+}
+
+// A success forgets the failures, not the attempts still in flight: they
+// keep counting against a burst, and their failures land on the same entry.
+func TestLimiterSucceedWithAttemptsInFlight(t *testing.T) {
+	l, _ := newTestLimiter()
+	fail(t, l, "alice")
+	_, ok := l.Begin("alice")
+	var wrong []func(bool) time.Duration
+	for range FreeFailures - 2 {
+		_, done := l.Begin("alice")
+		wrong = append(wrong, done)
+	}
+	ok(false)
+	l.Succeed("alice")
+
+	inFlight, admitted := len(wrong), 0
+	for range FreeFailures {
+		if _, done := l.Begin("alice"); done != nil {
+			admitted++
+			wrong = append(wrong, done)
+		}
+	}
+	if admitted != FreeFailures-inFlight {
+		t.Errorf("%d attempts admitted beside %d in flight, want %d", admitted, inFlight, FreeFailures-inFlight)
+	}
+	var started time.Duration
+	for _, done := range wrong {
+		started = done(true)
+	}
+	if started != FirstCooldown || wait(l, "alice") != FirstCooldown {
+		t.Errorf("the fifth failure since the success started %v, wait %v; want %v", started, wait(l, "alice"), FirstCooldown)
+	}
+}
+
+// Eviction passes over an entry with an attempt in flight; with every entry
+// in flight, a new key's attempt is admitted without being tracked.
+func TestLimiterEvictionKeepsAttemptsInFlight(t *testing.T) {
+	l, _ := newTestLimiter()
+	_, held := l.Begin("held") // the least recently failed entry
+	for i := range MaxKeys {
+		fail(t, l, "user"+strconv.Itoa(i))
+	}
+	if _, ok := l.entries[digestOf("held")]; !ok {
+		t.Fatal("an entry with an attempt in flight was evicted")
+	}
+	if _, ok := l.entries[digestOf("user0")]; ok {
+		t.Error("the least recently failed entry not in flight was kept")
+	}
+	held(true)
+
+	l, _ = newTestLimiter()
+	for i := range MaxKeys {
+		l.Begin("user" + strconv.Itoa(i))
+	}
+	wait, done := l.Begin("one more")
+	if wait != 0 || done == nil {
+		t.Fatalf("Begin with every entry in flight = %v, admitted %v; want admitted", wait, done != nil)
+	}
+	if cooldown := done(true); cooldown != 0 || l.Len() != MaxKeys {
+		t.Errorf("its failure = %v, Len %d; want 0 and %d", cooldown, l.Len(), MaxKeys)
 	}
 }
 

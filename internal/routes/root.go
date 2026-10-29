@@ -18,8 +18,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -139,18 +137,25 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	password := req.PostForm.Get("password")
 
 	// refused like a wrong password, whether the account exists or not
-	if wait := r.logins.Wait(username); wait > 0 {
-		res.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+	wait, done := r.logins.Begin(username)
+	if wait > 0 {
+		setRetryAfter(res, wait)
 		r.renderLoginFailed(res)
 		return nil
 	}
-	account, err := r.user.Verify(username, password)
+	verify := r.user.Verify
+	if r.hooks.verify != nil {
+		verify = r.hooks.verify
+	}
+	account, err := verify(username, password)
+	// a busy refusal derived nothing, so it is no guess
+	if cooldown := done(err != nil && !errors.Is(err, user.ErrBusy)); cooldown > 0 {
+		r.loginFailed(username, cooldown)
+	}
 	if r.refuseBusy(res, req, err) {
 		return nil
 	}
-	if err != nil {
-		r.loginFailed(username)
-	} else {
+	if err == nil {
 		r.logins.Succeed(username)
 		if err := r.issueSession(res, account.ID, account.Password); err == nil {
 			// The new cookie replaces the request's (the /oidc/auth form signs

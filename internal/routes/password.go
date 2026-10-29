@@ -15,6 +15,7 @@
 package routes
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -57,7 +58,25 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		newHash, err := r.user.ChangePassword(u.ID, currentPassword, newPassword)
+		// a stolen session guesses the password no faster than the sign-in form
+		wait, done := r.logins.Begin(u.Username)
+		if wait > 0 {
+			setRetryAfter(res, wait)
+			res.WriteHeader(http.StatusTooManyRequests)
+			r.renderChangePassword(res, sessionCookie.Value, "Too many attempts; try again later")
+			return
+		}
+		changePassword := r.user.ChangePassword
+		if r.hooks.changePassword != nil {
+			changePassword = r.hooks.changePassword
+		}
+		newHash, err := changePassword(u.ID, currentPassword, newPassword)
+		if cooldown := done(errors.Is(err, user.ErrInvalidOldPassword)); cooldown > 0 {
+			r.loginFailed(u.Username, cooldown)
+		}
+		if errors.Is(err, user.ErrInvalidOldPassword) {
+			slog.Warn("password change refused: wrong current password", "user_id", u.ID)
+		}
 		if r.refuseBusy(res, req, err) || r.refuseUnhashable(res, req, err, "operation", "change_password", "user_id", u.ID) {
 			return
 		}
@@ -76,6 +95,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		// then issue a fresh session so this browser stays logged in.
 		r.session.DeleteUserSessions(u.ID)
 		r.resetTokens.RevokeUser(u.ID)
+		r.logins.Succeed(u.Username)
 		slog.Info("user changed password", "user_id", u.ID, "username", u.Username)
 		if err := r.issueSession(res, u.ID, newHash); err != nil {
 			slog.Info("no new session after the password change: the password changed again", "user_id", u.ID)

@@ -227,12 +227,20 @@ func newTestMuxWithUsers(t *testing.T, baseUrl string, u *user.User) http.Handle
 // reach the routes the way main passes them.
 func newTestMuxWithClients(t *testing.T, baseUrl string, u *user.User, clients []oidc.Client) http.Handler {
 	t.Helper()
+	return newTestMuxWithStores(t, baseUrl, u, clients, filepath.Join(t.TempDir(), "signing-key.json"), tokenstore.New(time.Hour))
+}
+
+// newTestMuxWithStores is newTestMuxWithClients signing with the key in
+// keyPath and recording revocations in tokens, which a test can keep across
+// two builds of the server.
+func newTestMuxWithStores(t *testing.T, baseUrl string, u *user.User, clients []oidc.Client, keyPath string, tokens *tokenstore.TokenStore) http.Handler {
+	t.Helper()
 
 	o, err := oidc.New(oidc.Config{
 		BaseUrl:           baseUrl,
 		Clients:           clients,
 		Keychain:          keychain.New(),
-		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		SigningKeyPath:    keyPath,
 		GenerateIfMissing: true,
 	})
 	if err != nil {
@@ -244,7 +252,7 @@ func newTestMuxWithClients(t *testing.T, baseUrl string, u *user.User, clients [
 	cfg.Session = session.New(session.Config{})
 	cfg.User = u
 	cfg.CodeStore = codestore.New()
-	cfg.TokenStore = tokenstore.New(time.Hour)
+	cfg.TokenStore = tokens
 	cfg.ResetTokens = resettoken.New(time.Hour)
 	r, err := routes.New(cfg)
 	if err != nil {
@@ -252,6 +260,99 @@ func newTestMuxWithClients(t *testing.T, baseUrl string, u *user.User, clients [
 	}
 
 	return newMux(r, cfg.PathPrefix, u)
+}
+
+// TestRevocationSurvivesARestart revokes an access token, then builds the
+// server again from the same signing key, as a restart does: with
+// revocations.filePath /oidc/userinfo still refuses the token, without it the
+// token is served again until it expires.
+func TestRevocationSurvivesARestart(t *testing.T) {
+	const baseUrl = "https://host"
+	clients := []oidc.Client{{Id: "c", ClientSecret: "a-long-random-secret", RedirectUri: "https://rp/cb"}}
+	tests := []struct {
+		name             string
+		revocations      bool
+		wantAfterRestart int
+	}{
+		{"with revocations.filePath", true, http.StatusUnauthorized},
+		{"in memory only", false, http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			keyPath := filepath.Join(dir, "signing-key.json")
+			revocationsPath := ""
+			if tc.revocations {
+				revocationsPath = filepath.Join(dir, "revocations.json")
+			}
+			u, err := user.New(user.Config{})
+			if err != nil {
+				t.Fatalf("user.New: %v", err)
+			}
+			if err := u.Register("alice", "alicepass1", nil, ""); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			start := func() http.Handler {
+				tokens, err := newTokenStore(revocationsPath, 24*time.Hour)
+				if err != nil {
+					t.Fatalf("newTokenStore: %v", err)
+				}
+				return newTestMuxWithStores(t, baseUrl, u, clients, keyPath, tokens)
+			}
+			serve := func(mux http.Handler, req *http.Request) *httptest.ResponseRecorder {
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, req)
+				return rec
+			}
+			post := func(mux http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				return serve(mux, req)
+			}
+			userinfo := func(mux http.Handler, accessToken string) int {
+				req := httptest.NewRequest(http.MethodGet, "/oidc/userinfo", nil)
+				req.Header.Set("Authorization", "Bearer "+accessToken)
+				return serve(mux, req).Code
+			}
+
+			mux := start()
+			var session *http.Cookie
+			for _, c := range post(mux, "/login", url.Values{"username": {"alice"}, "password": {"alicepass1"}}).Result().Cookies() {
+				if c.Name == "session" {
+					session = c
+				}
+			}
+			if session == nil {
+				t.Fatal("no session cookie")
+			}
+			auth := httptest.NewRequest(http.MethodGet, "/oidc/auth?"+url.Values{"scope": {"openid"}, "response_type": {"code"}, "client_id": {"c"}, "redirect_uri": {"https://rp/cb"}}.Encode(), nil)
+			auth.AddCookie(session)
+			location, err := url.Parse(serve(mux, auth).Header().Get("Location"))
+			if err != nil || location.Query().Get("code") == "" {
+				t.Fatalf("no code in the redirect %v (%v)", location, err)
+			}
+			rec := post(mux, "/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"c"}, "client_secret": {"a-long-random-secret"}, "redirect_uri": {"https://rp/cb"}, "code": {location.Query().Get("code")}})
+			var tokens struct {
+				AccessToken string `json:"access_token"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &tokens); err != nil || tokens.AccessToken == "" {
+				t.Fatalf("token = %d %s", rec.Code, rec.Body.String())
+			}
+			if code := userinfo(mux, tokens.AccessToken); code != http.StatusOK {
+				t.Fatalf("userinfo before the revocation = %d, want 200", code)
+			}
+			if rec := post(mux, "/revoke", url.Values{"token": {tokens.AccessToken}, "client_id": {"c"}, "client_secret": {"a-long-random-secret"}}); rec.Code != http.StatusOK {
+				t.Fatalf("revoke = %d, want 200", rec.Code)
+			}
+			if code := userinfo(mux, tokens.AccessToken); code != http.StatusUnauthorized {
+				t.Fatalf("userinfo after the revocation = %d, want 401", code)
+			}
+
+			if code := userinfo(start(), tokens.AccessToken); code != tc.wantAfterRestart {
+				t.Errorf("userinfo after the restart = %d, want %d", code, tc.wantAfterRestart)
+			}
+		})
+	}
 }
 
 // TestSecureCookieFromScheme signs in through the server's wiring from a
@@ -486,6 +587,17 @@ func TestValidateRefusesIneffectiveSettings(t *testing.T) {
 		{name: "updateSeedPasswords with static", modify: func(c *config) {
 			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json", CreateIfMissing: true, Static: true}
 		}, wantErr: "users.updateSeedPasswords cannot be combined with users.static"},
+		{name: "updateSeedPasswords with a seed entry without an ID", modify: func(c *config) {
+			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json", CreateIfMissing: true, Defaults: []user.UserInfo{
+				{ID: "a1", Username: "admin"}, {Username: "ops"},
+			}}
+		}, wantErr: "users.updateSeedPasswords requires an ID on every entry of users.users: the password follows the account, not the name"},
+		{name: "updateSeedPasswords with an ID on every seed entry", modify: func(c *config) {
+			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json", CreateIfMissing: true, Defaults: []user.UserInfo{{ID: "a1", Username: "admin"}}}
+		}},
+		{name: "a seed entry without an ID, without updateSeedPasswords", modify: func(c *config) {
+			c.Users = &user.Config{FilePath: "users.json", CreateIfMissing: true, Defaults: []user.UserInfo{{Username: "admin"}}}
+		}},
 		{name: "generateIfMissing without filePath", modify: func(c *config) {
 			c.SigningKey.FilePath = ""
 		}, wantErr: "signingKey.filePath is required"},

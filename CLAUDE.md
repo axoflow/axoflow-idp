@@ -76,7 +76,8 @@ Login verifies the password and sets a `session` cookie (in-memory `session`
 store). OIDC auth issues an authorization code (`codestore`); `/token` exchanges
 it for a JWT signed with the key from `keychain`; `/oidc/userinfo` answers to the
 `at+jwt` access token only, never to the ID token; `/revoke` records revocations
-in `tokenstore`. The response's access token is a separate JWT (`typ: at+jwt`)
+in `tokenstore`, which keeps them in `revocations.filePath` across a restart
+(memory only without it). The response's access token is a separate JWT (`typ: at+jwt`)
 whose `aud` is the requested RFC 8707 `resource`, or the client id without one.
 
 ## Conventions
@@ -106,7 +107,12 @@ whose `aud` is the requested RFC 8707 `resource`, or the client id without one.
   `users.updateSeedPasswords`, a seed user's password is the exception: every
   start sets the configured hash on the existing account (see README "Seeding
   the user database"). Config validation requires `filePath` and
-  `createIfMissing` with it, and refuses it with `static`.
+  `createIfMissing` with it, and refuses it with `static`. Every seed entry
+  then needs an `ID`: the hash goes only to the account with that ID and
+  username, never to someone who registered a deleted seed user's name.
+- The sign-in cooldown (`internal/throttle`) counts an attempt from the start
+  of its password check (`Limiter.Begin`), and also covers the
+  current-password check of `/password`.
 - Bootstrap: the first user registered into an *empty* database joins
   `users.userAdminGroup`, so a fresh deployment has an admin without anyone
   hand-editing `users.json`. It needs a persistent database (`filePath`);

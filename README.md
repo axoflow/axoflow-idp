@@ -23,6 +23,9 @@ Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authenticati
     "signingKey": {
         "filePath": "signing-key.pem",
         "generateIfMissing": true
+    },
+    "revocations": {
+        "filePath": "revocations.json"
     }
 }
 ```
@@ -91,8 +94,30 @@ offline accepts it, with the groups it was issued with, until its `exp`. A
 password reset does not revoke outstanding codes or tokens either.
 
 A public client cannot call `/revoke` (`401 invalid_client`); its tokens expire
-instead. A revocation is kept for the maximum token lifetime (24 hours),
-whatever the client's `tokenTTL`, and pruned on a later valid access-token revocation.
+instead. With `revocations.filePath` set, a revocation is kept for the maximum
+token lifetime (24 hours), whatever the client's `tokenTTL`, and pruned on a
+later valid access-token revocation; it is written to that file at every
+revocation, so a restart still refuses the token. The file holds each revoked
+token's `jti` with the time of the revocation, is owner-only (`0600`) and is
+replaced whole; its directory must exist. A file the server cannot use in
+full fails the start rather than loading part of it: a malformed file, a
+`null` in place of the object or of a revocation time, a zero revocation
+time, or a file of 16 MiB or more (some 260,000 revocations). An empty
+object, `{}`, is no revocations. If a write fails, the revocation is still
+refused until the next restart, `/revoke` answers `200` as before, and the
+failure is logged as an error. The server never writes a file of 16 MiB or
+more: it keeps the old file and logs an error, and revocations recorded from
+then on last until the next restart. Once enough of them have expired, the
+next revocation writes the file again. Without `revocations.filePath`,
+revocations are kept in memory only and last until the next restart: after it
+a revoked token is accepted again until its `exp`, and the server warns about
+this at start.
+
+```json
+"revocations": {
+    "filePath": "/data/revocations.json"
+}
+```
 
 `tokenTTL` sets the lifetime of a client's ID and access tokens as a Go
 duration string such as `"1h"`; the tokens are signed when the code is
@@ -195,6 +220,12 @@ password through its configuration. A password changed in the IdP lasts until
 the next start. Leave the option off when the hash is regenerated at every
 deploy, because every deploy would reset the password. An empty configured hash
 is not applied, and a seed user deleted from the database is not recreated.
+The password follows the account the seed entry created, found by its `ID` and
+its username together, so every seed entry needs an `ID` with this option. Once
+a seed account is deleted, an account registered again under its username
+belongs to someone else and keeps its own password; an entry whose `ID` and
+username name different accounts, or only one of them an account, is skipped
+with a `seed entry does not match its account` warning.
 The option needs `users.filePath` and `users.createIfMissing: true` and cannot
 be combined with `users.static`; the server refuses to start otherwise.
 
@@ -204,20 +235,38 @@ be combined with `users.static`; the server refuses to start otherwise.
 > password valid. It now refuses to start. Set `createIfMissing` (an existing
 > database is never reseeded) or remove the option before upgrading.
 
+> Upgrading: with `users.updateSeedPasswords: true`, a seed entry without an
+> `ID` now refuses the start. The start used to put the seed password on
+> whichever account had the username, so before upgrading, find the account
+> each seed entry created and copy its `"ID"` from `users.filePath` into that
+> seed entry in `users.users`. A username alone is not enough: the seed
+> account may have been deleted and the username registered again by someone
+> else. Confirm that the account is the one the seed created from a record
+> you trust, such as the provisioning record, a backup taken before any
+> deletion, or the account's creation history. If the seed account was
+> deleted or replaced, or you cannot tell, do not copy the `ID` of the account
+> that has the username now: remove the seed entry, or turn
+> `updateSeedPasswords` off. Do the same when no account in `users.filePath`
+> has the seed's username.
+
 ```json
 "users": {
     "filePath": "/users/users.json",
     "createIfMissing": true,
     "userAdminGroup": "admin",
     "users": [
-        { "Username": "admin", "Password": "$2y$10$…", "Groups": ["admin"], "Email": "admin@example.com" }
+        { "ID": "01J…", "Username": "admin", "Password": "$argon2id$v=19$m=15360,t=2,p=1$…", "Groups": ["admin"], "Email": "admin@example.com" }
     ]
 }
 ```
 
 `Password` must already be an argon2id or bcrypt hash — the value is stored as
-given. `ID` is optional (a ULID is generated). Duplicate usernames or ids are
-rejected before anything is written.
+given. Prefer argon2id with the default parameters (`m=15360`, `t=2`, `p=1`):
+a bcrypt hash, or an argon2id one with other parameters, is checked at its own
+cost, and the time of a wrong-password answer then tells the account from an
+unknown username (see "Password hashes"). `ID` is optional without
+`users.updateSeedPasswords` (a ULID is generated) and required with it.
+Duplicate usernames or ids are rejected before anything is written.
 
 ## Identities
 
@@ -320,15 +369,29 @@ cooldown: for 10 seconds every sign-in attempt for it, the right password
 included, gets the same "Invalid username or password" page with a
 `Retry-After` header, and the password is not checked. Each failure after a
 cooldown doubles it, up to 30 seconds; a successful sign-in clears the count.
+An attempt counts from the moment its password check starts, so concurrent
+attempts get no more checks than sequential ones: at most five before the
+first cooldown, one at a time after a cooldown has run, and the rest are
+refused like an attempt in cooldown. A refusal because the server is busy
+checking other passwords (`503`) is not a failure.
 The count is kept in memory per exact username (byte for byte, as the
 password check matches it), under a SHA-256 digest of the username rather than
 the username itself, for at most 10,000 usernames: an entry whose 10 minutes
 and cooldown have both passed is dropped, and past the bound the least recently
-failed is. A restart clears it. Failing once each with 10,000 other usernames
-pushes a username out, so the cooldown slows down guessing against one account;
-it does not stop someone who can send that many failed sign-ins. The cooldown
-warning logs the first 64 bytes of the username and 12 hex digits of its
-digest.
+failed is. An entry with an attempt in flight is never dropped or pushed out,
+so while all 10,000 have one, a sign-in for another username is let through
+without being counted. A restart clears it. Failing once each with 10,000
+other usernames pushes a username out, so the cooldown slows down guessing
+against one account; it does not stop someone who can send that many failed
+sign-ins. The cooldown warning logs the first 64 bytes of the username and 12
+hex digits of its digest.
+
+The cooldown also covers the current-password check of `/password`, keyed by
+the account's username, so a stolen session cannot guess the password faster
+than the sign-in form allows. A wrong current password counts as a failed
+sign-in and is logged with the user's ID; while the username is in cooldown,
+`/password` answers `429 Too Many Requests` with `Retry-After` and does not
+check the password; a successful change clears the count.
 
 This is a trade-off: someone who knows a username can keep that account in
 cooldown for as long as they keep failing to sign in to it. The account's
@@ -368,8 +431,11 @@ other parameters, takes a different time to check than the default, so the
 time of a wrong-password answer can tell such an account from an unknown
 username. To close that, give those users new passwords (a reset link, an
 admin reset, or the user's own change); every password set in the IdP is
-stored with the default argon2id parameters. This does not apply to a user
-whose ID is longer than 256 bytes (below).
+stored with the default argon2id parameters. A seed user under
+`users.updateSeedPasswords` is the exception: every start puts the configured
+hash back, so a new password does not help; put a default-parameter argon2id
+hash in the configuration instead. This does not apply to a user whose ID is
+longer than 256 bytes (below).
 
 > Upgrading: a stored argon2id hash with `m` above 32 MiB (such as
 > `m=65536`), `t` above 10 or `p` above 4, and a bcrypt hash with a cost above

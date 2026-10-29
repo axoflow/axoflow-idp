@@ -79,6 +79,11 @@ type Routes struct {
 		afterResetConsume  func()
 		beforeIssueSession func()
 		afterCreateSession func()
+		// verify and changePassword stand in for r.user.Verify and
+		// r.user.ChangePassword, the calls that derive a password, so a test
+		// counts and holds derivations rather than admissions.
+		verify         func(username, password string) (user.UserInfo, error)
+		changePassword func(userID, oldPassword, newPassword string) (string, error)
 	}
 }
 
