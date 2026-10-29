@@ -141,22 +141,31 @@ func TestCleanUp(t *testing.T) {
 		{"idle", Config{IdleTTL: time.Hour}, false},
 		{"no limits", Config{}, true},
 	} {
+		// Both sessions are alice's and created while live: a Create after the
+		// stale one expired would prune it and leave CleanUp nothing to do.
 		t.Run(tt.name, func(t *testing.T) {
 			s, c := newClockedStore(tt.cfg)
 			stale := s.Create("alice")
-			c.t = c.t.Add(90 * time.Minute)
+			c.t = c.t.Add(30 * time.Minute)
 			fresh := s.Create("alice")
+			c.t = c.t.Add(45 * time.Minute)
+
+			held := func(id string) (inStore, inIndex bool) {
+				_, inStore = s.sessions[id]
+				_, inIndex = s.byUser["alice"][id]
+				return inStore, inIndex
+			}
+			if inStore, inIndex := held(stale); !inStore || !inIndex {
+				t.Fatalf("stale session before CleanUp: in store %v, in index %v; want both", inStore, inIndex)
+			}
 
 			s.CleanUp()
 
-			if _, ok := s.sessions[stale]; ok != tt.wantStale {
-				t.Errorf("stale session held after CleanUp = %v, want %v", ok, tt.wantStale)
+			if inStore, inIndex := held(stale); inStore != tt.wantStale || inIndex != tt.wantStale {
+				t.Errorf("stale session after CleanUp: in store %v, in index %v; want %v", inStore, inIndex, tt.wantStale)
 			}
-			if _, ok := s.sessions[fresh]; !ok {
-				t.Error("fresh session dropped by CleanUp")
-			}
-			if n := len(s.byUser["alice"]); n != len(s.sessions) {
-				t.Errorf("user index holds %d ids, store %d sessions", n, len(s.sessions))
+			if inStore, inIndex := held(fresh); !inStore || !inIndex {
+				t.Errorf("fresh session after CleanUp: in store %v, in index %v; want both", inStore, inIndex)
 			}
 		})
 	}
