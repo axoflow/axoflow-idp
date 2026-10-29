@@ -18,6 +18,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -136,11 +138,20 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	username := req.PostForm.Get("username")
 	password := req.PostForm.Get("password")
 
+	// refused like a wrong password, whether the account exists or not
+	if wait := r.logins.Wait(username); wait > 0 {
+		res.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+		r.renderLoginFailed(res)
+		return nil
+	}
 	account, err := r.user.Verify(username, password)
 	if r.refuseBusy(res, req, err) {
 		return nil
 	}
-	if err == nil {
+	if err != nil {
+		r.loginFailed(username)
+	} else {
+		r.logins.Succeed(username)
 		if err := r.issueSession(res, account.ID, account.Password); err == nil {
 			// The new cookie replaces the request's (the /oidc/auth form signs
 			// in over a live session); end the session it pointed to.
@@ -152,11 +163,15 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 		slog.Info("login refused: the password changed while it was checked", "user_id", account.ID)
 	}
 
+	r.renderLoginFailed(res)
+	return nil
+}
+
+func (r *Routes) renderLoginFailed(res http.ResponseWriter) {
 	res.WriteHeader(http.StatusUnauthorized)
 	if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
 		slog.Error("failed to render login template", "error", err)
 	}
-	return nil
 }
 
 // errPasswordChanged refuses a session whose password was rotated after the

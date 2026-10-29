@@ -27,6 +27,7 @@ import (
 
 	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/session"
+	"github.com/axoflow/axoflow-idp/internal/throttle"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
@@ -70,6 +71,7 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 		resetTokens: resettoken.New(time.Hour),
 		baseURL:     "https://idp.example.com",
 		csrfKey:     generateCSRFKey(),
+		logins:      throttle.New(),
 	}
 }
 

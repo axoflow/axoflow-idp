@@ -266,6 +266,7 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 		// anyway.
 		r.resetTokens.RevokeUser(userID)
 		r.session.DeleteUserSessions(userID)
+		r.logins.Succeed(target.Username)
 
 		slog.Info("password set via reset link", "target_user_id", userID)
 		http.Redirect(res, req, r.url("/login?flash=password_reset"), http.StatusSeeOther)

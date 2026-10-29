@@ -255,6 +255,30 @@ rename a normal restart loads the new file. The IdP then syncs the directory;
 if that fails it logs a warning and keeps the change, but whether the change
 survives a crash or power loss is uncertain.
 
+## Hardening
+
+### Failed sign-ins
+
+Five failed sign-ins for one username within 10 minutes put that username in
+cooldown: for 10 seconds every sign-in attempt for it, the right password
+included, gets the same "Invalid username or password" page with a
+`Retry-After` header, and the password is not checked. Each failure after a
+cooldown doubles it, up to 30 seconds; a successful sign-in clears the count.
+The count is kept in memory per username, for at most 10,000 usernames (the
+least recently failed is dropped first), so a restart clears it.
+
+This is a trade-off: someone who knows a username can keep that account in
+cooldown for as long as they keep failing to sign in to it. The account's
+owner recovers by waiting until the attempts stop. A new password set by an
+admin (`/admin`) or through a reset link also clears the count, though
+continued attempts put the username back in cooldown.
+
+A confidential client is not throttled: a wrong `client_secret` at `/token`
+or `/revoke` is counted and logged as a warning, at most once a minute per
+client with the count, and the client is otherwise unaffected. The secret's
+length is what bounds a guesser, so the server warns at start for a
+`clientSecret` under 16 characters; use a long random one.
+
 ## Releases
 
 The container image `ghcr.io/axoflow/axoflow-idp` (linux/amd64 and

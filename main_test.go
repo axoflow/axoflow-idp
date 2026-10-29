@@ -844,3 +844,33 @@ func TestSecurityHeaders(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateWarnsShortClientSecret: a confidential client's secret is
+// guessed online without a lockout, so a short one is worth a warning.
+func TestValidateWarnsShortClientSecret(t *testing.T) {
+	tests := []struct {
+		client   oidc.Client
+		wantWarn bool
+	}{
+		{oidc.Client{Id: "short", ClientSecret: "fifteen-chars!!", RedirectUri: "https://rp/cb"}, true},
+		{oidc.Client{Id: "long", ClientSecret: "sixteen-chars!!!", RedirectUri: "https://rp/cb"}, false},
+		{oidc.Client{Id: "public", Public: true, RedirectUri: "https://rp/cb"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.client.Id, func(t *testing.T) {
+			var buf strings.Builder
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{tc.client}}
+			cfg.SigningKey.FilePath = "signing-key.json"
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if warned := strings.Contains(buf.String(), `"client_id":"`+tc.client.Id+`"`); warned != tc.wantWarn {
+				t.Errorf("warned = %v, want %v: %s", warned, tc.wantWarn, buf.String())
+			}
+		})
+	}
+}

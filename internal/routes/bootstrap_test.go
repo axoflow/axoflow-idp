@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/session"
+	"github.com/axoflow/axoflow-idp/internal/throttle"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -54,6 +55,7 @@ func newBootstrapRoutes(t *testing.T, users string, cfg user.Config) *Routes {
 		template: tpl,
 		baseURL:  "https://idp.example.com",
 		csrfKey:  generateCSRFKey(),
+		logins:   throttle.New(),
 	}
 }
 
