@@ -309,6 +309,35 @@ func TestGetUserinfoFromToken_AccessTokenOnly(t *testing.T) {
 	}
 }
 
+// TestGetUserinfoFromToken_Claims refuses, in the validator itself, a token
+// without a subject and one whose audience is a resource of another client.
+func TestGetUserinfoFromToken_Claims(t *testing.T) {
+	o := newTestOidc(t, publicClients())
+	alice := user.UserInfo{ID: "u1", Username: "alice"}
+	tests := []struct {
+		name     string
+		user     user.UserInfo
+		clientID string
+		resource string
+		wantOK   bool
+	}{
+		{"the client's own resource", alice, "cli", cliResource, true},
+		{"empty sub", user.UserInfo{Username: "alice"}, "cli", cliResource, false},
+		{"another client's resource", alice, "app", cliResource, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token, err := o.GenerateAccessToken(tt.user, tt.clientID, tt.resource)
+			if err != nil {
+				t.Fatalf("GenerateAccessToken: %v", err)
+			}
+			if _, err := o.GetUserinfoFromToken(token); (err == nil) != tt.wantOK {
+				t.Errorf("GetUserinfoFromToken error = %v, want accepted %v", err, tt.wantOK)
+			}
+		})
+	}
+}
+
 // TestAccessTokenID pins the revocation identity: the jti of a verified access token, also when expired;
 // nothing for an ID token, a foreign signature or garbage.
 func TestAccessTokenID(t *testing.T) {

@@ -15,7 +15,9 @@
 package routes
 
 import (
+	"crypto/rsa"
 	"encoding/json"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -178,6 +180,9 @@ func TestOidcAuth_ResponseMode(t *testing.T) {
 		{"implicit error", request("id_token", "nonce", "n1", "scope", "profile"), true, "invalid_scope", ""},
 		{"code", request("code"), false, "", "code"},
 		{"code error", request("code", "scope", "profile"), false, "invalid_scope", ""},
+		{"token", request("token", "nonce", "n1"), true, "unsupported_response_type", ""},
+		{"code token", request("code token", "nonce", "n1"), true, "unsupported_response_type", ""},
+		{"code id_token", request("code id_token", "nonce", "n1"), true, "unsupported_response_type", ""},
 	}
 	r, cookie := newOidcTestRoutes(t)
 	for _, tt := range tests {
@@ -205,6 +210,64 @@ func TestOidcAuth_ResponseMode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestOidcAuth_ImplicitSigningError delivers a failed implicit signing in the
+// fragment too. The provider's private key is broken after the signers were
+// built from it, so signing fails.
+func TestOidcAuth_ImplicitSigningError(t *testing.T) {
+	r, cookie := newOidcTestRoutes(t)
+	kc := keychain.New()
+	o, err := oidc.New(oidc.Config{
+		BaseUrl:           "https://idp.example.com",
+		Clients:           []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s"}},
+		Keychain:          kc,
+		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		GenerateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+	r.oidc = o
+	key := kc.GetAll()[0].Key.(*rsa.PrivateKey)
+	key.Precomputed = rsa.PrecomputedValues{}
+	key.D = big.NewInt(0)
+
+	rec := authGet(t, r, cookie, url.Values{
+		"scope": {"openid"}, "response_type": {"id_token"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "nonce": {"n1"}, "state": {"s t"},
+	})
+	query, fragment := splitLocation(t, rec)
+	if rec.Code != http.StatusFound || len(query) != 0 || fragment.Get("error") != "server_error" || fragment.Get("state") != "s t" || fragment.Has("id_token") {
+		t.Errorf("signing failure = %d %q, want 302 with error=server_error and the state in the fragment only", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// TestOidcAuth_FragmentKeepsCallbackQuery appends the implicit response to a
+// registered callback that has a query of its own, which stays as registered.
+func TestOidcAuth_FragmentKeepsCallbackQuery(t *testing.T) {
+	const callback = "https://app.example.test/cb?x=1&y=a%2Fb"
+	r, cookie := newOidcTestRoutes(t)
+	o, err := oidc.New(oidc.Config{
+		BaseUrl:           "https://idp.example.com",
+		Clients:           []oidc.Client{{Id: "app", RedirectUris: []string{callback}, ClientSecret: "s"}},
+		Keychain:          keychain.New(),
+		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		GenerateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+	r.oidc = o
+
+	rec := authGet(t, r, cookie, url.Values{
+		"scope": {"openid"}, "response_type": {"id_token"}, "client_id": {"app"}, "redirect_uri": {callback}, "nonce": {"n1"}, "state": {"s"},
+	})
+	loc := rec.Header().Get("Location")
+	base, frag, _ := strings.Cut(loc, "#")
+	f, err := url.ParseQuery(frag)
+	if rec.Code != http.StatusFound || base != callback || err != nil || f.Get("id_token") == "" || f.Get("state") != "s" {
+		t.Errorf("redirect = %d %q, want %s#id_token=…&state=s", rec.Code, loc, callback)
 	}
 }
 
@@ -425,6 +488,11 @@ var userChanges = []struct {
 			t.Fatalf("update groups: %v", err)
 		}
 	}, []any{}},
+	{"group added", func(t *testing.T, u *user.User) {
+		if err := u.AdminUpdateUserGroups("admin1", "bob", []string{"user", "ops"}); err != nil {
+			t.Fatalf("update groups: %v", err)
+		}
+	}, []any{"user", "ops"}},
 	// the new account has the username but another ID, so it is someone else
 	{"deleted and recreated", func(t *testing.T, u *user.User) {
 		if err := u.AdminDelete("admin1", "bob"); err != nil {
@@ -436,12 +504,19 @@ var userChanges = []struct {
 	}, nil},
 }
 
-func groupsOf(claims map[string]any) []any {
-	groups, _ := claims["groups"].([]any)
-	if groups == nil {
+// groupsOf returns the groups claim, empty when absent or null; any other
+// type fails the test, so a malformed value cannot pass as no groups.
+func groupsOf(t *testing.T, claims map[string]any) []any {
+	t.Helper()
+	switch groups := claims["groups"].(type) {
+	case nil:
 		return []any{}
+	case []any:
+		return groups
+	default:
+		t.Fatalf("groups = %#v, want an array", groups)
+		return nil
 	}
-	return groups
 }
 
 // TestOidcToken_LiveUser redeems a code issued before an admin change: the
@@ -469,7 +544,7 @@ func TestOidcToken_LiveUser(t *testing.T) {
 			body := tokenBody(t, rec)
 			for _, name := range []string{"id_token", "access_token"} {
 				_, claims := verifiedClaims(t, r, body[name].(string))
-				if claims["sub"] != "bob" || !slices.Equal(groupsOf(claims), tt.wantGroups) {
+				if claims["sub"] != "bob" || !slices.Equal(groupsOf(t, claims), tt.wantGroups) {
 					t.Errorf("%s sub=%v groups=%v, want bob %v", name, claims["sub"], claims["groups"], tt.wantGroups)
 				}
 			}
@@ -506,10 +581,74 @@ func TestUserinfo_LiveUser(t *testing.T) {
 			if err := json.Unmarshal(got.Body.Bytes(), &info); err != nil {
 				t.Fatalf("userinfo body: %v", err)
 			}
-			if info["sub"] != "bob" || info["name"] != "bob" || !slices.Equal(groupsOf(info), tt.wantGroups) {
+			if info["sub"] != "bob" || info["name"] != "bob" || !slices.Equal(groupsOf(t, info), tt.wantGroups) {
 				t.Errorf("userinfo = %v, want sub and name bob, groups %v", info, tt.wantGroups)
 			}
 		})
+	}
+}
+
+// registerCarol adds carol, who has an email address, and returns her record
+// and a session cookie for her.
+func registerCarol(t *testing.T, r *Routes) (user.UserInfo, *http.Cookie) {
+	t.Helper()
+	if err := r.user.Register("carol", "carolpass1", []string{"user"}, "carol@example.com"); err != nil {
+		t.Fatalf("register carol: %v", err)
+	}
+	carol, ok := r.user.Authenticate("carol", "carolpass1")
+	if !ok {
+		t.Fatal("carol cannot sign in")
+	}
+	return carol, &http.Cookie{Name: "session", Value: r.session.Create(carol.ID)}
+}
+
+// TestOidcToken_CodeFlowClaims authorizes with a nonce through the real
+// handler and redeems the code after carol gained a group: the ID token
+// carries the request's nonce and carol's record at redemption.
+func TestOidcToken_CodeFlowClaims(t *testing.T) {
+	r, _ := newPublicClientRoutes(t)
+	carol, cookie := registerCarol(t, r)
+	code := issueCode(t, r, cookie, url.Values{
+		"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "nonce": {"n-code"},
+	})
+	if err := r.user.AdminUpdateUserGroups("admin1", carol.ID, []string{"user", "ops"}); err != nil {
+		t.Fatalf("update groups: %v", err)
+	}
+
+	rec := postToken(t, r, url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+	}
+	_, claims := verifiedClaims(t, r, tokenBody(t, rec)["id_token"].(string))
+	if claims["nonce"] != "n-code" || claims["sub"] != carol.ID || claims["name"] != "carol" || claims["email"] != "carol@example.com" || !slices.Equal(groupsOf(t, claims), []any{"user", "ops"}) {
+		t.Errorf("id_token nonce=%v sub=%v name=%v email=%v groups=%v, want n-code %s carol carol@example.com [user ops]", claims["nonce"], claims["sub"], claims["name"], claims["email"], claims["groups"], carol.ID)
+	}
+}
+
+// TestUserinfo_LiveNameAndEmail answers a token whose identity claims are
+// older than the record with the record's name, email and groups.
+func TestUserinfo_LiveNameAndEmail(t *testing.T) {
+	r, _ := newPublicClientRoutes(t)
+	r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
+	carol, _ := registerCarol(t, r)
+	stale := user.UserInfo{ID: carol.ID, Username: "carol-old", Email: "old@example.com", Groups: []string{"old"}}
+	token, err := r.oidc.GenerateAccessToken(stale, "app", "")
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+
+	got := userinfoGet(t, r, token)
+	if got.Code != http.StatusOK {
+		t.Fatalf("userinfo = %d: %s", got.Code, got.Body.String())
+	}
+	var info map[string]any
+	if err := json.Unmarshal(got.Body.Bytes(), &info); err != nil {
+		t.Fatalf("userinfo body: %v", err)
+	}
+	if info["sub"] != carol.ID || info["name"] != "carol" || info["email"] != "carol@example.com" || !slices.Equal(groupsOf(t, info), []any{"user"}) {
+		t.Errorf("userinfo = %v, want carol's record", info)
 	}
 }
 
@@ -549,7 +688,7 @@ func TestOidcAuth_ImplicitLoginLiveUser(t *testing.T) {
 			}
 			_, claims := verifiedClaims(t, r, fragment.Get("id_token"))
 			current, _ := r.user.Get("bob")
-			if claims["sub"] != current.ID || claims["name"] != current.Username || claims["email"] != current.Email || !slices.Equal(groupsOf(claims), tt.wantGroups) {
+			if claims["sub"] != current.ID || claims["name"] != current.Username || claims["email"] != current.Email || !slices.Equal(groupsOf(t, claims), tt.wantGroups) {
 				t.Errorf("id_token sub=%v name=%v email=%v groups=%v, want %s %s %q %v", claims["sub"], claims["name"], claims["email"], claims["groups"], current.ID, current.Username, current.Email, tt.wantGroups)
 			}
 		})
@@ -659,6 +798,7 @@ func TestOidcRevoke_Ownership(t *testing.T) {
 		{"the owner", appToken, url.Values{"client_id": {"app"}, "client_secret": {"s3cret"}}, http.StatusOK, true},
 		{"another confidential client", appToken, url.Values{"client_id": {"app2"}, "client_secret": {"s3cret2"}}, http.StatusOK, false},
 		{"a public owner", cliToken, url.Values{"client_id": {"cli"}}, http.StatusUnauthorized, false},
+		{"a confidential client, a public client's token", cliToken, url.Values{"client_id": {"app2"}, "client_secret": {"s3cret2"}}, http.StatusOK, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
