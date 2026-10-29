@@ -65,6 +65,7 @@ type Routes struct {
 	hooks struct {
 		afterResetConsume  func()
 		beforeIssueSession func()
+		afterCreateSession func()
 	}
 }
 

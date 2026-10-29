@@ -166,6 +166,9 @@ func (r *Routes) issueSession(res http.ResponseWriter, userID, provedHash string
 		r.hooks.beforeIssueSession()
 	}
 	id := r.session.Create(userID)
+	if r.hooks.afterCreateSession != nil {
+		r.hooks.afterCreateSession()
+	}
 	if u, ok := r.user.Get(userID); !ok || u.Password != provedHash {
 		r.session.Delete(id)
 		return errPasswordChanged

@@ -163,6 +163,15 @@ func (s *Session) DeleteUserSessions(userID string) {
 	delete(s.byUser, userID)
 }
 
+// Count reports how many sessions userID holds, expired ones included until
+// they are removed. A refused issuance sends no cookie, so tests use it to
+// see that the store kept nothing for the user either.
+func (s *Session) Count(userID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.byUser[userID])
+}
+
 // remove deletes the session id, if any. The caller holds mu.
 func (s *Session) remove(id string) {
 	ses, ok := s.sessions[id]

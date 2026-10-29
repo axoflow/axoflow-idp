@@ -136,6 +136,70 @@ func TestIssueSession_RotationAfterProofLeavesNoSession(t *testing.T) {
 	}
 }
 
+// A rotation that commits after the issuer created the session but before it
+// re-read the password must still leave no session: no Set-Cookie at all, and
+// nothing in the store. The rotation goes through the library, so no route's
+// sign-out removes the session for the issuer.
+func TestIssueSession_RotationAfterCreateLeavesNoSession(t *testing.T) {
+	issuers := []struct {
+		name     string
+		username string
+		current  string
+		issue    func(r *Routes) *httptest.ResponseRecorder
+		status   int
+		location string
+	}{
+		{"login", "bob", "bobpass1", func(r *Routes) *httptest.ResponseRecorder {
+			return postForm(r.Login, "/login", nil, url.Values{"username": {"bob"}, "password": {"bobpass1"}})
+		}, http.StatusUnauthorized, ""},
+		{"registration", "carol", "password123", func(r *Routes) *httptest.ResponseRecorder {
+			return postForm(r.Register, "/register", nil, url.Values{
+				"username": {"carol"}, "email": {"carol@example.com"}, "password": {"password123"}, "password_confirm": {"password123"},
+			})
+		}, http.StatusCreated, ""},
+		{"password change", "bob", "bobnew123", func(r *Routes) *httptest.ResponseRecorder {
+			cookie, csrf := r.authed("bob")
+			return postForm(r.ChangePassword, "/password", cookie, url.Values{
+				"csrf_token": {csrf}, "current_password": {"bobpass1"}, "new_password": {"bobnew123"},
+			})
+		}, http.StatusSeeOther, "/login"},
+	}
+	for _, is := range issuers {
+		t.Run(is.name, func(t *testing.T) {
+			r := newIssueRoutes(t)
+			var accountID string
+			r.hooks.afterCreateSession = func() {
+				account, ok := r.user.Authenticate(is.username, is.current)
+				if !ok {
+					t.Fatalf("%s cannot sign in with %q at the hook", is.username, is.current)
+				}
+				accountID = account.ID
+				if err := r.user.AdminResetPassword("admin1", account.ID, "rotated12"); err != nil {
+					t.Fatalf("rotate: %v", err)
+				}
+			}
+
+			rec := is.issue(r)
+
+			if rec.Code != is.status {
+				t.Errorf("status = %d, want %d", rec.Code, is.status)
+			}
+			if loc := rec.Header().Get("Location"); loc != is.location {
+				t.Errorf("Location = %q, want %q", loc, is.location)
+			}
+			if c := rec.Header()["Set-Cookie"]; len(c) != 0 {
+				t.Errorf("response sets cookies %q, want none", c)
+			}
+			if accountID == "" {
+				t.Fatal("the hook did not run")
+			}
+			if n := r.session.Count(accountID); n != 0 {
+				t.Errorf("the store holds %d sessions for %s, want 0", n, is.username)
+			}
+		})
+	}
+}
+
 func TestSessionCookieMaxAgeFollowsCookieTTL(t *testing.T) {
 	for _, tc := range []struct {
 		ttl  time.Duration
