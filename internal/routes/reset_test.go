@@ -54,9 +54,10 @@ func redeem(r *Routes, token, password string) int {
 	return postForm(r.SetPassword, "/set-password", nil, url.Values{"token": {token}, "new_password": {password}}).Code
 }
 
-// A reset link carries its issuer's authority and stands for the target's
-// password as it was: whatever takes either away, before the redemption or
-// while it runs, makes the link refuse.
+// A reset link carries its issuer's authority and the target's credential
+// generation at the moment it was minted: whatever takes the authority away
+// or writes the target's password, before the redemption or while it runs,
+// makes the link refuse.
 func TestSetPassword_LinkRefusedOnceRevoked(t *testing.T) {
 	type routesAndIssuer struct {
 		r      *Routes
@@ -142,6 +143,137 @@ func TestSetPassword_CurrentAdminsLinkWorks(t *testing.T) {
 	if _, ok := r.user.Authenticate("bob", "linkpass1"); !ok {
 		t.Error("the link's password does not authenticate")
 	}
+}
+
+// tokenHeld reports whether the reset store still holds token.
+func tokenHeld(r *Routes, token string) bool {
+	_, ok := r.resetTokens.Peek(token)
+	return ok
+}
+
+// assertOnlyPassword checks that bob signs in with want and with none of
+// refused.
+func assertOnlyPassword(t *testing.T, r *Routes, want string, refused ...string) {
+	t.Helper()
+	if _, ok := r.user.Authenticate("bob", want); !ok {
+		t.Errorf("bob's password is no longer %q", want)
+	}
+	for _, pw := range refused {
+		if _, ok := r.user.Authenticate("bob", pw); ok {
+			t.Errorf("bob's password is %q", pw)
+		}
+	}
+}
+
+// A password write that commits before the redemption reads anything, and
+// whose route has not yet revoked the link (here: no route at all), still
+// refuses a link minted before it.
+func TestSetPassword_LinkRefusedAfterAnUnrevokedWrite(t *testing.T) {
+	tests := []struct {
+		name  string
+		write func(r *Routes) error
+	}{
+		{"own change", func(r *Routes) error {
+			_, err := r.user.ChangePassword("bob", "bobpass1", "rotated12")
+			return err
+		}},
+		{"admin reset", func(r *Routes) error { return r.user.AdminResetPassword("admin1", "bob", "rotated12") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newTestRoutes(t, false)
+			tok := mintLink(t, r, "admin1", "bob")
+			if err := tt.write(r); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+
+			if code := redeem(r, tok, "linkpass1"); code != http.StatusBadRequest {
+				t.Errorf("redemption status = %d, want 400", code)
+			}
+			assertOnlyPassword(t, r, "rotated12", "linkpass1", "bobpass1")
+			if tokenHeld(r, tok) {
+				t.Error("the refused link is still held")
+			}
+		})
+	}
+}
+
+// A link minted while another link's redemption is between Consume and its
+// commit predates the password that redemption sets, so it must not work.
+func TestSetPassword_LinkMintedDuringARedemptionIsRefused(t *testing.T) {
+	r := newTestRoutes(t, false)
+	first := mintLink(t, r, "admin1", "bob")
+	var second string
+	r.hooks.afterResetConsume = func() {
+		r.hooks.afterResetConsume = nil
+		second = mintLink(t, r, "admin1", "bob")
+	}
+
+	if code := redeem(r, first, "firstpass1"); code != http.StatusSeeOther {
+		t.Fatalf("first redemption status = %d, want 303", code)
+	}
+	if tokenHeld(r, second) {
+		t.Error("the link minted during the redemption survived its success")
+	}
+	if code := redeem(r, second, "secondpass2"); code != http.StatusBadRequest {
+		t.Errorf("second redemption status = %d, want 400", code)
+	}
+	assertOnlyPassword(t, r, "firstpass1", "secondpass2", "bobpass1")
+	if tokenHeld(r, second) {
+		t.Error("the second link is still held")
+	}
+}
+
+// Setting the password a user already has is still a password write: the hash
+// is the same (the salt is the user ID), but a link minted before it refuses.
+func TestSetPassword_LinkRefusedAfterASamePasswordReset(t *testing.T) {
+	for _, between := range []bool{false, true} {
+		name := "before redemption"
+		if between {
+			name = "between consume and commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := newTestRoutes(t, false)
+			before, _ := r.user.Get("bob")
+			tok := mintLink(t, r, "admin1", "bob")
+			reset := func() {
+				if err := r.user.AdminResetPassword("admin1", "bob", "bobpass1"); err != nil {
+					t.Errorf("AdminResetPassword: %v", err)
+				}
+				if after, _ := r.user.Get("bob"); after.Password != before.Password {
+					t.Error("the same password produced another hash; the test needs equal hashes")
+				}
+			}
+			if between {
+				r.hooks.afterResetConsume = reset
+			} else {
+				reset()
+			}
+
+			if code := redeem(r, tok, "linkpass1"); code != http.StatusBadRequest {
+				t.Errorf("redemption status = %d, want 400", code)
+			}
+			assertOnlyPassword(t, r, "bobpass1", "linkpass1")
+		})
+	}
+}
+
+// A link for a deleted user does not reach a new account with that username.
+func TestSetPassword_LinkRefusedForAReRegisteredUsername(t *testing.T) {
+	r := newTestRoutes(t, false)
+	tok := mintLink(t, r, "admin1", "bob")
+	if err := r.user.AdminDelete("admin1", "bob"); err != nil {
+		t.Fatalf("AdminDelete: %v", err)
+	}
+	r.user.SelfRegistration = true
+	if _, _, err := r.user.SelfRegister("bob", "newbob123", nil, ""); err != nil {
+		t.Fatalf("SelfRegister: %v", err)
+	}
+
+	if code := redeem(r, tok, "linkpass1"); code != http.StatusBadRequest {
+		t.Errorf("redemption status = %d, want 400", code)
+	}
+	assertOnlyPassword(t, r, "newbob123", "linkpass1")
 }
 
 // Two presentations of one link set at most one password.

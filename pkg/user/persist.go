@@ -83,7 +83,9 @@ var testBeforeUpdate func()
 // change returns. Holding saveMu throughout means the copy is still the
 // committed state when the result is published, so a check change makes (an
 // admin's authority, a free username) cannot be overtaken by another writer.
-func (u *User) update(change func(users []UserInfo) ([]UserInfo, error)) error {
+// credentialsOf names the users whose password change writes or who it
+// deletes (see commit).
+func (u *User) update(change func(users []UserInfo) ([]UserInfo, error), credentialsOf ...string) error {
 	if testBeforeUpdate != nil {
 		testBeforeUpdate()
 	}
@@ -94,7 +96,7 @@ func (u *User) update(change func(users []UserInfo) ([]UserInfo, error)) error {
 	if err != nil {
 		return err
 	}
-	return u.commit(users)
+	return u.commit(users, credentialsOf...)
 }
 
 // snapshot is a deep copy of the published users, owned by the caller.
@@ -110,9 +112,11 @@ func (u *User) snapshot() []UserInfo {
 	return users
 }
 
-// commit writes users to FilePath and then publishes them. The caller holds
-// saveMu and owns users. A memory-only database publishes without writing.
-func (u *User) commit(users []UserInfo) error {
+// commit writes users to FilePath and then publishes them, advancing the
+// credential generation of each of credentialsOf with the publication. The
+// caller holds saveMu and owns users. A memory-only database publishes
+// without writing.
+func (u *User) commit(users []UserInfo, credentialsOf ...string) error {
 	if u.FilePath != "" {
 		if err := u.writeFile(users); err != nil {
 			return err
@@ -121,6 +125,12 @@ func (u *User) commit(users []UserInfo) error {
 
 	u.mu.Lock()
 	u.users = users
+	if len(credentialsOf) > 0 && u.generations == nil {
+		u.generations = map[string]uint64{}
+	}
+	for _, id := range credentialsOf {
+		u.generations[id]++
+	}
 	u.mu.Unlock()
 	return nil
 }

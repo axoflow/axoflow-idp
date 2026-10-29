@@ -146,6 +146,13 @@ type User struct {
 	users  []UserInfo
 	fsys   fileSystem // nil means the OS
 
+	// generations counts, per user ID, the commits that wrote the user's
+	// password or deleted the user, whether or not the hash changed. A reset
+	// link records it when minted and is refused once it moved. It lives in
+	// memory only, as the links do, and an entry is never reset or removed,
+	// so a deleted ID keeps its count. Written by commit under saveMu and mu.
+	generations map[string]uint64
+
 	// afterVerify, when set, runs between ChangePassword's verification and
 	// its commit, so a test can commit a competing change there.
 	afterVerify func()
@@ -224,7 +231,7 @@ func (u *User) applySeedPasswords() error {
 	defer u.saveMu.Unlock()
 
 	users := u.snapshot()
-	var updated []string
+	var updated, updatedIDs []string
 	for _, s := range seed {
 		i := slices.IndexFunc(users, func(ui UserInfo) bool { return ui.Username == s.Username })
 		missing := i == -1
@@ -235,12 +242,13 @@ func (u *User) applySeedPasswords() error {
 
 		users[i].Password = s.Password
 		updated = append(updated, s.Username)
+		updatedIDs = append(updatedIDs, users[i].ID)
 	}
 
 	if len(updated) == 0 {
 		return nil
 	}
-	if err := u.commit(users); err != nil {
+	if err := u.commit(users, updatedIDs...); err != nil {
 		return err
 	}
 	for _, username := range updated {
@@ -261,6 +269,16 @@ func getIndex(users []UserInfo, id string) (int, bool) {
 	}
 
 	return i, true
+}
+
+// CredentialGeneration reports userID's credential generation (see
+// User.generations) and whether the user exists.
+func (u *User) CredentialGeneration(userID string) (uint64, bool) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
+	_, ok := getIndex(u.users, userID)
+	return u.generations[userID], ok
 }
 
 func (u *User) Get(id string) (UserInfo, bool) {
@@ -372,7 +390,7 @@ func (u *User) register(id, username, hashedPassword string, groups []string, em
 			Password: hashedPassword,
 			Groups:   newGroups,
 		}), nil
-	})
+	}, id)
 	if err != nil {
 		return "", err
 	}
@@ -465,16 +483,17 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (s
 		}
 		users[i].Password = newHash
 		return users, nil
-	})
+	}, userID)
 	if err != nil {
 		return "", err
 	}
 	return newHash, nil
 }
 
-// SetPassword sets a user's password without requiring the current one. It is
-// used by admin-initiated reset flows (e.g. the password-reset link), where the
-// caller has already been authorized out of band.
+// SetPassword sets a user's password without requiring the current one or any
+// authority. It is the library and test-fixture mutator; no route calls it
+// (the reset link goes through SetPasswordByReset), and it does not touch the
+// reset links or sessions a route would end.
 func (u *User) SetPassword(userID, newPassword string) error {
 	if u.Static {
 		return ErrReadOnly
@@ -498,7 +517,7 @@ func (u *User) SetPassword(userID, newPassword string) error {
 		}
 		users[i].Password = newHash
 		return users, nil
-	})
+	}, userID)
 }
 
 func (u *User) Authenticate(username, password string) (UserInfo, bool) {

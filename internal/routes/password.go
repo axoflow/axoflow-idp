@@ -146,8 +146,15 @@ func (r *Routes) AdminCreateResetLink(res http.ResponseWriter, req *http.Request
 		r.renderAdminPanel(res, req, admin, "", "", "Target user not found")
 		return
 	}
+	// A password write between this read and Create only makes the link
+	// refuse later.
+	generation, ok := r.user.CredentialGeneration(userID)
+	if !ok {
+		r.renderAdminPanel(res, req, admin, "", "", "Target user not found")
+		return
+	}
 
-	token, err := r.resetTokens.Create(userID, admin.ID)
+	token, err := r.resetTokens.Create(userID, admin.ID, generation)
 	if err != nil {
 		slog.Error("failed to generate password reset token", "target_user_id", userID, "error", err)
 		http.Error(res, "Could not create reset link", http.StatusInternalServerError)
@@ -205,15 +212,14 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		// Peek only names the account; Consume decides. target.Password is
-		// the hash the link may replace, read before the slow hash so that a
-		// change committing meanwhile refuses the link. A weak password
+		// Peek only names the account; Consume decides. A weak password
 		// leaves the link usable for a retry.
-		userID, _, ok := r.resetTokens.Peek(token)
+		peeked, ok := r.resetTokens.Peek(token)
 		if !ok {
 			r.renderSetPasswordInvalid(res)
 			return
 		}
+		userID := peeked.UserID
 		target, ok := r.user.Get(userID)
 		if !ok {
 			r.renderSetPasswordInvalid(res)
@@ -228,15 +234,15 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 
 		// From here the link is spent whatever happens: two presentations
 		// cannot both set a password, and an admin re-mints a refused one.
-		consumedID, issuedBy, ok := r.resetTokens.Consume(token)
-		if !ok || consumedID != userID {
+		grant, ok := r.resetTokens.Consume(token)
+		if !ok || grant.UserID != userID {
 			r.renderSetPasswordInvalid(res)
 			return
 		}
 		if r.hooks.afterResetConsume != nil {
 			r.hooks.afterResetConsume()
 		}
-		if err := r.user.SetPasswordByReset(userID, issuedBy, target.Password, newHash); err != nil {
+		if err := r.user.SetPasswordByReset(userID, grant.IssuedBy, grant.Generation, newHash); err != nil {
 			if saveFailed(err, "operation", "set_password", "target_user_id", userID) {
 				http.Error(res, saveFailedMessage, http.StatusInternalServerError)
 				return
@@ -246,6 +252,10 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		// Drop any other outstanding link, as the other password writes do;
+		// one minted before this commit would be refused by its generation
+		// anyway.
+		r.resetTokens.RevokeUser(userID)
 		r.session.DeleteUserSessions(userID)
 
 		slog.Info("password set via reset link", "target_user_id", userID)

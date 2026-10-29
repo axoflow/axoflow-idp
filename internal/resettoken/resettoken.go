@@ -15,7 +15,10 @@
 // Package resettoken provides an in-memory store of single-use, expiring
 // password-reset tokens. A token is unguessable (256 bits from crypto/rand),
 // valid for a fixed TTL, consumed on first use, and at most one token is
-// active per user (generating a new one invalidates the previous).
+// active per user (generating a new one invalidates the previous). A token
+// grants what it was minted with: the target, the issuing admin and the
+// target's credential generation at that moment, which the password write
+// checks so that a link minted before any later password change is refused.
 package resettoken
 
 import (
@@ -26,11 +29,19 @@ import (
 	"time"
 )
 
-type entry struct {
-	userID string
-	// issuedBy is the admin who minted the link: redemption carries that
+// Grant is what a token was minted for.
+type Grant struct {
+	UserID string
+	// IssuedBy is the admin who minted the link: redemption carries that
 	// admin's authority, so the redeemer checks it is still held.
-	issuedBy  string
+	IssuedBy string
+	// Generation is the target's credential generation when the link was
+	// minted; a password write since then refuses the link.
+	Generation uint64
+}
+
+type entry struct {
+	Grant
 	expiresAt time.Time
 }
 
@@ -54,9 +65,10 @@ func New(ttl time.Duration) *Store {
 }
 
 // Create mints a new reset token for userID on behalf of the admin issuedBy,
-// invalidating any token previously issued to that user. The returned token is
-// the secret to embed in the link.
-func (s *Store) Create(userID, issuedBy string) (string, error) {
+// with userID's current credential generation, invalidating any token
+// previously issued to that user. The returned token is the secret to embed
+// in the link.
+func (s *Store) Create(userID, issuedBy string, generation uint64) (string, error) {
 	token, err := randomToken()
 	if err != nil {
 		return "", err
@@ -68,51 +80,51 @@ func (s *Store) Create(userID, issuedBy string) (string, error) {
 	if prev, ok := s.byUser[userID]; ok {
 		delete(s.byToken, prev)
 	}
-	s.byToken[token] = entry{userID: userID, issuedBy: issuedBy, expiresAt: s.now().Add(s.ttl)}
+	s.byToken[token] = entry{Grant{userID, issuedBy, generation}, s.now().Add(s.ttl)}
 	s.byUser[userID] = token
 
 	return token, nil
 }
 
 // Consume validates and atomically invalidates a token. It returns the
-// associated user ID, the issuing admin's ID and true on success. Unknown,
-// already-used, and expired tokens all return ("", "", false); the token is
-// removed regardless so a single presentation is the only chance to use it.
-func (s *Store) Consume(token string) (userID, issuedBy string, ok bool) {
+// token's grant and true on success. Unknown, already-used, and expired
+// tokens all return (Grant{}, false); the token is removed regardless so a
+// single presentation is the only chance to use it.
+func (s *Store) Consume(token string) (Grant, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.byToken[token]
 	if !ok {
-		return "", "", false
+		return Grant{}, false
 	}
 
 	s.remove(token, e)
 
 	if s.now().After(e.expiresAt) {
-		return "", "", false
+		return Grant{}, false
 	}
 
-	return e.userID, e.issuedBy, true
+	return e.Grant, true
 }
 
 // Peek is Consume without the invalidation. It decides nothing: a caller that
 // acts on a token Consumes it first, so two presentations cannot both act.
 // Expired tokens are removed and reported invalid.
-func (s *Store) Peek(token string) (userID, issuedBy string, ok bool) {
+func (s *Store) Peek(token string) (Grant, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.byToken[token]
 	if !ok {
-		return "", "", false
+		return Grant{}, false
 	}
 	if s.now().After(e.expiresAt) {
 		s.remove(token, e)
-		return "", "", false
+		return Grant{}, false
 	}
 
-	return e.userID, e.issuedBy, true
+	return e.Grant, true
 }
 
 // RevokeUser drops userID's outstanding token, if any. A change of the
@@ -143,8 +155,8 @@ func (s *Store) CleanUp() {
 // remove deletes token, whose entry is e. The caller holds mu.
 func (s *Store) remove(token string, e entry) {
 	delete(s.byToken, token)
-	if s.byUser[e.userID] == token {
-		delete(s.byUser, e.userID)
+	if s.byUser[e.UserID] == token {
+		delete(s.byUser, e.UserID)
 	}
 }
 

@@ -181,7 +181,15 @@ func (r *Routes) adminRegisterWithResetLink(res http.ResponseWriter, req *http.R
 		return
 	}
 
-	token, err := r.resetTokens.Create(newID, admin.ID)
+	// A password write between this read and Create only makes the link
+	// refuse later.
+	generation, ok := r.user.CredentialGeneration(newID)
+	if !ok {
+		res.WriteHeader(http.StatusBadRequest)
+		r.renderAdminRegister(res, sessionID, admin.Username, "Target user not found")
+		return
+	}
+	token, err := r.resetTokens.Create(newID, admin.ID, generation)
 	if err != nil {
 		slog.Error("failed to generate password reset token", "target_user_id", newID, "error", err)
 		http.Error(res, "Could not create reset link", http.StatusInternalServerError)

@@ -74,7 +74,7 @@ func TestSaveFailure_EveryRouteIsGenericAndRollsBack(t *testing.T) {
 			})
 		}},
 		{"set password", func(r *Routes) *httptest.ResponseRecorder {
-			tok, _ := r.resetTokens.Create("bob", "admin1")
+			tok, _ := r.resetTokens.Create("bob", "admin1", 0)
 			return postForm(r.SetPassword, "/set-password", nil, url.Values{"token": {tok}, "new_password": {"newpass123"}})
 		}},
 		{"admin register", func(r *Routes) *httptest.ResponseRecorder {
@@ -175,7 +175,7 @@ func TestRegister_FailedSaveReopensBootstrap(t *testing.T) {
 // new one. The password stays as it was.
 func TestSetPassword_FailedSaveSpendsTheLink(t *testing.T) {
 	r := newTestRoutes(t, false)
-	tok, err := r.resetTokens.Create("bob", "admin1")
+	tok, err := r.resetTokens.Create("bob", "admin1", 0)
 	if err != nil {
 		t.Fatalf("create token: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSetPassword_FailedSaveSpendsTheLink(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, "could not save the user database") {
 		t.Errorf("body lacks the generic message: %s", head(body, 300))
 	}
-	if _, _, ok := r.resetTokens.Peek(tok); ok {
+	if _, ok := r.resetTokens.Peek(tok); ok {
 		t.Error("reset token still usable after the failed save")
 	}
 	assertBobsPassword(t, r, "bobpass1", "newpass123")

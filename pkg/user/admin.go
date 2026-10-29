@@ -94,7 +94,7 @@ func (u *User) AdminDelete(adminID string, targetID string) error {
 			return nil, errors.New("target user not found")
 		}
 		return slices.Delete(users, i, i+1), nil
-	})
+	}, targetID)
 }
 
 func (u *User) AdminResetPassword(adminID string, targetID string, newPassword string) error {
@@ -129,7 +129,7 @@ func (u *User) AdminResetPassword(adminID string, targetID string, newPassword s
 		}
 		users[i].Password = newHash
 		return users, nil
-	})
+	}, targetID)
 }
 
 // ErrResetRefused is returned by SetPasswordByReset when the link no longer
@@ -137,12 +137,15 @@ func (u *User) AdminResetPassword(adminID string, targetID string, newPassword s
 var ErrResetRefused = errors.New("password reset link is no longer valid")
 
 // SetPasswordByReset sets targetID's password hash to newHash on the
-// authority of a reset link minted by issuerID. Both conditions are checked
-// against the users it changes, under the writer lock: issuerID is still in
-// UserAdminGroup, and the target's hash is still expectedHash, the one read
-// before the redemption started. A demotion, deletion or password change that
-// commits first therefore refuses the link with ErrResetRefused.
-func (u *User) SetPasswordByReset(targetID, issuerID, expectedHash, newHash string) error {
+// authority of a reset link minted by issuerID when targetID's credential
+// generation was expectedGeneration (see CredentialGeneration). It checks, in
+// the same writer transaction as the write, that issuerID is still in
+// UserAdminGroup, that the target exists and that its generation is still
+// expectedGeneration. Any password write for the target or its deletion that
+// committed after the link was minted, including one that set the same hash
+// or another link's redemption, has moved the generation, so the link is
+// refused with ErrResetRefused.
+func (u *User) SetPasswordByReset(targetID, issuerID string, expectedGeneration uint64, newHash string) error {
 	if u.Static {
 		return ErrReadOnly
 	}
@@ -152,12 +155,13 @@ func (u *User) SetPasswordByReset(targetID, issuerID, expectedHash, newHash stri
 			return nil, ErrResetRefused
 		}
 		i, ok := getIndex(users, targetID)
-		if !ok || users[i].Password != expectedHash {
+		// saveMu, held here, orders this read after every commit.
+		if !ok || u.generations[targetID] != expectedGeneration {
 			return nil, ErrResetRefused
 		}
 		users[i].Password = newHash
 		return users, nil
-	})
+	}, targetID)
 }
 
 func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []string) error {
