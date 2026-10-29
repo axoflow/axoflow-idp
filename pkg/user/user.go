@@ -23,7 +23,10 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -57,7 +60,9 @@ type Config struct {
 	// UpdateSeedPasswords sets each seed user's configured password hash on
 	// its existing account at every start, so a password changed in the IdP
 	// does not last. Leave it off when the hash is regenerated at every
-	// deploy: each deploy would reset the password.
+	// deploy: each deploy would reset the password. It takes effect only with
+	// FilePath and CreateIfMissing on a database that is not Static; the
+	// server's config validation refuses any other combination.
 	UpdateSeedPasswords bool `json:"updateSeedPasswords"`
 }
 
@@ -74,6 +79,41 @@ var ErrRegistrationClosed = errors.New("registration is closed")
 // retryable message instead of treating it as an opaque failure.
 var ErrWeakPassword = errors.New("password does not meet the minimum requirements")
 
+// errInvalidUTF8 refuses a value that encoding/json would rewrite: it replaces
+// each invalid UTF-8 byte with U+FFFD when users.json is written, so two names
+// that differ only there become one on disk and the next start fails.
+var errInvalidUTF8 = errors.New("username, email and groups must be valid UTF-8 text")
+
+func validUTF8(groups []string, values ...string) bool {
+	for _, v := range append(values, groups...) {
+		if !utf8.ValidString(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// newAccountIdentity applies the identity rules for a new account. Surrounding
+// whitespace is dropped and control characters are refused so a name cannot
+// pass for another that looks the same; register compares both fields
+// case-insensitively. An empty email stays allowed: only the public form
+// requires one. Login, seed matching and loading stay byte-exact, so accounts
+// created before these rules keep working.
+func newAccountIdentity(username, email string) (string, string, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", "", errors.New("username is required")
+	}
+	trimmedEmail := strings.TrimSpace(email)
+	if email != "" && trimmedEmail == "" {
+		return "", "", errors.New("email must not be blank")
+	}
+	if strings.ContainsFunc(username, unicode.IsControl) || strings.ContainsFunc(trimmedEmail, unicode.IsControl) {
+		return "", "", errors.New("username and email must not contain control characters")
+	}
+	return username, trimmedEmail, nil
+}
+
 // dummyPasswordHash is a valid argon2id hash verified on the username-not-found
 // path of Authenticate so that path spends the same ~100ms as a real password
 // check, denying an attacker a timing oracle for enumerating valid usernames.
@@ -89,11 +129,22 @@ type UserInfo struct {
 	Email    string
 }
 
+// clone is a copy of user that shares nothing with it, so a caller can
+// change what a read returned without touching the published users.
+func (user UserInfo) clone() UserInfo {
+	user.Groups = slices.Clone(user.Groups)
+	return user
+}
+
 type User struct {
 	Config
+	// Lock order: saveMu, then mu. Every writer holds saveMu for its whole
+	// read-modify-write (see update); mu is taken only to copy the users and
+	// to publish a new slice, which is never modified once published.
 	mu     sync.RWMutex // guards users
-	saveMu sync.Mutex   // serializes SaveUsers so concurrent saves never share the temp file
+	saveMu sync.Mutex   // serializes writers
 	users  []UserInfo
+	fsys   fileSystem // nil means the OS
 }
 
 func ensureUserID(users []UserInfo) []UserInfo {
@@ -165,31 +216,40 @@ func (u *User) applySeedPasswords() error {
 		return err
 	}
 
-	changed := false
+	u.saveMu.Lock()
+	defer u.saveMu.Unlock()
+
+	users := u.snapshot()
+	var updated []string
 	for _, s := range seed {
-		i := slices.IndexFunc(u.users, func(ui UserInfo) bool { return ui.Username == s.Username })
+		i := slices.IndexFunc(users, func(ui UserInfo) bool { return ui.Username == s.Username })
 		missing := i == -1
 		// An empty hash would lock the account.
-		if missing || s.Password == "" || u.users[i].Password == s.Password {
+		if missing || s.Password == "" || users[i].Password == s.Password {
 			continue
 		}
 
-		u.users[i].Password = s.Password
-		slog.Info("seed user's password set from the configuration", "username", s.Username)
-		changed = true
+		users[i].Password = s.Password
+		updated = append(updated, s.Username)
 	}
 
-	if !changed {
+	if len(updated) == 0 {
 		return nil
 	}
-	return u.SaveUsers()
+	if err := u.commit(users); err != nil {
+		return err
+	}
+	for _, username := range updated {
+		slog.Info("seed user's password updated from the configuration", "username", username)
+	}
+	return nil
 }
 
-func (u *User) getIndex(id string) (int, bool) {
+func getIndex(users []UserInfo, id string) (int, bool) {
 	if id == "" {
 		return -1, false
 	}
-	i := slices.IndexFunc(u.users, func(ui UserInfo) bool {
+	i := slices.IndexFunc(users, func(ui UserInfo) bool {
 		return ui.ID == id
 	})
 	if i == -1 {
@@ -203,29 +263,29 @@ func (u *User) Get(id string) (UserInfo, bool) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 
-	i, ok := u.getIndex(id)
+	i, ok := getIndex(u.users, id)
 	if !ok {
 		return UserInfo{}, false
 	}
 
-	return u.users[i], true
+	return u.users[i].clone(), true
 }
 
-// Register creates a user for an already-authorized caller (the admin paths);
-// it does not consult RegistrationOpen.
+// Register creates a user for an already-authorized caller; it does not
+// consult RegistrationOpen.
 func (u *User) Register(username string, password string, groups []string, email string) error {
-	_, err := u.registerWithPassword(username, password, groups, email, false)
+	_, err := u.registerWithPassword(username, password, groups, email, nil)
 	return err
 }
 
 // SelfRegister creates a user through the public registration form and returns
-// the new user's ID. It checks RegistrationOpen under the write lock and
+// the new user's ID. It checks RegistrationOpen as it adds the account and
 // returns ErrRegistrationClosed when the form is closed.
 func (u *User) SelfRegister(username string, password string, groups []string, email string) (string, error) {
-	return u.registerWithPassword(username, password, groups, email, true)
+	return u.registerWithPassword(username, password, groups, email, u.selfServiceOpen)
 }
 
-func (u *User) registerWithPassword(username, password string, groups []string, email string, selfService bool) (string, error) {
+func (u *User) registerWithPassword(username, password string, groups []string, email string, authorize func(users []UserInfo) error) (string, error) {
 	if u.Static {
 		return "", ErrReadOnly
 	}
@@ -235,7 +295,7 @@ func (u *User) registerWithPassword(username, password string, groups []string, 
 
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	return u.register(id, username, hash([]byte(id), password), groups, email, selfService)
+	return u.register(id, username, hash([]byte(id), password), groups, email, authorize)
 }
 
 // RegisterLocked creates a user whose password cannot be matched (see
@@ -243,54 +303,73 @@ func (u *User) registerWithPassword(username, password string, groups []string, 
 // via a reset link. It returns the new user's ID.
 func (u *User) RegisterLocked(username string, groups []string, email string) (string, error) {
 	id := ulid.Make().String()
-	return u.register(id, username, LockedPasswordHash, groups, email, false)
+	return u.register(id, username, LockedPasswordHash, groups, email, nil)
 }
 
 // register appends a user with an already-computed password hash, returning the
-// user's ID on success. selfService marks a public-form registration, which
-// RegistrationOpen governs.
-func (u *User) register(id, username, hashedPassword string, groups []string, email string, selfService bool) (string, error) {
+// user's ID on success. authorize, when set, decides against the users the
+// account is added to whether the caller may add it (an open registration
+// form, an admin).
+func (u *User) register(id, username, hashedPassword string, groups []string, email string, authorize func(users []UserInfo) error) (string, error) {
 	if u.Static {
 		return "", ErrReadOnly
 	}
-
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	// Checked under the lock, so a concurrent burst cannot slip a second
-	// account through the bootstrap window.
-	if selfService && !u.registrationOpen() {
-		return "", ErrRegistrationClosed
+	if !validUTF8(groups, username, email) {
+		return "", errInvalidUTF8
+	}
+	username, email, err := newAccountIdentity(username, email)
+	if err != nil {
+		return "", err
 	}
 
-	// The first user becomes an admin, so a fresh deployment is manageable
-	// without hand-editing the user file. A memory-only database is empty on
-	// every boot and would re-arm the grant each restart, hence FilePath.
-	if len(u.users) == 0 && u.UserAdminGroup != "" && u.FilePath != "" && !slices.Contains(groups, u.UserAdminGroup) {
-		groups = append(slices.Clone(groups), u.UserAdminGroup)
+	bootstrapAdmin := false
+	err = u.update(func(users []UserInfo) ([]UserInfo, error) {
+		if authorize != nil {
+			if err := authorize(users); err != nil {
+				return nil, err
+			}
+		}
+
+		newGroups := slices.Clone(groups)
+		// The first user becomes an admin, so a fresh deployment is manageable
+		// without hand-editing the user file. A memory-only database is empty on
+		// every boot and would re-arm the grant each restart, hence FilePath.
+		if len(users) == 0 && u.UserAdminGroup != "" && u.FilePath != "" && !slices.Contains(newGroups, u.UserAdminGroup) {
+			newGroups = append(newGroups, u.UserAdminGroup)
+			bootstrapAdmin = true
+		}
+
+		// Existing names are compared trimmed as well: a database written
+		// before newAccountIdentity may hold " alice ", which must still
+		// block a new "alice" or "Alice". Stored values and byte-exact login
+		// are untouched.
+		if slices.IndexFunc(users, func(u UserInfo) bool {
+			return strings.EqualFold(strings.TrimSpace(u.Username), username)
+		}) != -1 {
+			return nil, errors.New("username already exists")
+		}
+
+		if email != "" && slices.IndexFunc(users, func(u UserInfo) bool {
+			return strings.EqualFold(strings.TrimSpace(u.Email), email)
+		}) != -1 {
+			return nil, errors.New("email already registered")
+		}
+
+		return append(users, UserInfo{
+			ID:       id,
+			Username: username,
+			Email:    email,
+			Password: hashedPassword,
+			Groups:   newGroups,
+		}), nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if bootstrapAdmin {
 		slog.Info("first user in an empty database registered as admin", "username", username, "group", u.UserAdminGroup)
 	}
-
-	if slices.IndexFunc(u.users, func(u UserInfo) bool {
-		return u.Username == username
-	}) != -1 {
-		return "", errors.New("username already exists")
-	}
-
-	if email != "" && slices.IndexFunc(u.users, func(u UserInfo) bool {
-		return u.Email == email
-	}) != -1 {
-		return "", errors.New("email already registered")
-	}
-
-	u.users = append(u.users, UserInfo{
-		ID:       id,
-		Username: username,
-		Email:    email,
-		Password: hashedPassword,
-		Groups:   groups,
-	})
-
 	return id, nil
 }
 
@@ -304,17 +383,27 @@ func (u *User) Count() int {
 
 // RegistrationOpen reports whether the public registration form may create an
 // account: always with SelfRegistration, or with AllowBootstrap while the
-// database is empty. register makes the binding check under the write lock.
+// database is empty. register makes the binding check as it adds the account.
 func (u *User) RegistrationOpen() bool {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 
-	return u.registrationOpen()
+	return u.registrationOpen(len(u.users))
 }
 
-// registrationOpen is RegistrationOpen for callers that already hold u.mu.
-func (u *User) registrationOpen() bool {
-	return u.SelfRegistration || (u.AllowBootstrap && len(u.users) == 0)
+// registrationOpen is RegistrationOpen for a database of n users.
+func (u *User) registrationOpen(n int) bool {
+	return u.SelfRegistration || (u.AllowBootstrap && n == 0)
+}
+
+// selfServiceOpen authorizes a public-form registration against the users it
+// is added to, so a concurrent burst cannot slip a second account through the
+// bootstrap window.
+func (u *User) selfServiceOpen(users []UserInfo) error {
+	if !u.registrationOpen(len(users)) {
+		return ErrRegistrationClosed
+	}
+	return nil
 }
 
 func (u *User) KnownGroups() []string {
@@ -349,14 +438,14 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) er
 	}
 	newHash := hash([]byte(user.ID), newPassword)
 
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	i, ok := u.getIndex(userID)
-	if !ok {
-		return errors.New("user not found")
-	}
-	u.users[i].Password = newHash
-	return nil
+	return u.update(func(users []UserInfo) ([]UserInfo, error) {
+		i, ok := getIndex(users, userID)
+		if !ok {
+			return nil, errors.New("user not found")
+		}
+		users[i].Password = newHash
+		return users, nil
+	})
 }
 
 // SetPassword sets a user's password without requiring the current one. It is
@@ -378,14 +467,14 @@ func (u *User) SetPassword(userID, newPassword string) error {
 	// hash runs argon2id (~100ms); keep it out of the lock.
 	newHash := hash([]byte(user.ID), newPassword)
 
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	i, ok := u.getIndex(userID)
-	if !ok {
-		return errors.New("user not found")
-	}
-	u.users[i].Password = newHash
-	return nil
+	return u.update(func(users []UserInfo) ([]UserInfo, error) {
+		i, ok := getIndex(users, userID)
+		if !ok {
+			return nil, errors.New("user not found")
+		}
+		users[i].Password = newHash
+		return users, nil
+	})
 }
 
 func (u *User) Authenticate(username, password string) (UserInfo, bool) {
@@ -400,56 +489,24 @@ func (u *User) Authenticate(username, password string) (UserInfo, bool) {
 		_ = verifyPassword(UserInfo{Password: dummyPasswordHash}, password)
 		return UserInfo{}, false
 	}
-	user := u.users[i]
+	user := u.users[i].clone()
 	u.mu.RUnlock()
 
 	// verifyPassword runs argon2id/bcrypt (~100ms); keep it out of the lock.
 	return user, verifyPassword(user, password)
 }
 
+// SaveUsers writes the users held in memory to FilePath. Every mutating
+// operation already writes its own change; New uses this for a new database.
 func (u *User) SaveUsers() error {
 	if u.Static {
 		return ErrReadOnly
 	}
-	if u.FilePath == "" {
-		return nil
-	}
 
-	// Serialize saves: the temp file path is shared, so two concurrent saves
-	// must not write it at the same time. Held across marshal+write+rename.
 	u.saveMu.Lock()
 	defer u.saveMu.Unlock()
 
-	u.mu.RLock()
-	data, err := json.Marshal(u.users)
-	u.mu.RUnlock()
-	if err != nil {
-		return err
-	}
-
-	file, err := os.Create(u.FilePath + "~")
-	if err != nil {
-		return fmt.Errorf("create temp user file: %w", err)
-	}
-
-	_, err = file.Write(data)
-	if err != nil {
-		if err := file.Close(); err != nil {
-			slog.Error("failed to close user file after write error", "error", err)
-		}
-
-		return fmt.Errorf("write user data: %w", err)
-	}
-
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close temp user file: %w", err)
-	}
-
-	if err := os.Rename(u.FilePath+"~", u.FilePath); err != nil {
-		return fmt.Errorf("rename temp user file: %w", err)
-	}
-
-	return nil
+	return u.commit(u.snapshot())
 }
 
 func (u *User) loadUsersFromFile() error {

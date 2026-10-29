@@ -88,6 +88,16 @@ func (c *config) Validate() error {
 		return errors.New("baseUrl must start with http:// or https://")
 	}
 
+	// The issuer is compared verbatim by relying parties, and a credential in
+	// it would be published in discovery. Hostname, not Host: "https://:443"
+	// has a Host of ":443" and names no server.
+	if parsedUrl.Hostname() == "" {
+		return errors.New("baseUrl must have a host")
+	}
+	if parsedUrl.User != nil {
+		return errors.New("baseUrl must not contain userinfo")
+	}
+
 	if parsedUrl.RawQuery != "" || parsedUrl.Fragment != "" {
 		return errors.New("baseUrl must not contain a query or fragment")
 	}
@@ -108,10 +118,15 @@ func (c *config) Validate() error {
 		return errors.New("at least one client is required")
 	}
 
+	seenIDs := map[string]struct{}{}
 	for i, client := range c.Clients {
 		if client.Id == "" {
 			return fmt.Errorf("client %d: id is required", i)
 		}
+		if _, dup := seenIDs[client.Id]; dup {
+			return fmt.Errorf("client %d (%s): duplicate id", i, client.Id)
+		}
+		seenIDs[client.Id] = struct{}{}
 		uris := append([]string{}, client.RedirectUris...)
 		if client.RedirectUri != "" {
 			uris = append(uris, client.RedirectUri)
@@ -144,8 +159,12 @@ func (c *config) Validate() error {
 		}
 	}
 
-	if !c.SigningKey.GenerateIfMissing && c.SigningKey.FilePath == "" {
-		return errors.New("signingKey.filePath is required when generateIfMissing is false")
+	// Without a path a generated key is never read back, so every start would
+	// generate a new one: tokens signed with the previous key no longer
+	// validate against the restarted provider (a verifier still holding the
+	// old key is not affected).
+	if c.SigningKey.FilePath == "" {
+		return errors.New("signingKey.filePath is required")
 	}
 
 	if c.Users != nil && c.Users.AllowBootstrap {
@@ -154,6 +173,17 @@ func (c *config) Validate() error {
 		}
 		if c.Users.FilePath == "" {
 			return errors.New("users.allowBootstrap requires users.filePath: without a persistent database the bootstrap window would reopen on every restart")
+		}
+	}
+
+	// The seed is applied to a writable file database only; anything else
+	// would ignore the option and leave a rotated-out password valid.
+	if c.Users != nil && c.Users.UpdateSeedPasswords {
+		if c.Users.Static {
+			return errors.New("users.updateSeedPasswords cannot be combined with users.static (read-only database)")
+		}
+		if c.Users.FilePath == "" || !c.Users.CreateIfMissing {
+			return errors.New("users.updateSeedPasswords requires users.filePath and users.createIfMissing: without them the configured seed passwords are never applied")
 		}
 	}
 

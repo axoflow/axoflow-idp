@@ -59,15 +59,13 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.ChangePassword(u.ID, currentPassword, newPassword); err != nil {
+			if saveFailed(err, "operation", "change_password", "user_id", u.ID) {
+				res.WriteHeader(http.StatusInternalServerError)
+				r.renderChangePassword(res, sessionCookie.Value, saveFailedMessage)
+				return
+			}
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderChangePassword(res, sessionCookie.Value, err.Error())
-			return
-		}
-
-		if err := r.user.SaveUsers(); err != nil {
-			slog.Error("failed to save users after password change", "user_id", u.ID, "error", err)
-			res.WriteHeader(http.StatusInternalServerError)
-			r.renderChangePassword(res, sessionCookie.Value, "Could not save your new password, please try again")
 			return
 		}
 
@@ -211,6 +209,12 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.SetPassword(userID, newPassword); err != nil {
+			// The token is still unconsumed, so the link works for a retry.
+			if saveFailed(err, "operation", "set_password", "target_user_id", userID) {
+				res.WriteHeader(http.StatusInternalServerError)
+				r.renderSetPasswordForm(res, token, saveFailedMessage)
+				return
+			}
 			// A weak password is a client-side mistake: keep the token usable and
 			// re-render the form with the reason, like the empty-password branch.
 			if errors.Is(err, user.ErrWeakPassword) {
@@ -220,13 +224,6 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			}
 			slog.Warn("set password via reset link failed", "target_user_id", userID, "error", err)
 			r.renderSetPasswordInvalid(res)
-			return
-		}
-
-		if err := r.user.SaveUsers(); err != nil {
-			slog.Error("failed to save users after set-password via reset link", "target_user_id", userID, "error", err)
-			res.WriteHeader(http.StatusInternalServerError)
-			r.renderSetPasswordForm(res, token, "Could not save your new password, please try again")
 			return
 		}
 

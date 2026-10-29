@@ -16,9 +16,12 @@ package user
 
 import (
 	"errors"
-
 	"slices"
+
+	"github.com/oklog/ulid/v2"
 )
+
+var errNotAdmin = errors.New("user is not an admin")
 
 func (u *User) IsAdmin(userInfo *UserInfo) bool {
 	if u.UserAdminGroup == "" {
@@ -30,10 +33,13 @@ func (u *User) IsAdmin(userInfo *UserInfo) bool {
 
 func (u *User) AdminRegister(adminID string, username string, password string, groups []string, email string) error {
 	if !u.getAndVerifyAdmin(adminID) {
-		return errors.New("user is not an admin")
+		return errNotAdmin
 	}
 
-	return u.Register(username, password, groups, email)
+	_, err := u.registerWithPassword(username, password, groups, email, func(users []UserInfo) error {
+		return u.requireAdmin(users, adminID)
+	})
+	return err
 }
 
 // AdminRegisterLocked registers a user with no usable password (see
@@ -41,10 +47,12 @@ func (u *User) AdminRegister(adminID string, username string, password string, g
 // caller can issue a password-reset link for them.
 func (u *User) AdminRegisterLocked(adminID string, username string, groups []string, email string) (string, error) {
 	if !u.getAndVerifyAdmin(adminID) {
-		return "", errors.New("user is not an admin")
+		return "", errNotAdmin
 	}
 
-	return u.RegisterLocked(username, groups, email)
+	return u.register(ulid.Make().String(), username, LockedPasswordHash, groups, email, func(users []UserInfo) error {
+		return u.requireAdmin(users, adminID)
+	})
 }
 
 func (u *User) AdminList(adminID string) ([]UserInfo, error) {
@@ -58,6 +66,7 @@ func (u *User) AdminList(adminID string) ([]UserInfo, error) {
 	users := make([]UserInfo, len(u.users))
 	copy(users, u.users)
 	for i := range users {
+		users[i] = users[i].clone()
 		users[i].Password = ""
 	}
 
@@ -76,16 +85,16 @@ func (u *User) AdminDelete(adminID string, targetID string) error {
 		return errors.New("are you trying to delete yourself?")
 	}
 
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	i, ok := u.getIndex(targetID)
-	if !ok {
-		return errors.New("target user not found")
-	}
-
-	u.users = slices.Delete(u.users, i, i+1)
-	return nil
+	return u.update(func(users []UserInfo) ([]UserInfo, error) {
+		if err := u.requireAdmin(users, adminID); err != nil {
+			return nil, err
+		}
+		i, ok := getIndex(users, targetID)
+		if !ok {
+			return nil, errors.New("target user not found")
+		}
+		return slices.Delete(users, i, i+1), nil
+	})
 }
 
 func (u *User) AdminResetPassword(adminID string, targetID string, newPassword string) error {
@@ -110,16 +119,17 @@ func (u *User) AdminResetPassword(adminID string, targetID string, newPassword s
 	// hash runs argon2id (~100ms); keep it out of the lock.
 	newHash := hash([]byte(user.ID), newPassword)
 
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	i, ok := u.getIndex(targetID)
-	if !ok {
-		return errors.New("target user not found") // concurrent deletion
-	}
-
-	u.users[i].Password = newHash
-	return nil
+	return u.update(func(users []UserInfo) ([]UserInfo, error) {
+		if err := u.requireAdmin(users, adminID); err != nil {
+			return nil, err
+		}
+		i, ok := getIndex(users, targetID)
+		if !ok {
+			return nil, errors.New("target user not found") // concurrent deletion
+		}
+		users[i].Password = newHash
+		return users, nil
+	})
 }
 
 func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []string) error {
@@ -129,6 +139,9 @@ func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []s
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
 	}
+	if !validUTF8(groups) {
+		return errInvalidUTF8
+	}
 
 	// With the self-delete guard in AdminDelete this keeps at least one admin:
 	// the caller is still one after every operation.
@@ -136,15 +149,28 @@ func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []s
 		return errors.New("cannot remove the admin group from yourself")
 	}
 
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	return u.update(func(users []UserInfo) ([]UserInfo, error) {
+		if err := u.requireAdmin(users, adminID); err != nil {
+			return nil, err
+		}
+		i, ok := getIndex(users, targetID)
+		if !ok {
+			return nil, errors.New("target user not found")
+		}
+		users[i].Groups = slices.Clone(groups)
+		return users, nil
+	})
+}
 
-	i, ok := u.getIndex(targetID)
-	if !ok {
-		return errors.New("target user not found")
+// requireAdmin is the binding admin check of a write, made against the users
+// it changes while it holds saveMu, so a concurrent demotion or deletion of
+// the admin cannot slip in between. getAndVerifyAdmin before it only fails
+// fast.
+func (u *User) requireAdmin(users []UserInfo, adminID string) error {
+	i, ok := getIndex(users, adminID)
+	if !ok || !u.IsAdmin(&users[i]) {
+		return errNotAdmin
 	}
-
-	u.users[i].Groups = groups
 	return nil
 }
 

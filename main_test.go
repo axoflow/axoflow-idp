@@ -65,7 +65,7 @@ func TestBaseUrlPrefixDerivation(t *testing.T) {
 			raw, err := json.Marshal(map[string]any{
 				"baseUrl":    tc.baseUrl,
 				"clients":    []map[string]string{{"id": "c", "redirectUri": "https://rp/cb", "clientSecret": "s"}},
-				"signingKey": map[string]any{"generateIfMissing": true},
+				"signingKey": map[string]any{"filePath": "signing-key.json", "generateIfMissing": true},
 			})
 			if err != nil {
 				t.Fatalf("marshal config: %v", err)
@@ -115,6 +115,7 @@ func TestValidateClientSecret(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{tc.client}}
+			cfg.SigningKey.FilePath = "signing-key.json"
 			cfg.SigningKey.GenerateIfMissing = true
 			if err := cfg.Validate(); (err != nil) != tc.wantErr {
 				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
@@ -148,6 +149,7 @@ func TestValidateClientUrisAndResources(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := oidc.Client{Id: "cli", Public: true, RedirectUri: tc.redirectUri, RedirectUris: tc.redirectUris, Resources: tc.resources}
 			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{client}}
+			cfg.SigningKey.FilePath = "signing-key.json"
 			cfg.SigningKey.GenerateIfMissing = true
 			if err := cfg.Validate(); (err != nil) != tc.wantErr {
 				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
@@ -169,6 +171,7 @@ func TestValidateClientTokenTTL(t *testing.T) {
 	} {
 		t.Run(tc.ttl, func(t *testing.T) {
 			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{{Id: "cli", Public: true, RedirectUris: []string{"http://127.0.0.1/callback"}, TokenTTL: tc.ttl}}}
+			cfg.SigningKey.FilePath = "signing-key.json"
 			cfg.SigningKey.GenerateIfMissing = true
 			err := cfg.Validate()
 			if (err != nil) != tc.wantErr {
@@ -183,7 +186,7 @@ func TestValidateClientTokenTTL(t *testing.T) {
 	raw, err := json.Marshal(map[string]any{
 		"baseUrl":    "https://host",
 		"clients":    []map[string]any{{"id": "cli", "public": true, "redirectUris": []string{"http://127.0.0.1/callback"}, "tokenTTL": 3600}},
-		"signingKey": map[string]any{"generateIfMissing": true},
+		"signingKey": map[string]any{"filePath": "signing-key.json", "generateIfMissing": true},
 	})
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
@@ -339,5 +342,73 @@ func TestDiscoveryDocumentUnderPrefix(t *testing.T) {
 		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMovedPermanently {
 			t.Errorf("%s %q is advertised but not served: got %d", name, endpoint, rec.Code)
 		}
+	}
+}
+
+// TestValidateRefusesIneffectiveSettings: each row is a setting that would start
+// a server doing something other than what the configuration says.
+func TestValidateRefusesIneffectiveSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(c *config)
+		wantErr string
+	}{
+		{name: "valid", modify: func(*config) {}},
+		{name: "updateSeedPasswords with filePath and createIfMissing", modify: func(c *config) {
+			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json", CreateIfMissing: true}
+		}},
+		{name: "updateSeedPasswords without createIfMissing", modify: func(c *config) {
+			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json"}
+		}, wantErr: "users.updateSeedPasswords requires users.filePath and users.createIfMissing"},
+		{name: "updateSeedPasswords without filePath", modify: func(c *config) {
+			c.Users = &user.Config{UpdateSeedPasswords: true, CreateIfMissing: true}
+		}, wantErr: "users.updateSeedPasswords requires users.filePath and users.createIfMissing"},
+		{name: "updateSeedPasswords with static", modify: func(c *config) {
+			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json", CreateIfMissing: true, Static: true}
+		}, wantErr: "users.updateSeedPasswords cannot be combined with users.static"},
+		{name: "generateIfMissing without filePath", modify: func(c *config) {
+			c.SigningKey.FilePath = ""
+		}, wantErr: "signingKey.filePath is required"},
+		{name: "no filePath without generateIfMissing", modify: func(c *config) {
+			c.SigningKey.FilePath = ""
+			c.SigningKey.GenerateIfMissing = false
+		}, wantErr: "signingKey.filePath is required"},
+		{name: "duplicate client id", modify: func(c *config) {
+			c.Clients = append(c.Clients, c.Clients[0])
+		}, wantErr: "client 1 (cli): duplicate id"},
+		{name: "baseUrl without a host", modify: func(c *config) {
+			c.BaseUrl = "https:///idp"
+		}, wantErr: "baseUrl must have a host"},
+		{name: "baseUrl with a port and no hostname", modify: func(c *config) {
+			c.BaseUrl = "https://:443/idp"
+		}, wantErr: "baseUrl must have a host"},
+		{name: "baseUrl with a hostname and port", modify: func(c *config) {
+			c.BaseUrl = "https://idp.example.test:8443/idp"
+		}},
+		{name: "baseUrl with an IPv6 host", modify: func(c *config) {
+			c.BaseUrl = "https://[::1]/idp"
+		}},
+		{name: "baseUrl with userinfo", modify: func(c *config) {
+			c.BaseUrl = "https://admin:secret@host"
+		}, wantErr: "baseUrl must not contain userinfo"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{BaseUrl: "https://host", Clients: []oidc.Client{{Id: "cli", Public: true, RedirectUris: []string{"http://127.0.0.1/callback"}}}}
+			cfg.SigningKey.FilePath = "signing-key.json"
+			cfg.SigningKey.GenerateIfMissing = true
+			tc.modify(&cfg)
+
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }

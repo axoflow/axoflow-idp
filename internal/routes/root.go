@@ -235,20 +235,15 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 
 		id, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
 		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, user.ErrRegistrationClosed) {
+			status, message := http.StatusBadRequest, err.Error()
+			switch {
+			case errors.Is(err, user.ErrRegistrationClosed):
 				status = http.StatusForbidden
+			case saveFailed(err, "operation", "self_register", "new_user", username):
+				status, message = http.StatusInternalServerError, saveFailedMessage
 			}
 			res.WriteHeader(status)
-			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{Message: err.Error()}); err != nil {
-				slog.Error("failed to render register template", "error", err)
-			}
-			return
-		}
-
-		if err := r.user.SaveUsers(); err != nil {
-			res.WriteHeader(http.StatusInternalServerError)
-			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{Message: err.Error()}); err != nil {
+			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{Message: message}); err != nil {
 				slog.Error("failed to render register template", "error", err)
 			}
 			return

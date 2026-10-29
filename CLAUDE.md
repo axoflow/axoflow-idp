@@ -30,7 +30,7 @@ CONFIG=config.json go run .   # serves on :8080
 Templates load from `./templates` (override with `TEMPLATES_DIR`). A minimal
 `config.json` needs `baseUrl`, at least one `client` (`id`, `redirectUri` or
 `redirectUris`, and either `clientSecret` or `public: true`), and a
-`signingKey` (`generateIfMissing: true` for local dev). `config.json`,
+`signingKey.filePath` (`generateIfMissing: true` for local dev). `config.json`,
 `users.json`, and `signing-key.json` are gitignored local/dev artifacts — never
 commit real secrets or users.
 
@@ -105,7 +105,8 @@ whose `aud` is the requested RFC 8707 `resource`, or the client id without one.
 - Seed users (`users.users`) reach a new database only. With
   `users.updateSeedPasswords`, a seed user's password is the exception: every
   start sets the configured hash on the existing account (see README "Seeding
-  the user database").
+  the user database"). Config validation requires `filePath` and
+  `createIfMissing` with it, and refuses it with `static`.
 - Bootstrap: the first user registered into an *empty* database joins
   `users.userAdminGroup`, so a fresh deployment has an admin without anyone
   hand-editing `users.json`. It needs a persistent database (`filePath`);
