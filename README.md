@@ -23,6 +23,9 @@ Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authenticati
     "signingKey": {
         "filePath": "signing-key.pem",
         "generateIfMissing": true
+    },
+    "revocations": {
+        "filePath": "revocations.json"
     }
 }
 ```
@@ -348,6 +351,11 @@ cooldown: for 10 seconds every sign-in attempt for it, the right password
 included, gets the same "Invalid username or password" page with a
 `Retry-After` header, and the password is not checked. Each failure after a
 cooldown doubles it, up to 30 seconds; a successful sign-in clears the count.
+An attempt counts from the moment its password check starts, so concurrent
+attempts get no more checks than sequential ones: at most five before the
+first cooldown, one at a time after a cooldown has run, and the rest are
+refused like an attempt in cooldown. A refusal because the server is busy
+checking other passwords (`503`) is not a failure.
 The count is kept in memory per exact username (byte for byte, as the
 password check matches it), under a SHA-256 digest of the username rather than
 the username itself, for at most 10,000 usernames: an entry whose 10 minutes
