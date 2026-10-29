@@ -155,8 +155,59 @@ func TestKDFGate_Waiters(t *testing.T) {
 	}
 }
 
-// The production gate under 64 concurrent logins: 4 derive at once, 32 wait,
-// the rest and a 65th caller are refused without waiting for the deadline.
+// The gate main serves with, not one a test sets: 4 slots, 32 waiters, a
+// 2-second deadline.
+func TestKDFGate_ProductionDefaults(t *testing.T) {
+	if cap(kdf.slots) != 4 || cap(kdf.waiters) != 32 || kdf.wait != 2*time.Second {
+		t.Errorf("gate of %d slots, %d waiters, %v; want 4, 32, 2s", cap(kdf.slots), cap(kdf.waiters), kdf.wait)
+	}
+}
+
+// Every derivation of these operations enters a slot of the gate, where
+// testOnDerive runs, and the operation still succeeds: ChangePassword's
+// second one, the legacy base64 check and SetPassword are reached by no
+// busy-gate test of the routes once an earlier derivation was refused.
+func TestKDFGate_AdmitsEveryDerivation(t *testing.T) {
+	legacy := base64.StdEncoding.EncodeToString(argon2.IDKey([]byte("legacypass"), []byte("carol"), argon2Time, argon2Memory, argon2Threads, argon2KeyLen))
+	tests := []struct {
+		name            string
+		wantDerivations int
+		op              func(u *User) error
+	}{
+		{"change password, the old one and the new", 2, func(u *User) error {
+			_, err := u.ChangePassword("bob", "bobpass12", "bobpass99")
+			return err
+		}},
+		{"a legacy base64 hash", 1, func(u *User) error { _, err := u.Verify("carol", "legacypass"); return err }},
+		{"set password", 1, func(u *User) error { return u.SetPassword("bob", "bobpass99") }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := New(Config{})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			u.users = []UserInfo{
+				{ID: "bob", Username: "bob", Password: cheapHash("bob", "bobpass12")},
+				{ID: "carol", Username: "carol", Password: legacy},
+			}
+			var derivations int
+			testOnDerive = func() { derivations++ }
+			t.Cleanup(func() { testOnDerive = nil })
+			if err := tc.op(u); err != nil {
+				t.Fatalf("%s = %v", tc.name, err)
+			}
+			if derivations != tc.wantDerivations {
+				t.Errorf("%d derivations through the gate, want %d", derivations, tc.wantDerivations)
+			}
+		})
+	}
+}
+
+// The production gate's bounds under 64 concurrent logins: 4 derive at once,
+// 32 wait, the rest and a 65th caller are refused without waiting for the
+// deadline. A derivation counts from its start until it has returned, so
+// the maximum is of derivations admitted, not of callbacks.
 func TestKDFGate_ConcurrentLogins(t *testing.T) {
 	u, err := New(Config{})
 	if err != nil {
@@ -166,18 +217,18 @@ func TestKDFGate_ConcurrentLogins(t *testing.T) {
 
 	const slots, waiters, deadline, logins = 4, 32, 2 * time.Second, 64
 	t.Cleanup(SetKDFGate(slots, waiters, deadline))
-	var active, maxActive, derived atomic.Int32
+	var active, maxActive atomic.Int32
 	release := make(chan struct{})
 	testOnDerive = func() {
 		n := active.Add(1)
 		for m := maxActive.Load(); n > m && !maxActive.CompareAndSwap(m, n); m = maxActive.Load() {
 		}
+	}
+	testOnDeriveDone = func() {
 		<-release
-		derived.Add(1)
 		active.Add(-1)
 	}
-	t.Cleanup(func() { testOnDerive = nil })
-
+	t.Cleanup(func() { testOnDerive, testOnDeriveDone = nil, nil })
 	var busy, ok atomic.Int32
 	var wg sync.WaitGroup
 	for range logins {
@@ -195,8 +246,13 @@ func TestKDFGate_ConcurrentLogins(t *testing.T) {
 		}()
 	}
 	waitFor(t, "the gate to fill", func() bool {
-		return active.Load() == slots && len(kdf.waiters) == waiters && busy.Load() == logins-slots-waiters
+		return active.Load() > slots || active.Load() == slots && len(kdf.waiters) == waiters && busy.Load() == logins-slots-waiters
 	})
+	if n := active.Load(); n > slots {
+		close(release)
+		wg.Wait()
+		t.Fatalf("%d derivations at once, want at most %d", n, slots)
+	}
 
 	start := time.Now()
 	_, err = u.Verify("alice", "alicepass1")
@@ -217,16 +273,21 @@ func TestKDFGate_ConcurrentLogins(t *testing.T) {
 
 // A stored argon2id string is read from users.json: parameters outside the
 // bounds would let it allocate or spin without limit, or panic in argon2.
+// Each refused row is refused by the parser and runs the dummy derivation
+// instead of its own; where the derivation is affordable its digest is the
+// matching one, so a missing bound would let "pw" in.
 func TestVerifyArgon2id_ParameterBounds(t *testing.T) {
 	salt := base64.RawStdEncoding.EncodeToString([]byte("somesalt"))
 	key := base64.RawStdEncoding.EncodeToString(make([]byte, 32))
 	phc := func(v, params, salt, key string) string {
 		return "$argon2id$" + v + "$" + params + "$" + salt + "$" + key
 	}
-	valid := func(m, tm uint32, p uint8) string {
-		k := argon2.IDKey([]byte("pw"), []byte("somesalt"), tm, m, p, 32)
-		return phc("v=19", fmt.Sprintf("m=%d,t=%d,p=%d", m, tm, p), salt, base64.RawStdEncoding.EncodeToString(k))
+	// matching is the PHC string of "pw" under these parameters, labeled v
+	matching := func(v string, m, tm uint32, p uint8, rawSalt string, keyLen uint32) string {
+		k := argon2.IDKey([]byte("pw"), []byte(rawSalt), tm, m, p, keyLen)
+		return phc(v, fmt.Sprintf("m=%d,t=%d,p=%d", m, tm, p), base64.RawStdEncoding.EncodeToString([]byte(rawSalt)), base64.RawStdEncoding.EncodeToString(k))
 	}
+	valid := func(m, tm uint32, p uint8) string { return matching("v=19", m, tm, p, "somesalt", 32) }
 	tests := []struct {
 		name, stored string
 		want         bool
@@ -234,28 +295,35 @@ func TestVerifyArgon2id_ParameterBounds(t *testing.T) {
 		{"memory at the bound", valid(32768, 1, 1), true},
 		{"time at the bound", valid(8, 10, 1), true},
 		{"threads at the bound", valid(32, 1, 4), true},
-		{"memory over 32 MiB", phc("v=19", "m=32769,t=1,p=1", salt, key), false},
+		{"salt at the bound", matching("v=19", 8, 1, 1, strings.Repeat("s", maxSaltLen), 32), true},
+		{"digest of 16 bytes", matching("v=19", 8, 1, 1, "somesalt", 16), true},
+		{"digest of 64 bytes", matching("v=19", 8, 1, 1, "somesalt", 64), true},
+		{"memory over 32 MiB", valid(32769, 1, 1), false},
 		{"memory of 1 GiB", phc("v=19", "m=1048576,t=1,p=1", salt, key), false},
 		{"memory overflowing uint32", phc("v=19", "m=99999999999,t=1,p=1", salt, key), false},
 		{"no time", phc("v=19", "m=8,t=0,p=1", salt, key), false},
-		{"time over 10", phc("v=19", "m=8,t=11,p=1", salt, key), false},
+		{"time over 10", valid(8, 11, 1), false},
 		{"no threads", phc("v=19", "m=8,t=1,p=0", salt, key), false},
-		{"threads over 4", phc("v=19", "m=40,t=1,p=5", salt, key), false},
+		{"threads over 4", valid(40, 1, 5), false},
 		{"threads overflowing uint8", phc("v=19", "m=8,t=1,p=300", salt, key), false},
-		{"another version", phc("v=16", "m=8,t=1,p=1", salt, key), false},
+		{"another version", matching("v=16", 8, 1, 1, "somesalt", 32), false},
 		{"no salt", phc("v=19", "m=8,t=1,p=1", "", key), false},
-		{"salt over 1024 bytes", phc("v=19", "m=8,t=1,p=1", base64.RawStdEncoding.EncodeToString(make([]byte, 1025)), key), false},
+		{"salt over the bound", matching("v=19", 8, 1, 1, strings.Repeat("s", maxSaltLen+1), 32), false},
 		{"no digest", phc("v=19", "m=8,t=1,p=1", salt, ""), false},
-		{"digest under 16 bytes", phc("v=19", "m=8,t=1,p=1", salt, base64.RawStdEncoding.EncodeToString(make([]byte, 15))), false},
-		{"digest over 64 bytes", phc("v=19", "m=8,t=1,p=1", salt, base64.RawStdEncoding.EncodeToString(make([]byte, 65))), false},
+		{"digest under 16 bytes", matching("v=19", 8, 1, 1, "somesalt", 15), false},
+		{"digest over 64 bytes", matching("v=19", 8, 1, 1, "somesalt", 65), false},
 		{"salt not base64", phc("v=19", "m=8,t=1,p=1", "!!", key), false},
 		{"a part missing", "$argon2id$v=19$m=8,t=1,p=1$" + salt, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var derivations int
+			if _, parsed := parseArgon2id(tc.stored); parsed != tc.want {
+				t.Errorf("parseArgon2id accepts it = %v, want %v", parsed, tc.want)
+			}
+			var derivations, dummies int
 			testOnDerive = func() { derivations++ }
-			t.Cleanup(func() { testOnDerive = nil })
+			testOnDummy = func() { dummies++ }
+			t.Cleanup(func() { testOnDerive, testOnDummy = nil, nil })
 
 			ok, err := func() (ok bool, err error) {
 				defer func() {
@@ -269,8 +337,8 @@ func TestVerifyArgon2id_ParameterBounds(t *testing.T) {
 				t.Fatalf("verifyPassword(%.60s) = %v, %v; want %v, nil", tc.stored, ok, err, tc.want)
 			}
 			// a refused value runs the dummy derivation instead of its own
-			if derivations != 1 {
-				t.Errorf("%d derivations, want 1", derivations)
+			if wantDummies := map[bool]int{true: 0, false: 1}[tc.want]; derivations != 1 || dummies != wantDummies {
+				t.Errorf("%d derivations, %d of them the dummy; want 1 and %d", derivations, dummies, wantDummies)
 			}
 		})
 	}

@@ -220,10 +220,17 @@ func newTestMux(t *testing.T, baseUrl string) http.Handler {
 // newTestMuxWithUsers is newTestMux serving the users of u.
 func newTestMuxWithUsers(t *testing.T, baseUrl string, u *user.User) http.Handler {
 	t.Helper()
+	return newTestMuxWithClients(t, baseUrl, u, []oidc.Client{{Id: "c", RedirectUri: "https://rp/cb"}})
+}
+
+// newTestMuxWithClients is newTestMuxWithUsers registering clients, which
+// reach the routes the way main passes them.
+func newTestMuxWithClients(t *testing.T, baseUrl string, u *user.User, clients []oidc.Client) http.Handler {
+	t.Helper()
 
 	o, err := oidc.New(oidc.Config{
 		BaseUrl:           baseUrl,
-		Clients:           []oidc.Client{{Id: "c", RedirectUri: "https://rp/cb"}},
+		Clients:           clients,
 		Keychain:          keychain.New(),
 		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
 		GenerateIfMissing: true,
@@ -232,7 +239,7 @@ func newTestMuxWithUsers(t *testing.T, baseUrl string, u *user.User) http.Handle
 		t.Fatalf("oidc.New: %v", err)
 	}
 
-	cfg := baseRoutesConfig(baseUrl, time.Hour)
+	cfg := baseRoutesConfig(&config{BaseUrl: baseUrl, Clients: clients}, time.Hour)
 	cfg.Oidc = o
 	cfg.Session = session.New(session.Config{})
 	cfg.User = u
@@ -952,6 +959,59 @@ func TestValidateWarnsShortClientSecret(t *testing.T) {
 			}
 			if warned := strings.Contains(buf.String(), `"client_id":"`+tc.client.Id+`"`); warned != tc.wantWarn {
 				t.Errorf("warned = %v, want %v: %s", warned, tc.wantWarn, buf.String())
+			}
+		})
+	}
+}
+
+// TestClientSecretFailuresThroughTheWiring counts a confidential client's
+// wrong secret at /token and at /revoke, each on a server of its own, with
+// the clients reaching the routes as main passes them. A public client's
+// failure is not counted, and neither is a /revoke with the right secret and
+// no token: it is invalid_request, not a guess.
+func TestClientSecretFailuresThroughTheWiring(t *testing.T) {
+	clients := []oidc.Client{
+		{Id: "app", ClientSecret: "a-long-random-secret", RedirectUri: "https://rp/cb"},
+		{Id: "cli", Public: true, RedirectUri: "http://127.0.0.1/callback"},
+	}
+	tests := []struct {
+		name, path string
+		form       url.Values
+		wantStatus int
+		wantWarn   bool
+	}{
+		{"/token, a wrong secret", "/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"guess"}, "redirect_uri": {"https://rp/cb"}, "code": {"x"}}, http.StatusUnauthorized, true},
+		{"/revoke, a wrong secret", "/revoke", url.Values{"token": {"x"}, "client_id": {"app"}, "client_secret": {"guess"}}, http.StatusUnauthorized, true},
+		{"/token, the public client", "/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"cli"}, "redirect_uri": {"http://127.0.0.1/callback"}, "code": {"x"}}, http.StatusBadRequest, false},
+		{"/revoke, the public client with a secret", "/revoke", url.Values{"token": {"x"}, "client_id": {"cli"}, "client_secret": {"guess"}}, http.StatusUnauthorized, false},
+		{"/revoke, the right secret and no token", "/revoke", url.Values{"client_id": {"app"}, "client_secret": {"a-long-random-secret"}}, http.StatusBadRequest, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			u, err := user.New(user.Config{})
+			if err != nil {
+				t.Fatalf("user.New: %v", err)
+			}
+			mux := newTestMuxWithClients(t, "https://host", u, clients)
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusBadRequest && tc.path == "/revoke" && !strings.Contains(rec.Body.String(), "invalid_request") {
+				t.Errorf("body = %s, want invalid_request", rec.Body.String())
+			}
+			warned := strings.Contains(buf.String(), "wrong client_secret")
+			if warned != tc.wantWarn || (warned && !strings.Contains(buf.String(), `"client_id":"app","failures":1`)) {
+				t.Errorf("warnings = %q, want one for app: %v", buf.String(), tc.wantWarn)
 			}
 		})
 	}

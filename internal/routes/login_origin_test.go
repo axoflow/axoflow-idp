@@ -133,36 +133,73 @@ func TestOidcAuth_DirectPostFromTheRelyingParty(t *testing.T) {
 }
 
 // The login form of /oidc/auth signs in only for a valid authorization
-// request: an invalid one is refused without creating a session, even with
-// the right password.
+// request: an invalid one is refused, even with the right password, without
+// a new session and without ending the one the browser holds. A valid one,
+// of a public or a confidential client, signs in; a relying party's own
+// credential-less POST, sent cross-site, still gets its code.
 func TestOidcAuth_InvalidRequestCreatesNoSession(t *testing.T) {
+	app := func() url.Values {
+		return url.Values{"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}}
+	}
 	tests := []struct {
-		name   string
-		change func(q url.Values)
+		name  string
+		query url.Values
+		// rp sends the request as the relying party's POST, without credentials
+		rp     bool
+		wantOK bool
 	}{
-		{"unsupported response_type", func(q url.Values) { q.Set("response_type", "token") }},
-		{"no openid scope", func(q url.Values) { q.Set("scope", "profile") }},
-		{"implicit without nonce", func(q url.Values) { q.Set("response_type", "id_token") }},
+		{"unsupported response_type", with(app(), "response_type", "token"), false, false},
+		{"no openid scope", with(app(), "scope", "profile"), false, false},
+		{"implicit without nonce", with(app(), "response_type", "id_token"), false, false},
+		{"a resource the client may not ask for", with(app(), "resource", cliResource), false, false},
+		{"a public client without PKCE", with(cliAuthQuery(), "code_challenge", ""), false, false},
+		{"a public client with plain PKCE", with(cliAuthQuery(), "code_challenge_method", "plain"), false, false},
+		{"a public client with another resource", with(cliAuthQuery(), "resource", "https://elsewhere.example.com"), false, false},
+		{"a public client", cliAuthQuery(), false, true},
+		{"a confidential client", app(), false, true},
+		{"the relying party's POST, cross-site", app(), true, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r, _ := newOidcTestRoutes(t)
-			q := url.Values{"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}}
-			tc.change(q)
+			r, cookie := newPublicClientRoutes(t)
+			var req *http.Request
+			if tc.rp {
+				req = originPost("/oidc/auth", map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://app.example.com"}, tc.query)
+			} else {
+				req = originPost("/oidc/auth?"+tc.query.Encode(), nil, url.Values{"username": {"bob"}, "password": {"bobpass1"}})
+			}
+			req.AddCookie(cookie)
 			rec := httptest.NewRecorder()
-			r.OidcAuth(rec, originPost("/oidc/auth?"+q.Encode(), nil, url.Values{"username": {"bob"}, "password": {"bobpass1"}}))
-			if rec.Code != http.StatusFound || !strings.Contains(rec.Header().Get("Location"), "error=") {
-				t.Fatalf("status = %d Location %q, want an error redirect", rec.Code, rec.Header().Get("Location"))
+			r.OidcAuth(rec, req)
+
+			location, _ := url.Parse(rec.Header().Get("Location"))
+			// an implicit request's error is in the fragment
+			params, _ := url.ParseQuery(location.RawQuery + "&" + location.Fragment)
+			if rec.Code != http.StatusFound || params.Has("code") != tc.wantOK || params.Has("error") == tc.wantOK {
+				t.Fatalf("status = %d Location %q, want a redirect with a code %v", rec.Code, location, tc.wantOK)
 			}
-			if c := sessionCookieOf(rec); c != nil {
-				t.Errorf("Set-Cookie %v, want no session for an invalid request", c)
-			}
-			// newOidcTestRoutes holds one session for bob already
-			if n := r.session.Count("bob"); n != 1 {
-				t.Errorf("bob holds %d sessions, want 1", n)
+			_, oldErr := r.session.Get(cookie.Value)
+			setCookie := rec.Result().Header.Values("Set-Cookie")
+			switch {
+			case !tc.wantOK && (len(setCookie) != 0 || oldErr != nil || r.session.Count("bob") != 1):
+				t.Errorf("Set-Cookie %q, old session %v, %d sessions; want none, live, 1", setCookie, oldErr, r.session.Count("bob"))
+			case tc.wantOK && !tc.rp && (sessionCookieOf(rec) == nil || oldErr == nil):
+				t.Errorf("Set-Cookie %q, old session %v; want a new session replacing it", setCookie, oldErr)
+			case tc.rp && (len(setCookie) != 0 || oldErr != nil):
+				t.Errorf("Set-Cookie %q, old session %v; want the session kept as it was", setCookie, oldErr)
 			}
 		})
 	}
+}
+
+// with returns q with key set to value, or deleted for "".
+func with(q url.Values, key, value string) url.Values {
+	if value == "" {
+		q.Del(key)
+	} else {
+		q.Set(key, value)
+	}
+	return q
 }
 
 // Credentials and the CSRF token are read from the request body: in the URL

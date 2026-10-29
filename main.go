@@ -335,15 +335,16 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) http.Handler {
 }
 
 // baseRoutesConfig is the part of the routes configuration that follows from
-// baseUrl, which Validate has already parsed; the caller adds the stores.
-func baseRoutesConfig(baseUrl string, cookieTTL time.Duration) routes.Config {
-	parsed, _ := url.Parse(baseUrl)
+// c, which Validate has already checked; the caller adds the stores.
+func baseRoutesConfig(c *config, cookieTTL time.Duration) routes.Config {
+	parsed, _ := url.Parse(c.BaseUrl)
 	return routes.Config{
-		BaseURL:    baseUrl,
+		BaseURL:    c.BaseUrl,
 		PathPrefix: parsed.Path,
 		// url.Parse lowercases the scheme, so "HTTPS://" counts as https too.
 		SecureCookies: parsed.Scheme == "https",
 		CookieTTL:     cookieTTL,
+		Clients:       c.Clients,
 	}
 }
 
@@ -469,7 +470,7 @@ func main() {
 	codes := codestore.New()
 	tokens := tokenstore.New(o.IDTokenTTL())
 	resetTokens := resettoken.New(passwordResetLinkTTL)
-	routesCfg := baseRoutesConfig(cfg.BaseUrl, limits.cookie)
+	routesCfg := baseRoutesConfig(&cfg, limits.cookie)
 	pathPrefix := routesCfg.PathPrefix
 	routesCfg.Oidc = o
 	routesCfg.Session = sessions
@@ -477,7 +478,6 @@ func main() {
 	routesCfg.CodeStore = codes
 	routesCfg.TokenStore = tokens
 	routesCfg.ResetTokens = resetTokens
-	routesCfg.Clients = cfg.Clients
 	r, err := routes.New(routesCfg)
 	if err != nil {
 		slog.Error("failed to create routes", "error", err)

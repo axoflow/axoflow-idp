@@ -66,6 +66,9 @@ func (g *kdfGate) run(derive func()) error {
 		testOnDerive()
 	}
 	derive()
+	if testOnDeriveDone != nil {
+		testOnDeriveDone()
+	}
 	return nil
 }
 
@@ -81,9 +84,9 @@ func SetKDFGate(slots, waiters int, wait time.Duration) (restore func()) {
 	return func() { kdf = old }
 }
 
-// testOnDerive, when a test sets it, runs in the slot before each derivation.
-// Nil in production.
-var testOnDerive func()
+// testOnDerive and testOnDeriveDone, when a test sets them, run in the slot
+// before and after each derivation. Nil in production.
+var testOnDerive, testOnDeriveDone func()
 
 // testOnDummy, when a test sets it, runs before each derivation against
 // dummyPasswordHash. Nil in production.
