@@ -191,6 +191,33 @@ func TestOidcAuth_InvalidRequestCreatesNoSession(t *testing.T) {
 	}
 }
 
+// The login form of /oidc/auth with the right password but an unregistered
+// redirect_uri is refused in place, and the session the browser already
+// holds is neither replaced nor ended.
+func TestOidcAuth_UnregisteredRedirectKeepsTheSession(t *testing.T) {
+	r, cookie := newPublicClientRoutes(t)
+	q := cliAuthQuery()
+	q.Set("redirect_uri", "http://127.0.0.1:9999/callback")
+	req := originPost("/oidc/auth?"+q.Encode(), nil, url.Values{"username": {"bob"}, "password": {"bobpass1"}})
+	req.AddCookie(cookie)
+	before := r.session.Count("bob")
+	rec := httptest.NewRecorder()
+	r.OidcAuth(rec, req)
+
+	if rec.Code != http.StatusBadRequest || rec.Header().Get("Location") != "" {
+		t.Fatalf("status = %d Location %q, want 400 in place", rec.Code, rec.Header().Get("Location"))
+	}
+	if setCookie := rec.Result().Header.Values("Set-Cookie"); len(setCookie) != 0 {
+		t.Errorf("Set-Cookie %q, want none", setCookie)
+	}
+	if n := r.session.Count("bob"); n != before {
+		t.Errorf("%d sessions, want %d", n, before)
+	}
+	if id, err := r.session.Get(cookie.Value); err != nil || id != "bob" {
+		t.Errorf("the old session resolves to %q, %v; want bob", id, err)
+	}
+}
+
 // with returns q with key set to value, or deleted for "".
 func with(q url.Values, key, value string) url.Values {
 	if value == "" {
@@ -255,9 +282,12 @@ func postSplit(handler http.HandlerFunc, path string, cookie *http.Cookie, body 
 }
 
 // Every form write reads its passwords, the reset token of a POST and a
-// registration's identity from the body: under valid authorization, the
-// same fields in the query write nothing, and leave the account, its
-// sessions and the reset link as they were. In the body they write.
+// registration's identity from the body: under valid authorization, any one
+// of these fields in the query, the others in the body, writes nothing, and
+// leaves the account, its sessions and the reset link as they were. One
+// field per row, so that each reader is pinned on its own: with two in the
+// query, the other missing field would refuse the write anyway. In the body
+// they write.
 func TestFormWritesReadTheBody(t *testing.T) {
 	tests := []struct {
 		name string
@@ -266,14 +296,16 @@ func TestFormWritesReadTheBody(t *testing.T) {
 		// not, it checks that nothing changed
 		submit func(t *testing.T, keys []string) bool
 	}{
-		{"register", []string{"username", "email", "password", "password_confirm"}, submitRegister},
-		{"register, the passwords", []string{"password", "password_confirm"}, submitRegister},
-		{"change password", []string{"current_password", "new_password"}, submitChangePassword},
-		{"change password, the new one", []string{"new_password"}, submitChangePassword},
-		{"set-password", []string{"token", "new_password"}, submitSetPassword},
-		{"set-password, the password", []string{"new_password"}, submitSetPassword},
-		{"admin register", []string{"password"}, submitAdminRegister},
-		{"admin reset", []string{"new_password"}, submitAdminReset},
+		{"register, username", []string{"username"}, submitRegister},
+		{"register, email", []string{"email"}, submitRegister},
+		{"register, password", []string{"password"}, submitRegister},
+		{"register, password_confirm", []string{"password_confirm"}, submitRegister},
+		{"change password, current_password", []string{"current_password"}, submitChangePassword},
+		{"change password, new_password", []string{"new_password"}, submitChangePassword},
+		{"set-password, token", []string{"token"}, submitSetPassword},
+		{"set-password, new_password", []string{"new_password"}, submitSetPassword},
+		{"admin register, password", []string{"password"}, submitAdminRegister},
+		{"admin reset, new_password", []string{"new_password"}, submitAdminReset},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -357,4 +389,102 @@ func submitAdminReset(t *testing.T, keys []string) bool {
 		t.Errorf("bob's session ended: %v", err)
 	}
 	return false
+}
+
+// A field sent in both the query and the body is taken from the body: the
+// write uses the body's identity, password and reset token. req.Form puts
+// the body's value first as well, so these rows pin out a reader of the URL
+// query; the rows above pin out req.Form.
+func TestFormWritesPreferTheBody(t *testing.T) {
+	tests := []struct {
+		name   string
+		query  url.Values // a field of the valid body, with another value
+		submit func(t *testing.T, query url.Values)
+	}{
+		{"register, username", url.Values{"username": {"mallory"}}, registerFromTheBody},
+		{"register, email", url.Values{"email": {"mallory@example.com"}}, registerFromTheBody},
+		{"register, password", url.Values{"password": {"mallorypass1"}}, registerFromTheBody},
+		{"register, password_confirm", url.Values{"password_confirm": {"mallorypass1"}}, registerFromTheBody},
+		{"change password, current_password", url.Values{"current_password": {"wrongpass1"}}, changePasswordFromTheBody},
+		{"change password, new_password", url.Values{"new_password": {"querypass1"}}, changePasswordFromTheBody},
+		{"set-password, token", url.Values{"token": {"admin1"}}, setPasswordFromTheBody},
+		{"set-password, new_password", url.Values{"new_password": {"querypass1"}}, setPasswordFromTheBody},
+		{"admin register, password", url.Values{"password": {"querypass1"}}, adminRegisterFromTheBody},
+		{"admin reset, new_password", url.Values{"new_password": {"querypass1"}}, adminResetFromTheBody},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.submit(t, tc.query)
+		})
+	}
+}
+
+func registerFromTheBody(t *testing.T, query url.Values) {
+	r := newBootstrapRoutes(t, `[{"ID":"a1","Username":"alice","Password":"!"}]`, user.Config{SelfRegistration: true})
+	body := url.Values{"username": {"carol"}, "email": {"carol@example.com"}, "password": {"carolpass1"}, "password_confirm": {"carolpass1"}}
+	postForm(r.Register, "/register?"+query.Encode(), nil, body)
+	carol, ok := r.user.Authenticate("carol", "carolpass1")
+	if !ok || carol.Email != "carol@example.com" || r.user.Count() != 2 {
+		t.Errorf("carol registered %v with email %q, %d users; want the body's account, 2 users", ok, carol.Email, r.user.Count())
+	}
+}
+
+func changePasswordFromTheBody(t *testing.T, query url.Values) {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("bob")
+	body := url.Values{"csrf_token": {csrf}, "current_password": {"bobpass1"}, "new_password": {"newsecret1"}}
+	postForm(r.ChangePassword, "/password?"+query.Encode(), cookie, body)
+	assertOnlyPassword(t, r, "newsecret1", "bobpass1", query.Get("new_password"))
+}
+
+// setPasswordFromTheBody puts a valid link of query's token user in the
+// query, so that reading the query would spend a real link.
+func setPasswordFromTheBody(t *testing.T, query url.Values) {
+	r := newTestRoutes(t, false)
+	link := func(id string) string {
+		generation, _ := r.user.CredentialGeneration(id)
+		token, err := r.resetTokens.Create(id, "admin1", generation)
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		return token
+	}
+	token := link("bob")
+	var other string
+	if id := query.Get("token"); id != "" {
+		other = link(id)
+		query.Set("token", other)
+	}
+	postForm(r.SetPassword, "/set-password?"+query.Encode(), nil, url.Values{"token": {token}, "new_password": {"linkpass1"}})
+	assertOnlyPassword(t, r, "linkpass1", "bobpass1", query.Get("new_password"))
+	if tokenHeld(r, token) {
+		t.Error("the body's link was not spent")
+	}
+	if other != "" && !tokenHeld(r, other) {
+		t.Error("the query's link was spent")
+	}
+	if _, ok := r.user.Authenticate("admin", "adminpass"); !ok {
+		t.Error("admin's password changed")
+	}
+}
+
+func adminRegisterFromTheBody(t *testing.T, query url.Values) {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("admin1")
+	body := url.Values{"csrf_token": {csrf}, "username": {"carol"}, "email": {"carol@example.com"}, "password": {"carolpass1"}}
+	postForm(r.AdminRegister, "/admin/register?"+query.Encode(), cookie, body)
+	if _, ok := r.user.Authenticate("carol", "carolpass1"); !ok {
+		t.Error("carol does not sign in with the body's password")
+	}
+	if _, ok := r.user.Authenticate("carol", query.Get("password")); ok {
+		t.Error("carol signs in with the query's password")
+	}
+}
+
+func adminResetFromTheBody(t *testing.T, query url.Values) {
+	r := newTestRoutes(t, false)
+	cookie, csrf := r.authed("admin1")
+	body := url.Values{"csrf_token": {csrf}, "user_id": {"bob"}, "new_password": {"bobpass99"}}
+	postForm(r.AdminResetPassword, "/admin/users/reset-password?"+query.Encode(), cookie, body)
+	assertOnlyPassword(t, r, "bobpass99", "bobpass1", query.Get("new_password"))
 }
