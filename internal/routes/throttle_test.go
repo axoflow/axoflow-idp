@@ -16,6 +16,7 @@ package routes
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -167,28 +168,53 @@ func TestClientSecretFailures(t *testing.T) {
 
 // The cooldown warning names a username by a bounded form: a 60 KiB one
 // does not reach the log whole. The line is measured without its timestamp,
-// whose length depends on the clock and the zone.
+// whose length depends on the clock and the zone. Its 64-byte prefix is
+// escaped by the JSON handler, so the ASCII row's line (176 bytes, about 218
+// with the timestamp) is a sample, not the bound: a control byte becomes
+// \u00XX and an invalid UTF-8 byte \ufffd, 6 bytes each, which is the
+// longest escape of one byte. The bound is 6 × 64 bytes for the prefix plus
+// 128 for the rest, which takes 112 in the ASCII row (the message, the keys,
+// the "...", the cooldown, and the 12 hex characters of the digest, which
+// only help correlate lines and may be shared by two usernames).
 func TestLoginFailed_LogsABoundedUsername(t *testing.T) {
-	r := newTestRoutes(t, false)
-	var buf bytes.Buffer
-	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if len(groups) == 0 && a.Key == slog.TimeKey {
-				return slog.Attr{}
-			}
-			return a
-		},
-	})))
-	t.Cleanup(func() { slog.SetDefault(old) })
-
-	username := "mallory" + strings.Repeat("x", 60<<10)
-	for range throttle.FreeFailures {
-		r.loginFailed(username)
+	tests := []struct {
+		name   string
+		prefix string // the username's first 64 bytes
+		logged string // the username the line decodes to
+		max    int
+	}{
+		{"ASCII", "mallory" + strings.Repeat("x", 57), "mallory" + strings.Repeat("x", 57) + "...", 200},
+		{"control bytes", strings.Repeat("\x00", 64), strings.Repeat("\x00", 64) + "...", 6*64 + 128},
+		{"invalid UTF-8", strings.Repeat("\xff", 64), strings.Repeat("\ufffd", 64) + "...", 6*64 + 128},
 	}
-	line := strings.TrimSuffix(buf.String(), "\n")
-	t.Logf("warning of %d bytes: %s", len(line), line)
-	if strings.Count(line, "\n") != 0 || len(line) >= 200 || !strings.Contains(line, `"username":"mallory`) {
-		t.Errorf("warning of %d bytes, want one line under 200 naming the username's start: %.300s", len(line), line)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRoutes(t, false)
+			var buf bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+				ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+					if len(groups) == 0 && a.Key == slog.TimeKey {
+						return slog.Attr{}
+					}
+					return a
+				},
+			})))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			username := tc.prefix + strings.Repeat("x", 60<<10)
+			for range throttle.FreeFailures {
+				r.loginFailed(username)
+			}
+			line := strings.TrimSuffix(buf.String(), "\n")
+			t.Logf("warning of %d bytes: %s", len(line), line)
+			var logged struct{ Username string }
+			if err := json.Unmarshal([]byte(line), &logged); err != nil || strings.Count(line, "\n") != 0 || len(line) > tc.max {
+				t.Errorf("warning of %d bytes (%v), want one JSON line of at most %d: %.600s", len(line), err, tc.max, line)
+			}
+			if logged.Username != tc.logged {
+				t.Errorf("logged username %q, want %q", logged.Username, tc.logged)
+			}
+		})
 	}
 }
