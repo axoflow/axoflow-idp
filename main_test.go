@@ -486,6 +486,17 @@ func TestValidateRefusesIneffectiveSettings(t *testing.T) {
 		{name: "updateSeedPasswords with static", modify: func(c *config) {
 			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json", CreateIfMissing: true, Static: true}
 		}, wantErr: "users.updateSeedPasswords cannot be combined with users.static"},
+		{name: "updateSeedPasswords with a seed entry without an ID", modify: func(c *config) {
+			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json", CreateIfMissing: true, Defaults: []user.UserInfo{
+				{ID: "a1", Username: "admin"}, {Username: "ops"},
+			}}
+		}, wantErr: "users.updateSeedPasswords requires an ID on every entry of users.users: the password follows the account, not the name"},
+		{name: "updateSeedPasswords with an ID on every seed entry", modify: func(c *config) {
+			c.Users = &user.Config{UpdateSeedPasswords: true, FilePath: "users.json", CreateIfMissing: true, Defaults: []user.UserInfo{{ID: "a1", Username: "admin"}}}
+		}},
+		{name: "a seed entry without an ID, without updateSeedPasswords", modify: func(c *config) {
+			c.Users = &user.Config{FilePath: "users.json", CreateIfMissing: true, Defaults: []user.UserInfo{{Username: "admin"}}}
+		}},
 		{name: "generateIfMissing without filePath", modify: func(c *config) {
 			c.SigningKey.FilePath = ""
 		}, wantErr: "signingKey.filePath is required"},

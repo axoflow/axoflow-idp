@@ -259,6 +259,11 @@ func (c *config) Validate() error {
 		if c.Users.FilePath == "" || !c.Users.CreateIfMissing {
 			return errors.New("users.updateSeedPasswords requires users.filePath and users.createIfMissing: without them the configured seed passwords are never applied")
 		}
+		for _, s := range c.Users.Defaults {
+			if s.ID == "" {
+				return errors.New("users.updateSeedPasswords requires an ID on every entry of users.users: the password follows the account, not the name")
+			}
+		}
 	}
 
 	return nil

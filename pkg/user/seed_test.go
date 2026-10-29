@@ -15,9 +15,13 @@
 package user
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -115,8 +119,8 @@ func TestSeedPasswordsRefuseDuplicateSeedsInAnExistingDatabase(t *testing.T) {
 	startSeeded(t, path, bcryptHash(t, "first-password"))
 
 	_, err := New(Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: true, Defaults: []UserInfo{
-		{Username: "admin", Password: bcryptHash(t, "first-password")},
-		{Username: "admin", Password: bcryptHash(t, "second-password")},
+		{ID: "admin-id", Username: "admin", Password: bcryptHash(t, "first-password")},
+		{ID: "admin-id-2", Username: "admin", Password: bcryptHash(t, "second-password")},
 	}})
 	if err == nil {
 		t.Error("New should reject duplicate seed users")
@@ -126,7 +130,7 @@ func TestSeedPasswordsRefuseDuplicateSeedsInAnExistingDatabase(t *testing.T) {
 func startSeeded(t *testing.T, path, adminHash string) *User {
 	t.Helper()
 	u, err := New(Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: true, UserAdminGroup: "admin", Defaults: []UserInfo{
-		{Username: "admin", Password: adminHash, Groups: []string{"admin"}},
+		{ID: "admin-id", Username: "admin", Password: adminHash, Groups: []string{"admin"}},
 	}})
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -161,5 +165,90 @@ func TestSeedRejectsInvalidDefaultsWithoutWritingThem(t *testing.T) {
 				t.Error("invalid seed must not be persisted")
 			}
 		})
+	}
+}
+
+// A seed entry's password follows the account it created: once that account
+// is deleted, the same username registered again belongs to someone else,
+// and the next start leaves its password alone.
+func TestSeedPasswordFollowsTheAccountNotTheName(t *testing.T) {
+	tests := []struct {
+		name     string
+		recreate func(u *User, adminID string) error
+	}{
+		{"re-created through self-registration", func(u *User, _ string) error {
+			_, _, err := u.SelfRegister("ops", "newowner1", []string{RoleUser}, "new@example.com")
+			return err
+		}},
+		{"re-created by an admin", func(u *User, adminID string) error {
+			return u.AdminRegister(adminID, "ops", "newowner1", []string{RoleUser}, "new@example.com")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "users.json")
+			cfg := Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: true, SelfRegistration: true, UserAdminGroup: "admin", Defaults: []UserInfo{
+				{ID: "seed-admin", Username: "admin", Password: bcryptHash(t, "adminpass"), Groups: []string{"admin"}},
+				{ID: "seed-ops", Username: "ops", Password: bcryptHash(t, "seedpass1")},
+			}}
+			u, err := New(cfg)
+			if err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			if err := u.AdminDelete("seed-admin", "seed-ops"); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+			if err := tc.recreate(u, "seed-admin"); err != nil {
+				t.Fatalf("re-create: %v", err)
+			}
+			warnings := captureSeedWarnings(t)
+
+			restarted, err := New(cfg)
+			if err != nil {
+				t.Fatalf("restart: %v", err)
+			}
+
+			if _, ok := restarted.Authenticate("ops", "seedpass1"); ok {
+				t.Error("the seed password was put on the account that reuses the username")
+			}
+			if _, ok := restarted.Authenticate("ops", "newowner1"); !ok {
+				t.Error("the new owner's password no longer works")
+			}
+			got := warnings()
+			if len(got) != 1 || !strings.Contains(got[0], `"msg":"seed entry does not match its account"`) ||
+				!strings.Contains(got[0], `"username":"ops"`) || !strings.Contains(got[0], `"seed_id":"seed-ops"`) || strings.Contains(got[0], "$2") {
+				t.Errorf("warnings = %q, want one naming ops and seed-ops, without a hash", got)
+			}
+		})
+	}
+}
+
+// With updateSeedPasswords every seed entry names its account by ID; without
+// the option an ID-less entry still seeds a new database with a generated one.
+func TestSeedPasswordsRequireAnID(t *testing.T) {
+	for _, update := range []bool{true, false} {
+		t.Run(fmt.Sprintf("updateSeedPasswords=%v", update), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "users.json")
+			_, err := New(Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: update, Defaults: []UserInfo{
+				{Username: "admin", Password: bcryptHash(t, "adminpass")},
+			}})
+			if update && err == nil {
+				t.Error("New accepted a seed entry without an ID")
+			}
+			if !update && err != nil {
+				t.Errorf("New refused a seed entry without an ID: %v", err)
+			}
+		})
+	}
+}
+
+func captureSeedWarnings(t *testing.T) func() []string {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return func() []string {
+		return strings.FieldsFunc(buf.String(), func(r rune) bool { return r == '\n' })
 	}
 }

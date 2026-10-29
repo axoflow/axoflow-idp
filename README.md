@@ -195,6 +195,12 @@ password through its configuration. A password changed in the IdP lasts until
 the next start. Leave the option off when the hash is regenerated at every
 deploy, because every deploy would reset the password. An empty configured hash
 is not applied, and a seed user deleted from the database is not recreated.
+The password follows the account the seed entry created, found by its `ID` and
+its username together, so every seed entry needs an `ID` with this option. Once
+a seed account is deleted, an account registered again under its username
+belongs to someone else and keeps its own password; an entry whose `ID` and
+username name different accounts, or only one of them an account, is skipped
+with a `seed entry does not match its account` warning.
 The option needs `users.filePath` and `users.createIfMissing: true` and cannot
 be combined with `users.static`; the server refuses to start otherwise.
 
@@ -203,6 +209,12 @@ be combined with `users.static`; the server refuses to start otherwise.
 > used to start and silently skip the seed passwords, leaving the previous
 > password valid. It now refuses to start. Set `createIfMissing` (an existing
 > database is never reseeded) or remove the option before upgrading.
+
+> Upgrading: with `users.updateSeedPasswords: true`, a seed entry without an
+> `ID` now refuses the start. Before upgrading, look up each seed user in
+> `users.filePath`: the `"ID"` of the entry with that `"Username"` is the one
+> to copy into its seed entry in `users.users`. The start used to put the seed
+> password on whichever account had the username.
 
 ```json
 "users": {
@@ -216,7 +228,8 @@ be combined with `users.static`; the server refuses to start otherwise.
 ```
 
 `Password` must already be an argon2id or bcrypt hash — the value is stored as
-given. `ID` is optional (a ULID is generated). Duplicate usernames or ids are
+given. `ID` is optional without `users.updateSeedPasswords` (a ULID is
+generated) and required with it. Duplicate usernames or ids are
 rejected before anything is written.
 
 ## Identities

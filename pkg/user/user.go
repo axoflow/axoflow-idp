@@ -62,7 +62,9 @@ type Config struct {
 	// does not last. Leave it off when the hash is regenerated at every
 	// deploy: each deploy would reset the password. It takes effect only with
 	// FilePath and CreateIfMissing on a database that is not Static; the
-	// server's config validation refuses any other combination.
+	// server's config validation refuses any other combination. Every seed
+	// user needs an ID then: the hash goes to the account with that ID and
+	// username, never to another account that took the username.
 	UpdateSeedPasswords bool `json:"updateSeedPasswords"`
 }
 
@@ -210,6 +212,15 @@ func New(config Config) (*User, error) {
 
 // seedUsers is the configured seed with ids, validated.
 func (u *User) seedUsers() ([]UserInfo, error) {
+	// A generated ID changes at every start, which would leave only the
+	// username to find the account by, and it may since be someone else's.
+	if u.UpdateSeedPasswords {
+		for _, s := range u.Defaults {
+			if s.ID == "" {
+				return nil, fmt.Errorf("invalid seed users: updateSeedPasswords requires an ID, and %q has none", s.Username)
+			}
+		}
+	}
 	seed := ensureUserID(u.Defaults)
 	// loadUsersFromFile applies the same rules, so a bad seed on disk would fail every start.
 	if err := validateUsers(seed); err != nil {
@@ -219,7 +230,9 @@ func (u *User) seedUsers() ([]UserInfo, error) {
 }
 
 // applySeedPasswords sets each seed user's configured password hash on its
-// account.
+// account: the one with both the seed's ID and its username. A deleted seed
+// account's username can be registered again by someone else, who must not
+// get the seed password.
 func (u *User) applySeedPasswords() error {
 	seed, err := u.seedUsers()
 	if err != nil {
@@ -232,7 +245,11 @@ func (u *User) applySeedPasswords() error {
 	users := u.snapshot()
 	var updated, updatedIDs []string
 	for _, s := range seed {
-		i := slices.IndexFunc(users, func(ui UserInfo) bool { return ui.Username == s.Username })
+		i := slices.IndexFunc(users, func(ui UserInfo) bool { return ui.ID == s.ID })
+		if byName := slices.IndexFunc(users, func(ui UserInfo) bool { return ui.Username == s.Username }); byName != i {
+			slog.Warn("seed entry does not match its account", "username", s.Username, "seed_id", s.ID)
+			continue
+		}
 		missing := i == -1
 		// An empty hash would lock the account.
 		if missing || s.Password == "" || users[i].Password == s.Password {

@@ -779,7 +779,7 @@ func TestReadersSeeOldStateUntilRename(t *testing.T) {
 // A seed password that cannot be written leaves the account's old password in
 // memory and on disk, and the server does not start.
 func TestApplySeedPasswords_WriteFailure(t *testing.T) {
-	seed := []UserInfo{{Username: "bob", Password: hash([]byte("bob"), "seedpass1")}}
+	seed := []UserInfo{{ID: "bob", Username: "bob", Password: hash([]byte("bob"), "seedpass1")}}
 
 	t.Run("store", func(t *testing.T) {
 		u, path := persistFixture(t)
@@ -837,7 +837,7 @@ func TestApplySeedPasswords_LogsOnlyCommitted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.fail, func(t *testing.T) {
 			u, _ := persistFixture(t)
-			u.Defaults = []UserInfo{{Username: "bob", Password: hash([]byte("bob"), "seedpass1")}}
+			u.Defaults = []UserInfo{{ID: "bob", Username: "bob", Password: hash([]byte("bob"), "seedpass1")}}
 			u.fsys = faultFS{fail: tt.fail}
 			var logs bytes.Buffer
 			prev := slog.Default()
