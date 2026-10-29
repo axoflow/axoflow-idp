@@ -125,12 +125,16 @@ func (r *Routes) loginTemplateData(message string) struct {
 }
 
 func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInfo {
+	if r.refuseCrossOriginSignIn(res, req) {
+		return nil
+	}
 	if err := req.ParseForm(); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
 		return nil
 	}
-	username := req.Form.Get("username")
-	password := req.Form.Get("password")
+	// from the body only: in the URL the password reaches access logs
+	username := req.PostForm.Get("username")
+	password := req.PostForm.Get("password")
 
 	user, ok := r.user.Authenticate(username, password)
 	if ok {
@@ -241,6 +245,10 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		return
 
 	case http.MethodPost:
+		// a registration signs the browser in, as a login does
+		if r.refuseCrossOriginSignIn(res, req) {
+			return
+		}
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return

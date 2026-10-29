@@ -38,12 +38,30 @@ func (r *Routes) csrfToken(sessionID string) string {
 }
 
 // validateCSRF checks the csrf_token form value against the expected token
-// for the current session. Must be called after ParseForm.
+// for the current session. Must be called after ParseForm. The token is read
+// from the body only: in the URL it would reach access logs and the history.
 func (r *Routes) validateCSRF(req *http.Request, sessionID string) bool {
-	token := req.FormValue("csrf_token")
+	token := req.PostForm.Get("csrf_token")
 	if token == "" {
 		return false
 	}
 	expected := r.csrfToken(sessionID)
 	return hmac.Equal([]byte(token), []byte(expected))
+}
+
+// signInOrigin refuses a credential-submitting POST that a page of another
+// origin made the browser send: such a page could otherwise sign the victim
+// in to the attacker's account (login CSRF), where whatever they enter is the
+// attacker's to read. A request without Sec-Fetch-Site and Origin, from a
+// non-browser client, passes.
+var signInOrigin = http.NewCrossOriginProtection()
+
+// refuseCrossOriginSignIn renders a 403 and reports true when signInOrigin
+// refuses req.
+func (r *Routes) refuseCrossOriginSignIn(res http.ResponseWriter, req *http.Request) bool {
+	if err := signInOrigin.Check(req); err != nil {
+		r.renderError(res, req, http.StatusForbidden, "Invalid Request", "The form was sent from another site. Open the sign-in page and try again.")
+		return true
+	}
+	return false
 }

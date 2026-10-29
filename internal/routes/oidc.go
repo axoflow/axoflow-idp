@@ -133,7 +133,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if req.Form.Has("username") {
+		if req.PostForm.Has("username") {
 			// GET -> login form
 			loginForm = true
 			authReq = authRequest(req.URL.Query())
@@ -155,17 +155,18 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	fragment := fragmentResponse(authReq.ResponseType)
+
+	// before the login, so that a request refused anyway creates no session
+	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
+		authError(res, req, authReq, err.Error(), fragment)
+		return
+	}
+
 	if loginForm {
 		if user = r.login(res, req); user == nil {
 			return // failure, handled in r.login
 		}
-	}
-
-	fragment := fragmentResponse(authReq.ResponseType)
-
-	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
-		authError(res, req, authReq, err.Error(), fragment)
-		return
 	}
 
 	if user == nil {
