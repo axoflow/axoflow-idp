@@ -368,15 +368,49 @@ other parameters, takes a different time to check than the default, so the
 time of a wrong-password answer can tell such an account from an unknown
 username. To close that, give those users new passwords (a reset link, an
 admin reset, or the user's own change); every password set in the IdP is
-stored with the default argon2id parameters.
+stored with the default argon2id parameters. This does not apply to a user
+whose ID is longer than 256 bytes (below).
 
 > Upgrading: a stored argon2id hash with `m` above 32 MiB (such as
-> `m=65536`), `t` above 10, `p` above 4 or a salt over 256 bytes, and a bcrypt
-> hash with a cost above 15, no longer verify, and a bcrypt user can no longer
-> sign in with a password over 72 bytes; give such users a new password before
-> upgrading. A sign-in or registration posted from another site's page, a
+> `m=65536`), `t` above 10 or `p` above 4, and a bcrypt hash with a cost above
+> 15, no longer verify, and a bcrypt user can no longer sign in with a password
+> over 72 bytes; give such users a new password before upgrading. An argon2id
+> hash with a salt over 256 bytes no longer verifies either, and a new password
+> does not repair it when the salt is the user's ID: see the next section.
+> A sign-in or registration posted from another site's page, a
 > password, reset token, registration field or `csrf_token` sent in the URL
 > instead of the body, and a request body over 64 KiB are now refused.
+
+#### Accounts with an ID over 256 bytes
+
+The IdP salts a password it stores with the user's ID. The IDs it generates
+are 26-character ULIDs; a longer one comes from a seed user's `ID` or from a
+database written by other means. Before rolling this release out, list the
+accounts whose ID is longer than 256 bytes, for example:
+
+```sh
+jq -r '.[] | select((.ID | utf8bytelength) > 256) | .Username' users.json
+```
+
+For such an account a password change or reset does not help. On the previous
+release it stores another hash salted with the same ID, which this release does
+not verify. On this release it is refused (`ErrIDTooLong`): the user gets a
+generic 500, the cause is logged, and the stored password, the user's sessions
+and the reset link stay as they were.
+
+To recover one, replace its stored `Password` offline with a hash that carries
+its own bounded salt: a bcrypt hash with a cost from 4 to 15, or an argon2id
+PHC string within the bounds above. Stop the IdP, then either edit the account
+in `users.filePath`, or set the seed user's `Password` with
+`users.updateSeedPasswords: true` (see "Seeding the user database"), and start
+it again. Do not edit the file while the IdP runs: it reads the file only at
+start and replaces it whole on its next change, so such an edit is lost. Do not
+shorten the ID either: relying parties know the user by it (`sub`), and a
+legacy hash is salted with it.
+
+After the recovery the user signs in, but still cannot change the password, or
+get a new one from a reset link or an admin, while the ID is longer than 256
+bytes; each later rotation is the same offline replacement.
 
 ## Releases
 
