@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -288,6 +289,11 @@ func TestVerifyPassword_RefusalDerives(t *testing.T) {
 		return string(h)
 	}
 	pw72 := strings.Repeat("p", 72)
+	// matching argon2id hashes, refused by their spelling or their size
+	salt256 := base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("s", 256)))
+	key64 := base64.RawStdEncoding.EncodeToString(argon2.IDKey([]byte("pw"), []byte(strings.Repeat("s", 256)), 1, 8, 1, 64))
+	over512 := "$argon2id$v=19$m=" + strings.Repeat("0", 60) + "8,t=1,p=1$" + salt256 + "$" + key64
+	bcryptTail := strings.Repeat("a", 53) // a salt and digest in bcrypt's alphabet
 	tests := []struct {
 		name, stored, password string
 		want                   bool
@@ -304,15 +310,36 @@ func TestVerifyPassword_RefusalDerives(t *testing.T) {
 		{"argon2id over the bounds", "$argon2id$v=19$m=1048576,t=1,p=1$c29tZXNhbHQ$AAAAAAAAAAAAAAAAAAAAAA", "pw", false, true},
 		{"malformed bcrypt", "$2a$10$tooshort", "pw", false, true},
 		{"not base64", "not a hash!", "pw", false, true},
+		{"argon2id over 512 bytes", over512, "pw", false, true},
+		{"argon2id, a salt over 256 bytes", cheapHash(strings.Repeat("s", 257), "pw"), "pw", false, true},
+		{"argon2id, text after the version", strings.Replace(cheapHash("salt-of-alice", "pw"), "v=19", "v=19x", 1), "pw", false, true},
+		{"argon2id, text after the parameters", strings.Replace(cheapHash("salt-of-alice", "pw"), "p=1", "p=1,x", 1), "pw", false, true},
+		{"bcrypt, cost 31", "$2a$31$" + bcryptTail, "pw", false, true},
+		{"bcrypt, cost 16", "$2a$16$" + bcryptTail, "pw", false, true},
+		{"bcrypt, a salt outside the alphabet", "$2a$10$" + strings.Repeat("!", 53), "pw", false, true},
+		{"bcrypt over 60 bytes", bcryptHash("alicepass1") + "a", "alicepass1", false, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var derivations, dummies int
-			testOnDerive = func() { derivations++ }
+			testOnDerive = func() {
+				derivations++
+				// a value refused for its cost must not run it: stop its own derivation
+				if tc.wantDummy && dummies == 0 {
+					panic("its own derivation ran")
+				}
+			}
 			testOnDummy = func() { dummies++ }
 			t.Cleanup(func() { testOnDerive, testOnDummy = nil, nil })
 
-			ok, err := verifyPassword(UserInfo{ID: "alice", Password: tc.stored}, tc.password)
+			ok, err := func() (ok bool, err error) {
+				defer func() {
+					if p := recover(); p != nil {
+						err = fmt.Errorf("%v", p)
+					}
+				}()
+				return verifyPassword(UserInfo{ID: "alice", Password: tc.stored}, tc.password)
+			}()
 			if err != nil || ok != tc.want {
 				t.Fatalf("verifyPassword = %v, %v; want %v, nil", ok, err, tc.want)
 			}
@@ -338,4 +365,68 @@ func TestVerifyPassword_RefusalDerives(t *testing.T) {
 			t.Errorf("%d derivations, %d against the dummy hash; want 1 and 1", derivations, dummies)
 		}
 	})
+}
+
+// A stored value is read from users.json as it is: one of any size is
+// refused on its length, before it is split, decoded or copied. The bytes a
+// check allocates beyond the dummy derivation's are measured.
+func TestVerifyPassword_BoundsBeforeDecoding(t *testing.T) {
+	big := strings.Repeat("A", 4<<20)
+	allocated := func(stored string) uint64 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		if ok, err := verifyPassword(UserInfo{ID: "alice", Password: stored}, "pw"); ok || err != nil {
+			t.Fatalf("verifyPassword(%.20s...) = %v, %v; want false, nil", stored, ok, err)
+		}
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	dummy := allocated(LockedPasswordHash)
+	for _, tc := range []struct{ name, stored string }{
+		{"argon2id", "$argon2id$v=19$m=8,t=1,p=1$" + big + "$" + big},
+		{"bcrypt", "$2a$10$" + big},
+		{"legacy", big},
+	} {
+		if n := allocated(tc.stored); n > dummy+64<<10 {
+			t.Errorf("%s of 4 MiB: %d bytes allocated, the dummy derivation alone %d", tc.name, n, dummy)
+		}
+	}
+}
+
+// The writers salt the hash with the user ID: one longer than the
+// verifier's salt bound is refused before anything is written, so a reset
+// cannot replace a working password with a hash that never verifies.
+func TestPasswordWrites_RefuseALongID(t *testing.T) {
+	long := strings.Repeat("i", maxSaltLen+1)
+	old, err := bcrypt.GenerateFromPassword([]byte("oldpass12"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := []struct {
+		name  string
+		write func(u *User) error
+	}{
+		{"reset link", func(*User) error { _, err := HashNewPassword(long, "newpass12"); return err }},
+		{"set password", func(u *User) error { return u.SetPassword(long, "newpass12") }},
+		{"change password", func(u *User) error { _, err := u.ChangePassword(long, "oldpass12", "newpass12"); return err }},
+		{"admin reset", func(u *User) error { return u.AdminResetPassword("admin", long, "newpass12") }},
+	}
+	for _, tc := range writes {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := New(Config{UserAdminGroup: "admins"})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			u.users = []UserInfo{
+				{ID: "admin", Username: "admin", Groups: []string{"admins"}, Password: cheapHash("admin", "adminpass1")},
+				{ID: long, Username: "longid", Password: string(old)},
+			}
+			if err := tc.write(u); !errors.Is(err, ErrIDTooLong) {
+				t.Errorf("write = %v, want ErrIDTooLong", err)
+			}
+			if _, err := u.Verify("longid", "oldpass12"); err != nil {
+				t.Errorf("the old password = %v, want it to verify", err)
+			}
+		})
+	}
 }

@@ -58,7 +58,7 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		newHash, err := r.user.ChangePassword(u.ID, currentPassword, newPassword)
-		if r.refuseBusy(res, req, err) {
+		if r.refuseBusy(res, req, err) || r.refuseUnhashable(res, req, err, "operation", "change_password", "user_id", u.ID) {
 			return
 		}
 		if err != nil {
@@ -230,7 +230,7 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		newHash, err := user.HashNewPassword(target.ID, newPassword)
-		if r.refuseBusy(res, req, err) {
+		if r.refuseBusy(res, req, err) || r.refuseUnhashable(res, req, err, "operation", "set_password", "target_user_id", userID) {
 			return
 		}
 		if err != nil {

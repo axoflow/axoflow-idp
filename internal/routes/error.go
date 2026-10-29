@@ -73,6 +73,18 @@ func (r *Routes) refuseBusy(res http.ResponseWriter, req *http.Request, err erro
 	return true
 }
 
+// refuseUnhashable renders a generic 500 and reports true when err is
+// user.ErrIDTooLong: no password can be set for the account, which its user
+// cannot fix, so the cause goes to the log with attrs.
+func (r *Routes) refuseUnhashable(res http.ResponseWriter, req *http.Request, err error, attrs ...any) bool {
+	if !errors.Is(err, user.ErrIDTooLong) {
+		return false
+	}
+	slog.Error("password not set", append(attrs, "error", err)...)
+	r.renderError(res, req, http.StatusInternalServerError, "Password Not Set", "The password could not be set. Ask an administrator.")
+	return true
+}
+
 func (r *Routes) renderSessionExpired(res http.ResponseWriter, req *http.Request) {
 	r.renderErrorPage(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.", "/login", "Sign in")
 }

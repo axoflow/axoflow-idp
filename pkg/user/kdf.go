@@ -89,8 +89,16 @@ var testOnDerive func()
 // dummyPasswordHash. Nil in production.
 var testOnDummy func()
 
+// ErrIDTooLong is returned instead of a new password hash for a user whose
+// ID, the hash's salt, is longer than the verifier accepts: the hash would
+// never verify. Such a user keeps the password they have.
+var ErrIDTooLong = errors.New("the user ID is too long to salt a password hash")
+
 // gatedHash is hash run through kdf.
 func gatedHash(salt []byte, password string) (string, error) {
+	if len(salt) > maxSaltLen {
+		return "", ErrIDTooLong
+	}
 	var h string
 	err := kdf.run(func() { h = hash(salt, password) })
 	return h, err

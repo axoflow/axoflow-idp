@@ -329,10 +329,16 @@ length is what bounds a guesser, so the server warns at start for a
 
 ### Password hashes
 
-New passwords are stored as argon2id (`m=15 MiB`, `t=2`, `p=1`). A stored
-argon2id hash is checked with the parameters it names, within bounds: `m` at
-most 32 MiB, `t` from 1 to 10, `p` from 1 to 4; a hash outside them, a
-malformed one and a locked account (`"!"`) never verify. An unknown username, a
+New passwords are stored as argon2id (`m=15 MiB`, `t=2`, `p=1`), salted with
+the user ID. A stored argon2id hash is checked with the parameters it names,
+within bounds: `m` at most 32 MiB, `t` from 1 to 10, `p` from 1 to 4, a salt of
+at most 256 bytes, and at most 512 characters in all. A bcrypt hash must be 60
+characters with a cost from 4 to 15 (cost 15 takes about two seconds of a CPU
+core; each step up doubles it), and a legacy base64 value at most 64
+characters. A hash outside these bounds, a malformed one and a locked account
+(`"!"`) never verify. A user whose ID is longer than 256 bytes cannot be given
+a new password: the change or reset is refused with an error, logged, and the
+old password stays. An unknown username, a
 locked account and a malformed hash cost the same derivation as a wrong
 password, so the time of the answer does not tell them apart.
 
@@ -348,9 +354,10 @@ admin reset, or the user's own change); every password set in the IdP is
 stored with the default argon2id parameters.
 
 > Upgrading: a stored argon2id hash with `m` above 32 MiB (such as
-> `m=65536`), `t` above 10 or `p` above 4 no longer verifies, and a bcrypt user
-> can no longer sign in with a password over 72 bytes; give such users a new
-> password before upgrading. A sign-in or registration posted from another
+> `m=65536`), `t` above 10, `p` above 4 or a salt over 256 bytes, and a bcrypt
+> hash with a cost above 15, no longer verify, and a bcrypt user can no longer
+> sign in with a password over 72 bytes; give such users a new password before
+> upgrading. A sign-in or registration posted from another
 > site's page, a login form or `csrf_token` sent in the URL instead of the body,
 > and a request body over 64 KiB are now refused.
 

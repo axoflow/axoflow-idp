@@ -291,7 +291,7 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 	}
 
 	if err := r.user.AdminResetPassword(admin.ID, userId, newPassword); err != nil {
-		if r.refuseBusy(res, req, err) {
+		if r.refuseBusy(res, req, err) || r.refuseUnhashable(res, req, err, "operation", "reset_password", "admin", admin.Username, "target_user_id", userId) {
 			return
 		}
 		if saveFailed(err, "operation", "reset_password", "admin", admin.Username, "target_user_id", userId) {
