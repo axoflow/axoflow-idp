@@ -439,6 +439,7 @@ func TestSessionLimits(t *testing.T) {
 		{name: "zero cookie", session: &sessionConfig{CookieTTL: "0"}, wantErr: true},
 		{name: "cookie under a second", session: &sessionConfig{CookieTTL: "500ms"}, wantErr: true},
 		{name: "cookie of one second", session: &sessionConfig{CookieTTL: "1s"}, want: sessionLimits{cookie: time.Second, Config: session.Config{AbsoluteTTL: time.Second}}},
+		{name: "cookie counted in whole seconds", session: &sessionConfig{CookieTTL: "1500ms"}, want: sessionLimits{cookie: time.Second, Config: session.Config{AbsoluteTTL: time.Second}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

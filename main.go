@@ -90,6 +90,9 @@ func (c *sessionConfig) limits() (sessionLimits, error) {
 	if l.cookie < time.Second {
 		return l, fmt.Errorf("session.cookieTTL %q must be at least 1s", c.CookieTTL)
 	}
+	// The browser keeps the cookie for whole seconds only; count it the same
+	// way before it becomes the default absoluteTTL and is logged.
+	l.cookie = l.cookie.Truncate(time.Second)
 	if l.IdleTTL, err = parse("idleTTL", c.IdleTTL, 0); err != nil {
 		return l, err
 	}

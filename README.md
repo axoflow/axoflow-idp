@@ -126,12 +126,15 @@ duration). These are the defaults:
 }
 ```
 
-- `cookieTTL` is the cookie's `Max-Age`; at least `"1s"`.
+- `cookieTTL` is the cookie's `Max-Age`, in whole seconds (a fraction is
+  dropped); at least `"1s"`.
 - `idleTTL` ends a session that has not been used for that long. `"0"`, the
   default, sets no idle limit.
-- `absoluteTTL` ends a session that long after sign-in, used or not. It
-  defaults to the `cookieTTL`, so a session does not outlive its cookie;
-  `"0"` sets no limit.
+- `absoluteTTL` ends a session that long after sign-in, used or not. `"0"`
+  sets no limit. Omitted, it is the `cookieTTL` in whole seconds, so by
+  default a session does not outlive its cookie. That is the default only:
+  an `absoluteTTL` longer than the `cookieTTL`, or `"0"`, keeps the session
+  valid on the server after the browser has dropped the cookie.
 
 A negative value, or one too large for a Go duration, is refused at start.
 Sessions are held in memory, so a restart still signs everyone out. A user
