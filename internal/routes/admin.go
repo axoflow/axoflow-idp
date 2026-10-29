@@ -117,7 +117,7 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		}
 		username := req.Form.Get("username")
 		email := req.Form.Get("email")
-		password := req.Form.Get("password")
+		password := req.PostForm.Get("password")
 		groups := req.Form["groups"]
 
 		// The admin can either set an initial password or have the new user set
@@ -128,6 +128,9 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.AdminRegister(admin.ID, username, password, groups, email); err != nil {
+			if r.refuseBusy(res, req, err) {
+				return
+			}
 			if saveFailed(err, "operation", "register", "admin", admin.Username, "new_user", username) {
 				res.WriteHeader(http.StatusInternalServerError)
 				r.renderAdminRegister(res, sessionCookie.Value, admin.Username, saveFailedMessage)
@@ -281,13 +284,16 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	newPassword := req.Form.Get("new_password")
+	newPassword := req.PostForm.Get("new_password")
 	if newPassword == "" {
 		http.Error(res, "New password is required", http.StatusBadRequest)
 		return
 	}
 
 	if err := r.user.AdminResetPassword(admin.ID, userId, newPassword); err != nil {
+		if r.refuseBusy(res, req, err) || r.refuseUnhashable(res, req, err, "operation", "reset_password", "admin", admin.Username, "target_user_id", userId) {
+			return
+		}
 		if saveFailed(err, "operation", "reset_password", "admin", admin.Username, "target_user_id", userId) {
 			http.Error(res, saveFailedMessage, http.StatusInternalServerError)
 			return
@@ -304,6 +310,10 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 	// out a compromised/departed user (mirrors the reset-link flow).
 	r.session.DeleteUserSessions(userId)
 	r.resetTokens.RevokeUser(userId)
+	// the reset is the way out of a sign-in cooldown other than waiting
+	if target, ok := r.user.Get(userId); ok {
+		r.logins.Succeed(target.Username)
+	}
 
 	slog.Info("admin reset user password", "admin", admin.Username, "target_user_id", userId)
 

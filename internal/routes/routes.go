@@ -27,6 +27,7 @@ import (
 	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/internal/resettoken"
 	"github.com/axoflow/axoflow-idp/internal/session"
+	"github.com/axoflow/axoflow-idp/internal/throttle"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
@@ -44,6 +45,9 @@ type Config struct {
 	SecureCookies bool
 	// CookieTTL is the session cookie's Max-Age, at least one second.
 	CookieTTL time.Duration
+	// Clients are the registered clients; a failed secret of a confidential
+	// one at /token or /revoke is counted and logged.
+	Clients []oidc.Client
 }
 
 type Routes struct {
@@ -59,6 +63,14 @@ type Routes struct {
 	secureCookies bool
 	cookieTTL     time.Duration
 	csrfKey       []byte
+	signInOrigin  *http.CrossOriginProtection
+
+	// logins puts a username that keeps failing to sign in in cooldown.
+	logins *throttle.Limiter
+	// confidential holds the IDs of the confidential clients, whose failed
+	// secrets secretFailures counts for a rate-limited warning.
+	confidential   map[string]bool
+	secretFailures *throttle.Counter
 
 	// hooks are seams where a test stops a request to let a concurrent one
 	// change the user database; all nil in production.
@@ -105,6 +117,16 @@ func New(config Config) (*Routes, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse templates in %s: %w", dir, err)
 	}
+	signInOrigin, err := newSignInOrigin(config.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("baseUrl %q as a trusted origin: %w", config.BaseURL, err)
+	}
+	confidential := map[string]bool{}
+	for _, c := range config.Clients {
+		if !c.Public {
+			confidential[c.Id] = true
+		}
+	}
 	return &Routes{
 		oidc:          config.Oidc,
 		session:       config.Session,
@@ -118,6 +140,11 @@ func New(config Config) (*Routes, error) {
 		secureCookies: config.SecureCookies,
 		cookieTTL:     config.CookieTTL,
 		csrfKey:       generateCSRFKey(),
+		signInOrigin:  signInOrigin,
+		logins:        throttle.New(),
+		confidential:  confidential,
+		// a guessing client is logged once a minute, with its count
+		secretFailures: throttle.NewCounter(time.Minute),
 	}, nil
 }
 

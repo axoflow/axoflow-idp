@@ -44,6 +44,8 @@ const passwordResetLinkTTL = time.Hour
 // session.cookieTTL says otherwise.
 const defaultCookieTTL = 7 * 24 * time.Hour
 
+const minClientSecretLen = 16
+
 // sweepInterval is how often the in-memory stores drop what has expired.
 const sweepInterval = time.Hour
 
@@ -215,6 +217,11 @@ func (c *config) Validate() error {
 		if !client.Public && client.ClientSecret == "" {
 			return fmt.Errorf("client %d (%s): clientSecret is required unless the client is public", i, client.Id)
 		}
+		// a failed secret is logged, not refused, so only its randomness bounds a
+		// guesser; a short one cannot have enough
+		if !client.Public && len(client.ClientSecret) < minClientSecretLen {
+			slog.Warn("clientSecret is short enough to guess; use a random one of at least 16 characters", "client_id", client.Id, "length", len(client.ClientSecret))
+		}
 		if client.TokenTTL != "" {
 			if _, err := oidc.ParseTokenTTL(client.TokenTTL); err != nil {
 				return fmt.Errorf("client %d (%s): tokenTTL %q must be a duration between %dm and %dh", i, client.Id, client.TokenTTL, int(oidc.MinTokenTTL.Minutes()), int(oidc.DefaultTokenTTL.Hours()))
@@ -259,15 +266,21 @@ func (c *config) Validate() error {
 
 // newMux registers every route under pathPrefix, so the same binary can be
 // served from the host root or from a prefix such as /idp. A reverse proxy in
-// front of it must pass the prefix through rather than strip it.
-func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
+// front of it must pass the prefix through rather than strip it. Every
+// response gets routes.SecurityHeaders.
+func newMux(r *routes.Routes, pathPrefix string, u *user.User) http.Handler {
 	mux := http.NewServeMux()
 	handle := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pathPrefix+pattern, handler)
 	}
+	// for the routes that show an account, a secret or a form for one, or
+	// that sign in or out
+	handlePrivate := func(pattern string, handler http.HandlerFunc) {
+		handle(pattern, routes.NoStore(handler))
+	}
 
 	rootPath := pathPrefix + "/"
-	handle("/", func(res http.ResponseWriter, req *http.Request) {
+	handlePrivate("/", func(res http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != rootPath {
 			r.NotFound(res, req)
 			return
@@ -275,12 +288,12 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 		r.Index(res, req)
 	})
 	handle("/.well-known/openid-configuration", r.WellKnownOpenIdConfiguration)
-	handle("/login", r.Login)
-	handle("/logout", r.Logout)
-	handle("/oidc/auth", r.OidcAuth)
+	handlePrivate("/login", r.Login)
+	handlePrivate("/logout", r.Logout)
+	handlePrivate("/oidc/auth", r.OidcAuth)
 	handle("/oidc/jwks", r.OidcJwks)
-	handle("/oidc/userinfo", r.OidcUserinfo)
-	handle("/token", r.OidcToken)
+	handlePrivate("/oidc/userinfo", r.OidcUserinfo)
+	handlePrivate("/token", r.OidcToken)
 	handle("/revoke", r.OidcRevoke)
 
 	// In static mode the user database is read-only, so no route that mutates
@@ -296,29 +309,43 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 		} else {
 			slog.Info("bootstrap registration is enabled while the user database is empty")
 		}
-		handle("/register", r.Register)
+		handlePrivate("/register", r.Register)
 	}
 
 	if !u.Static {
-		handle("/password", r.ChangePassword)
-		handle("/set-password", r.SetPassword)
+		handlePrivate("/password", r.ChangePassword)
+		handlePrivate("/set-password", r.SetPassword)
 	}
 
 	if u.UserAdminGroup != "" {
-		handle("/admin", r.AdminPanel)
-		handle("/admin/users/api", r.AdminUsersAPI)
+		handlePrivate("/admin", r.AdminPanel)
+		handlePrivate("/admin/users/api", r.AdminUsersAPI)
 		if !u.Static {
-			handle("/admin/register", r.AdminRegister)
-			handle("/admin/users/delete", r.AdminDeleteUser)
-			handle("/admin/users/reset-password", r.AdminResetPassword)
-			handle("/admin/users/update-groups", r.AdminUpdateUserGroups)
-			handle("/admin/users/reset-link", r.AdminCreateResetLink)
+			handlePrivate("/admin/register", r.AdminRegister)
+			handlePrivate("/admin/users/delete", r.AdminDeleteUser)
+			handlePrivate("/admin/users/reset-password", r.AdminResetPassword)
+			handlePrivate("/admin/users/update-groups", r.AdminUpdateUserGroups)
+			handlePrivate("/admin/users/reset-link", r.AdminCreateResetLink)
 		}
 	} else {
 		slog.Warn("user admin group is not set; admin routes are disabled")
 	}
 
-	return mux
+	return routes.SecurityHeaders(mux)
+}
+
+// baseRoutesConfig is the part of the routes configuration that follows from
+// c, which Validate has already checked; the caller adds the stores.
+func baseRoutesConfig(c *config, cookieTTL time.Duration) routes.Config {
+	parsed, _ := url.Parse(c.BaseUrl)
+	return routes.Config{
+		BaseURL:    c.BaseUrl,
+		PathPrefix: parsed.Path,
+		// url.Parse lowercases the scheme, so "HTTPS://" counts as https too.
+		SecureCookies: parsed.Scheme == "https",
+		CookieTTL:     cookieTTL,
+		Clients:       c.Clients,
+	}
 }
 
 // logSessionLimits logs the effective session limits, and warns for each
@@ -379,6 +406,29 @@ func startSweeper(interval time.Duration, stores ...cleaner) (stop func()) {
 	}
 }
 
+// maxRequestBytes bounds a request's body and its headers; the largest form
+// the IdP takes, a sign-in or an admin's user edit, is far smaller.
+const maxRequestBytes = 64 << 10
+
+// newServer is the HTTP server for handler, listening on LISTEN_ADDR (default
+// ":8080"). Without the timeouts a client that sends its request slowly, or
+// never reads the response, holds a connection and its goroutine forever.
+func newServer(handler http.Handler) *http.Server {
+	addr := os.Getenv("LISTEN_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	return &http.Server{
+		Addr:              addr,
+		Handler:           http.MaxBytesHandler(handler, maxRequestBytes),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    maxRequestBytes,
+	}
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
@@ -412,10 +462,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Validate() has already parsed baseUrl, so this cannot fail.
-	parsedBaseUrl, _ := url.Parse(cfg.BaseUrl)
-	pathPrefix := parsedBaseUrl.Path
-
 	// Validate() has already parsed the session block, so this cannot fail.
 	limits, _ := cfg.Session.limits()
 	logSessionLimits(slog.Default(), limits, cfg.Clients, o.ClientTokenTTL)
@@ -424,18 +470,15 @@ func main() {
 	codes := codestore.New()
 	tokens := tokenstore.New(o.IDTokenTTL())
 	resetTokens := resettoken.New(passwordResetLinkTTL)
-	r, err := routes.New(routes.Config{
-		Oidc:          o,
-		Session:       sessions,
-		User:          u,
-		CodeStore:     codes,
-		TokenStore:    tokens,
-		ResetTokens:   resetTokens,
-		BaseURL:       cfg.BaseUrl,
-		PathPrefix:    pathPrefix,
-		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
-		CookieTTL:     limits.cookie,
-	})
+	routesCfg := baseRoutesConfig(&cfg, limits.cookie)
+	pathPrefix := routesCfg.PathPrefix
+	routesCfg.Oidc = o
+	routesCfg.Session = sessions
+	routesCfg.User = u
+	routesCfg.CodeStore = codes
+	routesCfg.TokenStore = tokens
+	routesCfg.ResetTokens = resetTokens
+	r, err := routes.New(routesCfg)
 	if err != nil {
 		slog.Error("failed to create routes", "error", err)
 		os.Exit(1)
@@ -443,10 +486,10 @@ func main() {
 	stopSweeper := startSweeper(sweepInterval, storeCleaners(sessions, codes, tokens, resetTokens)...)
 	defer stopSweeper()
 
-	mux := newMux(r, pathPrefix, u)
+	srv := newServer(newMux(r, pathPrefix, u))
 
-	slog.Info("listening", "addr", "http://localhost:8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	slog.Info("listening", "addr", srv.Addr)
+	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}

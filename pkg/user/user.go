@@ -115,10 +115,9 @@ func newAccountIdentity(username, email string) (string, string, error) {
 }
 
 // dummyPasswordHash is a valid argon2id hash verified on the username-not-found
-// path of Authenticate so that path spends the same ~100ms as a real password
-// check, denying an attacker a timing oracle for enumerating valid usernames.
-// LockedPasswordHash ("!") would not work here: it fails base64 decoding before
-// argon2 runs, so it returns early and does not equalize the timing.
+// path of Authenticate, and for a stored value that can never match, so those
+// paths spend the same ~100ms as a real password check, denying an attacker a
+// timing oracle for enumerating valid usernames or locked accounts.
 var dummyPasswordHash = hash([]byte("timing-equalization-salt"), "timing-equalization-password")
 
 type UserInfo struct {
@@ -332,8 +331,11 @@ func (u *User) registerWithPassword(username, password string, groups []string, 
 
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	passwordHash := hash([]byte(id), password)
-	id, err := u.register(id, username, passwordHash, groups, email, authorize)
+	passwordHash, err := gatedHash([]byte(id), password)
+	if err != nil {
+		return "", "", err
+	}
+	id, err = u.register(id, username, passwordHash, groups, email, authorize)
 	if err != nil {
 		return "", "", err
 	}
@@ -477,15 +479,20 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (s
 	}
 
 	// verifyPassword and hash run argon2id (~100ms each); keep them out of the lock.
-	if !verifyPassword(user, oldPassword) {
+	if ok, err := verifyPassword(user, oldPassword); err != nil {
+		return "", err
+	} else if !ok {
 		return "", errors.New("invalid old password")
 	}
-	newHash := hash([]byte(user.ID), newPassword)
+	newHash, err := gatedHash([]byte(user.ID), newPassword)
+	if err != nil {
+		return "", err
+	}
 	if u.afterVerify != nil {
 		u.afterVerify()
 	}
 
-	err := u.update(func(users []UserInfo) ([]UserInfo, error) {
+	err = u.update(func(users []UserInfo) ([]UserInfo, error) {
 		i, ok := getIndex(users, userID)
 		if !ok {
 			return nil, errors.New("user not found")
@@ -524,7 +531,10 @@ func (u *User) SetPassword(userID, newPassword string) error {
 	}
 
 	// hash runs argon2id (~100ms); keep it out of the lock.
-	newHash := hash([]byte(user.ID), newPassword)
+	newHash, err := gatedHash([]byte(user.ID), newPassword)
+	if err != nil {
+		return err
+	}
 
 	return u.update(func(users []UserInfo) ([]UserInfo, error) {
 		i, ok := getIndex(users, userID)
@@ -536,7 +546,20 @@ func (u *User) SetPassword(userID, newPassword string) error {
 	}, userID)
 }
 
+// ErrInvalidCredentials is returned by Verify for an unknown username or a
+// wrong password, alike.
+var ErrInvalidCredentials = errors.New("invalid username or password")
+
+// Authenticate reports whether password is username's; it is Verify without
+// telling a refusal of the derivation gate from a wrong password.
 func (u *User) Authenticate(username, password string) (UserInfo, bool) {
+	user, err := u.Verify(username, password)
+	return user, err == nil
+}
+
+// Verify returns username's user if password is theirs, ErrInvalidCredentials
+// if not, and ErrBusy if the derivation gate refused, before any derivation.
+func (u *User) Verify(username, password string) (UserInfo, error) {
 	u.mu.RLock()
 	i := slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
@@ -545,14 +568,23 @@ func (u *User) Authenticate(username, password string) (UserInfo, bool) {
 		u.mu.RUnlock()
 		// Run a verify against a dummy hash so the not-found path takes the same
 		// ~100ms as a real check, closing the username-enumeration timing oracle.
-		_ = verifyPassword(UserInfo{Password: dummyPasswordHash}, password)
-		return UserInfo{}, false
+		if _, err := refuse(password); err != nil {
+			return UserInfo{}, err
+		}
+		return UserInfo{}, ErrInvalidCredentials
 	}
 	user := u.users[i].clone()
 	u.mu.RUnlock()
 
 	// verifyPassword runs argon2id/bcrypt (~100ms); keep it out of the lock.
-	return user, verifyPassword(user, password)
+	ok, err := verifyPassword(user, password)
+	if err != nil {
+		return UserInfo{}, err
+	}
+	if !ok {
+		return UserInfo{}, ErrInvalidCredentials
+	}
+	return user, nil
 }
 
 // SaveUsers writes the users held in memory to FilePath. Every mutating

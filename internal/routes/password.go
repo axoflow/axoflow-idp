@@ -49,8 +49,8 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		currentPassword := req.Form.Get("current_password")
-		newPassword := req.Form.Get("new_password")
+		currentPassword := req.PostForm.Get("current_password")
+		newPassword := req.PostForm.Get("new_password")
 		if newPassword == "" {
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderChangePassword(res, sessionCookie.Value, "New password is required")
@@ -58,6 +58,9 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		newHash, err := r.user.ChangePassword(u.ID, currentPassword, newPassword)
+		if r.refuseBusy(res, req, err) || r.refuseUnhashable(res, req, err, "operation", "change_password", "user_id", u.ID) {
+			return
+		}
 		if err != nil {
 			if saveFailed(err, "operation", "change_password", "user_id", u.ID) {
 				res.WriteHeader(http.StatusInternalServerError)
@@ -197,8 +200,9 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		token := req.Form.Get("token")
-		newPassword := req.Form.Get("new_password")
+		// the link's GET carries the token in the URL; the form posts it in the body
+		token := req.PostForm.Get("token")
+		newPassword := req.PostForm.Get("new_password")
 		if token == "" {
 			r.renderSetPasswordInvalid(res)
 			return
@@ -226,6 +230,9 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		newHash, err := user.HashNewPassword(target.ID, newPassword)
+		if r.refuseBusy(res, req, err) || r.refuseUnhashable(res, req, err, "operation", "set_password", "target_user_id", userID) {
+			return
+		}
 		if err != nil {
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderSetPasswordForm(res, token, err.Error())
@@ -260,6 +267,7 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 		// anyway.
 		r.resetTokens.RevokeUser(userID)
 		r.session.DeleteUserSessions(userID)
+		r.logins.Succeed(target.Username)
 
 		slog.Info("password set via reset link", "target_user_id", userID)
 		http.Redirect(res, req, r.url("/login?flash=password_reset"), http.StatusSeeOther)

@@ -18,6 +18,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -125,31 +127,51 @@ func (r *Routes) loginTemplateData(message string) struct {
 }
 
 func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInfo {
+	if r.refuseCrossOriginSignIn(res, req) {
+		return nil
+	}
 	if err := req.ParseForm(); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
 		return nil
 	}
-	username := req.Form.Get("username")
-	password := req.Form.Get("password")
+	// from the body only: in the URL the password reaches access logs
+	username := req.PostForm.Get("username")
+	password := req.PostForm.Get("password")
 
-	user, ok := r.user.Authenticate(username, password)
-	if ok {
-		if err := r.issueSession(res, user.ID, user.Password); err == nil {
+	// refused like a wrong password, whether the account exists or not
+	if wait := r.logins.Wait(username); wait > 0 {
+		res.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+		r.renderLoginFailed(res)
+		return nil
+	}
+	account, err := r.user.Verify(username, password)
+	if r.refuseBusy(res, req, err) {
+		return nil
+	}
+	if err != nil {
+		r.loginFailed(username)
+	} else {
+		r.logins.Succeed(username)
+		if err := r.issueSession(res, account.ID, account.Password); err == nil {
 			// The new cookie replaces the request's (the /oidc/auth form signs
 			// in over a live session); end the session it pointed to.
 			if old, err := req.Cookie("session"); err == nil {
 				r.session.Delete(old.Value)
 			}
-			return &user
+			return &account
 		}
-		slog.Info("login refused: the password changed while it was checked", "user_id", user.ID)
+		slog.Info("login refused: the password changed while it was checked", "user_id", account.ID)
 	}
 
+	r.renderLoginFailed(res)
+	return nil
+}
+
+func (r *Routes) renderLoginFailed(res http.ResponseWriter) {
 	res.WriteHeader(http.StatusUnauthorized)
 	if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
 		slog.Error("failed to render login template", "error", err)
 	}
-	return nil
 }
 
 // errPasswordChanged refuses a session whose password was rotated after the
@@ -241,14 +263,19 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		return
 
 	case http.MethodPost:
+		// a registration signs the browser in, as a login does
+		if r.refuseCrossOriginSignIn(res, req) {
+			return
+		}
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
 		}
-		username := req.Form.Get("username")
-		email := req.Form.Get("email")
-		password := req.Form.Get("password")
-		passwordConfirm := req.Form.Get("password_confirm")
+		// from the body only, the identity with the password it is registered with
+		username := req.PostForm.Get("username")
+		email := req.PostForm.Get("email")
+		password := req.PostForm.Get("password")
+		passwordConfirm := req.PostForm.Get("password_confirm")
 		if email == "" {
 			res.WriteHeader(http.StatusBadRequest)
 			if err := r.template.ExecuteTemplate(res, "register.html", struct{ Message string }{"Email is required"}); err != nil {
@@ -265,6 +292,9 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		}
 
 		id, passwordHash, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
+		if r.refuseBusy(res, req, err) {
+			return
+		}
 		if err != nil {
 			status, message := http.StatusBadRequest, err.Error()
 			switch {

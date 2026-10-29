@@ -133,7 +133,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if req.Form.Has("username") {
+		if req.PostForm.Has("username") {
 			// GET -> login form
 			loginForm = true
 			authReq = authRequest(req.URL.Query())
@@ -155,17 +155,18 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	fragment := fragmentResponse(authReq.ResponseType)
+
+	// before the login, so that a request refused anyway creates no session
+	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
+		authError(res, req, authReq, err.Error(), fragment)
+		return
+	}
+
 	if loginForm {
 		if user = r.login(res, req); user == nil {
 			return // failure, handled in r.login
 		}
-	}
-
-	fragment := fragmentResponse(authReq.ResponseType)
-
-	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
-		authError(res, req, authReq, err.Error(), fragment)
-		return
 	}
 
 	if user == nil {
@@ -269,6 +270,9 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := r.oidc.ValidateTokenRequest(tokenRequest); err != nil {
+		if errors.Is(err, oidc.ErrInvalidClient) {
+			r.clientSecretFailed(tokenRequest.ClientID)
+		}
 		writeTokenError(res, err)
 		return
 	}
@@ -357,6 +361,9 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 		// Per RFC 7009 an invalid/unknown token still returns 200 OK, but a
 		// failed client authentication is a 401 invalid_client, and a request
 		// without the token it requires (§2.1) a 400 invalid_request.
+		if errors.Is(err, oidc.ErrInvalidClient) {
+			r.clientSecretFailed(revocationRequest.ClientID)
+		}
 		if errors.Is(err, oidc.ErrInvalidClient) || errors.Is(err, oidc.ErrInvalidRequest) {
 			writeTokenError(res, err)
 			return

@@ -255,6 +255,163 @@ rename a normal restart loads the new file. The IdP then syncs the directory;
 if that fails it logs a warning and keeps the change, but whether the change
 survives a crash or power loss is uncertain.
 
+## Hardening
+
+### HTTP
+
+The server listens on `LISTEN_ADDR`, by default `:8080` (every interface). Set
+it to `127.0.0.1:8080` when a reverse proxy on the same host is the only
+client. A request must send its headers within 5 seconds and the whole
+request within 30; a response must be written within 30 seconds, and an idle
+keep-alive connection is closed after 120. Headers and body are each limited
+to 64 KiB, and a larger request is refused.
+
+Every response of the IdP's handlers carries `Content-Security-Policy:
+frame-ancestors 'none'`, `X-Frame-Options: DENY` and `X-Content-Type-Options:
+nosniff`, so no page can be framed by another site (a request Go's HTTP server
+refuses before any handler runs, such as one with oversized headers, gets its
+own answer). The profile page, the admin pages and their JSON API, `/password`,
+`/set-password`, `/oidc/userinfo`, `/oidc/auth`, `/login`, `/register`,
+`/logout` and `/token`, their errors included, carry `Cache-Control:
+no-store`.
+
+A `baseUrl` path such as `/idp` scopes the routes and the session cookie, not
+who can use them: another application served from the same host name can send
+requests to the IdP with the user's cookie and read the answers. Give the IdP a
+host name of its own.
+
+### Sign-in from other sites
+
+A form on another site's page could sign the user's browser in to an account
+of that site's choosing. `POST /login`, `POST /register` and the login form of
+`/oidc/auth` therefore refuse with `403` a request the browser marks as sent
+from another origin: a `Sec-Fetch-Site` other than `same-origin` or `none`
+or, from a browser that sends only `Origin`, an `Origin` that is neither the
+request's `Host` nor the origin of `baseUrl` (its scheme and host, such as
+`https://console.example` for `https://console.example/idp`), so a reverse
+proxy may rewrite `Host`. A request with neither header, from a non-browser
+client, is accepted. A relying party's own authorization request, sent as a
+cross-site `POST` to `/oidc/auth` without credentials, is not affected.
+
+The `csrf_token` of every form, the login fields, the registration's
+username, email and passwords, every new or current password and the reset
+token of a `/set-password` submission are read from the request body only,
+never from the URL; the reset link itself still carries its token. The
+`/oidc/auth` login form signs the user in only after the authorization request
+has been validated, so a refused request leaves no session behind.
+
+### Password checks under load
+
+Checking or setting a password derives an argon2id hash, which takes about
+15 MiB of memory for the default parameters (up to 32 MiB for a stored hash
+with other ones), or runs bcrypt. At most 4 derivations run at once; up to 32
+more requests wait for one, for at most 2 seconds. Any other request that would
+derive one (a sign-in, a registration, a password change or reset) is answered
+with `503` and `Retry-After: 2` before the KDF buffer is allocated; a reset
+link it carried stays usable. This bounds the derivations running at once. It
+is not a limit on the rate of requests, and not a bound on the process's
+memory: 4 × 32 MiB is a planning figure, not a measured peak, and buffers not
+yet collected, the request and store state and the runtime come on top.
+
+### Failed sign-ins
+
+Five failed sign-ins for one username within 10 minutes put that username in
+cooldown: for 10 seconds every sign-in attempt for it, the right password
+included, gets the same "Invalid username or password" page with a
+`Retry-After` header, and the password is not checked. Each failure after a
+cooldown doubles it, up to 30 seconds; a successful sign-in clears the count.
+The count is kept in memory per exact username (byte for byte, as the
+password check matches it), under a SHA-256 digest of the username rather than
+the username itself, for at most 10,000 usernames: an entry whose 10 minutes
+and cooldown have both passed is dropped, and past the bound the least recently
+failed is. A restart clears it. Failing once each with 10,000 other usernames
+pushes a username out, so the cooldown slows down guessing against one account;
+it does not stop someone who can send that many failed sign-ins. The cooldown
+warning logs the first 64 bytes of the username and 12 hex digits of its
+digest.
+
+This is a trade-off: someone who knows a username can keep that account in
+cooldown for as long as they keep failing to sign in to it. The account's
+owner recovers by waiting until the attempts stop. A new password set by an
+admin (`/admin`) or through a reset link also clears the count, though
+continued attempts put the username back in cooldown.
+
+A confidential client is not throttled: a wrong `client_secret` at `/token`
+or `/revoke` is counted and logged as a warning, at most once a minute per
+client with the count, and the client is otherwise unaffected. Only the
+secret's randomness bounds a guesser: use a long random one, such as 32 bytes
+from a CSPRNG, base64-encoded. A long secret that can be predicted is guessed
+anyway; the server warns at start only for a `clientSecret` under 16
+characters.
+
+### Password hashes
+
+New passwords are stored as argon2id (`m=15 MiB`, `t=2`, `p=1`), salted with
+the user ID. A stored argon2id hash is checked with the parameters it names,
+within bounds: `m` at most 32 MiB, `t` from 1 to 10, `p` from 1 to 4, a salt of
+at most 256 bytes, and at most 512 characters in all. A bcrypt hash must be 60
+characters with a cost from 4 to 15 (cost 15 takes about two seconds of a CPU
+core; each step up doubles it), and a legacy base64 value at most 64
+characters. A hash outside these bounds, a malformed one and a locked account
+(`"!"`) never verify. A user whose ID is longer than 256 bytes cannot be given
+a new password: the change or reset is refused with an error, logged, and the
+old password stays. An unknown username, a
+locked account and a malformed hash cost the same derivation as a wrong
+password, so the time of the answer does not tell them apart.
+
+A bcrypt hash compares only the first 72 bytes of a password, so a bcrypt user
+who submits a longer one is refused instead of being let in on its first 72
+bytes. Such a user sets a new password through a reset link or an admin reset.
+
+Hashes are not upgraded on sign-in. A bcrypt hash, or an argon2id one with
+other parameters, takes a different time to check than the default, so the
+time of a wrong-password answer can tell such an account from an unknown
+username. To close that, give those users new passwords (a reset link, an
+admin reset, or the user's own change); every password set in the IdP is
+stored with the default argon2id parameters. This does not apply to a user
+whose ID is longer than 256 bytes (below).
+
+> Upgrading: a stored argon2id hash with `m` above 32 MiB (such as
+> `m=65536`), `t` above 10 or `p` above 4, and a bcrypt hash with a cost above
+> 15, no longer verify, and a bcrypt user can no longer sign in with a password
+> over 72 bytes; give such users a new password before upgrading. An argon2id
+> hash with a salt over 256 bytes no longer verifies either, and a new password
+> does not repair it when the salt is the user's ID: see the next section.
+> A sign-in or registration posted from another site's page, a
+> password, reset token, registration field or `csrf_token` sent in the URL
+> instead of the body, and a request body over 64 KiB are now refused.
+
+#### Accounts with an ID over 256 bytes
+
+The IdP salts a password it stores with the user's ID. The IDs it generates
+are 26-character ULIDs; a longer one comes from a seed user's `ID` or from a
+database written by other means. Before rolling this release out, list the
+accounts whose ID is longer than 256 bytes, for example:
+
+```sh
+jq -r '.[] | select((.ID | utf8bytelength) > 256) | .Username' users.json
+```
+
+For such an account a password change or reset does not help. On the previous
+release it stores another hash salted with the same ID, which this release does
+not verify. On this release it is refused (`ErrIDTooLong`): the user gets a
+generic 500, the cause is logged, and the stored password, the user's sessions
+and the reset link stay as they were.
+
+To recover one, replace its stored `Password` offline with a hash that carries
+its own bounded salt: a bcrypt hash with a cost from 4 to 15, or an argon2id
+PHC string within the bounds above. Stop the IdP, then either edit the account
+in `users.filePath`, or set the seed user's `Password` with
+`users.updateSeedPasswords: true` (see "Seeding the user database"), and start
+it again. Do not edit the file while the IdP runs: it reads the file only at
+start and replaces it whole on its next change, so such an edit is lost. Do not
+shorten the ID either: relying parties know the user by it (`sub`), and a
+legacy hash is salted with it.
+
+After the recovery the user signs in, but still cannot change the password, or
+get a new one from a reset link or an admin, while the ID is longer than 256
+bytes; each later rotation is the same offline replacement.
+
 ## Releases
 
 The container image `ghcr.io/axoflow/axoflow-idp` (linux/amd64 and
