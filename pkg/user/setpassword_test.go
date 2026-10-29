@@ -119,7 +119,7 @@ func TestChangePasswordLosesToConcurrentChange(t *testing.T) {
 			}
 
 			_, err = u.ChangePassword("alice", "original", "requester1")
-			if err == nil || err.Error() != "invalid old password" {
+			if !errors.Is(err, ErrInvalidOldPassword) {
 				t.Errorf("ChangePassword = %v, want invalid old password", err)
 			}
 			if _, ok := u.Authenticate("alice", tt.password); !ok {

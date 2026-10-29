@@ -480,6 +480,10 @@ func (u *User) KnownGroups() []string {
 	return slices.Sorted(maps.Keys(seen))
 }
 
+// ErrInvalidOldPassword is returned by ChangePassword when oldPassword is not
+// the user's, which a route counts as a failed guess.
+var ErrInvalidOldPassword = errors.New("invalid old password")
+
 // ChangePassword sets userID's password after verifying oldPassword, and
 // returns the new hash so the caller can prove it when it issues a session.
 func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (string, error) {
@@ -499,7 +503,7 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (s
 	if ok, err := verifyPassword(user, oldPassword); err != nil {
 		return "", err
 	} else if !ok {
-		return "", errors.New("invalid old password")
+		return "", ErrInvalidOldPassword
 	}
 	newHash, err := gatedHash([]byte(user.ID), newPassword)
 	if err != nil {
@@ -519,7 +523,7 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) (s
 		// a hash comparison would miss (the hash is deterministic per user).
 		// saveMu, held here, orders this read after every commit.
 		if u.generations[userID] != generation {
-			return nil, errors.New("invalid old password")
+			return nil, ErrInvalidOldPassword
 		}
 		users[i].Password = newHash
 		return users, nil

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -195,6 +196,98 @@ func TestLogin_BusyIsNotAFailure(t *testing.T) {
 	if status, retry, signedIn := loginAs(r, "bob", "bobpass1"); status != http.StatusFound || !signedIn {
 		t.Errorf("login after busy refusals = %d Retry-After %q, want 302 and a session", status, retry)
 	}
+}
+
+func changePasswordAs(r *Routes, cookie *http.Cookie, csrf, current string) *httptest.ResponseRecorder {
+	return postForm(r.ChangePassword, "/password", cookie, url.Values{"csrf_token": {csrf}, "current_password": {current}, "new_password": {"bobpass99"}})
+}
+
+// The current-password check of /password is behind the sign-in cooldown of
+// the account's username: a session holder guesses no faster than the
+// sign-in form allows, and an account in cooldown is not checked there.
+func TestChangePassword_Cooldown(t *testing.T) {
+	t.Run("five wrong current passwords", func(t *testing.T) {
+		r := newTestRoutes(t, false)
+		var checks atomic.Int32
+		r.hooks.beforePasswordCheck = func() { checks.Add(1) }
+		warnings := captureWarnings(t)
+		cookie, csrf := r.authed("bob")
+		for i := range throttle.FreeFailures {
+			if rec := changePasswordAs(r, cookie, csrf, "wrong"); rec.Code != http.StatusBadRequest {
+				t.Fatalf("miss %d = %d, want 400", i+1, rec.Code)
+			}
+		}
+		rec := changePasswordAs(r, cookie, csrf, "bobpass1")
+		if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "10" || !strings.Contains(rec.Body.String(), "Too many attempts; try again later") {
+			t.Errorf("sixth attempt = %d Retry-After %q, want 429, 10 and the form saying so", rec.Code, rec.Header().Get("Retry-After"))
+		}
+		if n := checks.Load(); n != throttle.FreeFailures {
+			t.Errorf("%d current-password checks, want %d", n, throttle.FreeFailures)
+		}
+		if _, ok := r.user.Authenticate("bob", "bobpass1"); !ok {
+			t.Error("the password changed")
+		}
+		if status, retry, _ := loginAs(r, "bob", "bobpass1"); status != http.StatusUnauthorized || retry == "" {
+			t.Errorf("sign-in after the misses = %d Retry-After %q, want 401 with Retry-After", status, retry)
+		}
+		misses := 0
+		for _, w := range warnings() {
+			if strings.Contains(w, `"msg":"password change refused: wrong current password"`) && strings.Contains(w, `"user_id":"bob"`) {
+				misses++
+			}
+		}
+		if misses != throttle.FreeFailures {
+			t.Errorf("%d misses logged, want %d: %q", misses, throttle.FreeFailures, warnings())
+		}
+	})
+
+	t.Run("a username in sign-in cooldown", func(t *testing.T) {
+		r := newTestRoutes(t, false)
+		for range throttle.FreeFailures {
+			loginAs(r, "bob", "wrong")
+		}
+		var checks atomic.Int32
+		r.hooks.beforePasswordCheck = func() { checks.Add(1) }
+		cookie, csrf := r.authed("bob")
+		if rec := changePasswordAs(r, cookie, csrf, "bobpass1"); rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+			t.Errorf("/password in cooldown = %d Retry-After %q, want 429 with Retry-After", rec.Code, rec.Header().Get("Retry-After"))
+		}
+		if n := checks.Load(); n != 0 {
+			t.Errorf("%d current-password checks in cooldown, want 0", n)
+		}
+	})
+
+	t.Run("the right password after fewer misses", func(t *testing.T) {
+		r := newTestRoutes(t, false)
+		cookie, csrf := r.authed("bob")
+		for range throttle.FreeFailures - 1 {
+			changePasswordAs(r, cookie, csrf, "wrong")
+		}
+		if rec := changePasswordAs(r, cookie, csrf, "bobpass1"); rec.Code != http.StatusSeeOther {
+			t.Fatalf("change with the right password = %d, want 303", rec.Code)
+		}
+		for range throttle.FreeFailures - 1 {
+			loginAs(r, "bob", "wrong")
+		}
+		if status, retry, signedIn := loginAs(r, "bob", "bobpass99"); status != http.StatusFound || !signedIn {
+			t.Errorf("sign-in after 4+4 misses with the change between = %d Retry-After %q, want 302: the change did not clear the count", status, retry)
+		}
+	})
+
+	t.Run("a busy refusal", func(t *testing.T) {
+		r := newTestRoutes(t, false)
+		cookie, csrf := r.authed("bob")
+		restore := user.SetKDFGate(0, 0, 0)
+		for i := range 2 * throttle.FreeFailures {
+			if rec := changePasswordAs(r, cookie, csrf, "wrong"); rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("busy attempt %d = %d, want 503", i+1, rec.Code)
+			}
+		}
+		restore()
+		if rec := changePasswordAs(r, cookie, csrf, "bobpass1"); rec.Code != http.StatusSeeOther {
+			t.Errorf("change after busy refusals = %d, want 303", rec.Code)
+		}
+	})
 }
 
 // An admin's password reset, or one through a reset link, ends the cooldown.

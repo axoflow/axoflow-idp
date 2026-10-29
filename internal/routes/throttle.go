@@ -18,6 +18,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"net/http"
+	"strconv"
 	"time"
 	"unicode/utf8"
 )
@@ -30,6 +32,12 @@ func (r *Routes) loginFailed(username string, cooldown time.Duration) {
 	sum := sha256.Sum256([]byte(username))
 	slog.Warn("username in cooldown", "username", truncate(username, 64),
 		"username_sha256", hex.EncodeToString(sum[:6]), "cooldown", cooldown.String())
+}
+
+// setRetryAfter tells a client refused for wait when to try again, in whole
+// seconds rounded up.
+func setRetryAfter(res http.ResponseWriter, wait time.Duration) {
+	res.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
 }
 
 // truncate cuts s to at most n bytes, at a rune boundary, and marks the cut.

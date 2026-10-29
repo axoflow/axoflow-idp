@@ -18,8 +18,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"time"
 
 	"github.com/axoflow/axoflow-idp/pkg/user"
 )
@@ -141,7 +139,7 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	// refused like a wrong password, whether the account exists or not
 	wait, done := r.logins.Begin(username)
 	if wait > 0 {
-		res.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+		setRetryAfter(res, wait)
 		r.renderLoginFailed(res)
 		return nil
 	}

@@ -343,6 +343,13 @@ it does not stop someone who can send that many failed sign-ins. The cooldown
 warning logs the first 64 bytes of the username and 12 hex digits of its
 digest.
 
+The cooldown also covers the current-password check of `/password`, keyed by
+the account's username, so a stolen session cannot guess the password faster
+than the sign-in form allows. A wrong current password counts as a failed
+sign-in and is logged with the user's ID; while the username is in cooldown,
+`/password` answers `429 Too Many Requests` with `Retry-After` and does not
+check the password; a successful change clears the count.
+
 This is a trade-off: someone who knows a username can keep that account in
 cooldown for as long as they keep failing to sign in to it. The account's
 owner recovers by waiting until the attempts stop. A new password set by an
