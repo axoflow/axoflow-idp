@@ -390,6 +390,10 @@ func (o *Oidc) ValidateAuthenticationRequest(req AuthenticationRequest) error {
 	if client.Public && req.ResponseType != "code" {
 		return errors.New("unsupported_response_type")
 	}
+	// the nonce is the only binding of an implicit ID token to the request (OpenID Connect Core §3.2.2.1)
+	if req.ResponseType == "id_token" && req.Nonce == "" {
+		return errors.New("invalid_request")
+	}
 
 	if req.CodeChallenge != "" || req.CodeChallengeMethod != "" {
 		if req.CodeChallengeMethod != CodeChallengeMethodS256 || !validCodeChallenge(req.CodeChallenge) {
@@ -607,25 +611,37 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 // or not. It is the identity a revocation is recorded under: the token's bytes have more than one valid
 // spelling (whitespace, JSON serialization, unused padding bits), the id has one.
 func (o *Oidc) AccessTokenID(tokenString string) (string, error) {
+	jti, _, err := o.AccessTokenIdentity(tokenString)
+	return jti, err
+}
+
+// AccessTokenIdentity returns the jti and the client_id of a token this provider signed as an access token,
+// expired or not; /revoke needs the client to tell the token's owner from another client.
+func (o *Oidc) AccessTokenIdentity(tokenString string) (jti, clientID string, err error) {
 	token, err := jose.ParseSigned(tokenString)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse token: %w", err)
+		return "", "", fmt.Errorf("failed to parse token: %w", err)
 	}
 	if len(token.Signatures) != 1 || token.Signatures[0].Header.ExtraHeaders[jose.HeaderType] != "at+jwt" {
-		return "", errors.New("not an access token")
+		return "", "", errors.New("not an access token")
 	}
 	payload, err := token.Verify(o.keychain.GetAll()[0].Public().Key)
 	if err != nil {
-		return "", fmt.Errorf("failed to verify token: %w", err)
+		return "", "", fmt.Errorf("failed to verify token: %w", err)
 	}
 	var claims AccessTokenPayload
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", fmt.Errorf("failed to unmarshal claims: %w", err)
+		return "", "", fmt.Errorf("failed to unmarshal claims: %w", err)
 	}
 	if claims.JWTID == "" {
-		return "", errors.New("access token without jti")
+		return "", "", errors.New("access token without jti")
 	}
-	return claims.JWTID, nil
+	// the key proves only who signed; a token naming another issuer is not one of this provider's. The expiry
+	// is not checked, so revoking an expired token of its own stays an ordinary success.
+	if claims.Issuer != o.baseUrl {
+		return "", "", errors.New("access token not issued by this provider")
+	}
+	return claims.JWTID, claims.ClientID, nil
 }
 
 // GetUserinfoFromToken serves /oidc/userinfo from an access token. Only a token with the typ at+jwt
@@ -651,6 +667,15 @@ func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, erro
 	}
 	if claims.JWTID == "" {
 		return nil, errors.New("access token without jti") // no identity to revoke it under
+	}
+	// the signature only says this key signed it; the claims must say this issuer issued it to a client
+	// registered here, for that client or one of its resources
+	if claims.Issuer != o.baseUrl || claims.Subject == "" {
+		return nil, errors.New("access token not issued by this provider")
+	}
+	client, ok := o.getClient(claims.ClientID)
+	if !ok || (claims.Audience != client.Id && !slices.Contains(client.Resources, claims.Audience)) {
+		return nil, errors.New("access token not issued to a registered client")
 	}
 
 	// RFC 7519 §4.1.4: a token is not accepted on or after exp. main.go keeps a revocation for the token lifetime

@@ -15,11 +15,14 @@
 package routes
 
 import (
+	"crypto/rsa"
 	"encoding/json"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -103,6 +106,22 @@ func TestOidcAuth_CodeSuccessEncodesState(t *testing.T) {
 	}
 }
 
+// splitLocation returns the query and the fragment parameters of the
+// redirect, each decoded once.
+func splitLocation(t *testing.T, rec *httptest.ResponseRecorder) (url.Values, url.Values) {
+	t.Helper()
+	base, fragment, _ := strings.Cut(rec.Header().Get("Location"), "#")
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("parse Location %q: %v", base, err)
+	}
+	f, err := url.ParseQuery(fragment)
+	if err != nil {
+		t.Fatalf("parse fragment %q: %v", fragment, err)
+	}
+	return u.Query(), f
+}
+
 func TestOidcAuth_IDTokenSuccessEchoesState(t *testing.T) {
 	r, cookie := newOidcTestRoutes(t)
 	state := "x y&z"
@@ -113,17 +132,142 @@ func TestOidcAuth_IDTokenSuccessEchoesState(t *testing.T) {
 		"client_id":     {"app"},
 		"redirect_uri":  {testRedirectURI},
 		"state":         {state},
+		"nonce":         {"n1"},
 	})
 
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
 	}
-	q := locationQuery(t, rec)
-	if got := q.Get("state"); got != state {
+	q, f := splitLocation(t, rec)
+	if len(q) != 0 {
+		t.Errorf("query = %v, want the response in the fragment only", q)
+	}
+	if got := f.Get("state"); got != state {
 		t.Errorf("state = %q, want %q", got, state)
 	}
-	if q.Get("id_token") == "" {
-		t.Error("id_token must be present on success")
+	if f.Get("id_token") == "" {
+		t.Fatal("id_token must be present on success")
+	}
+	if _, claims := verifiedClaims(t, r, f.Get("id_token")); claims["nonce"] != "n1" {
+		t.Errorf("id_token nonce = %v, want n1", claims["nonce"])
+	}
+}
+
+// TestOidcAuth_ResponseMode delivers an implicit response, success or error,
+// in the fragment and a code response in the query; response_mode cannot
+// move a token into the query.
+func TestOidcAuth_ResponseMode(t *testing.T) {
+	state := "a b%c+d&e=f#g"
+	request := func(responseType string, extra ...string) url.Values {
+		q := url.Values{
+			"scope": {"openid"}, "response_type": {responseType}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "state": {state},
+		}
+		for i := 0; i < len(extra); i += 2 {
+			q.Set(extra[i], extra[i+1])
+		}
+		return q
+	}
+	tests := []struct {
+		name         string
+		q            url.Values
+		wantFragment bool
+		wantError    string // empty: success, carrying wantParam
+		wantParam    string
+	}{
+		{"implicit", request("id_token", "nonce", "n1"), true, "", "id_token"},
+		{"implicit with response_mode=query", request("id_token", "nonce", "n1", "response_mode", "query"), true, "", "id_token"},
+		{"implicit without nonce", request("id_token"), true, "invalid_request", ""},
+		{"implicit error", request("id_token", "nonce", "n1", "scope", "profile"), true, "invalid_scope", ""},
+		{"code", request("code"), false, "", "code"},
+		{"code error", request("code", "scope", "profile"), false, "invalid_scope", ""},
+		{"token", request("token", "nonce", "n1"), true, "unsupported_response_type", ""},
+		{"code token", request("code token", "nonce", "n1"), true, "unsupported_response_type", ""},
+		{"code id_token", request("code id_token", "nonce", "n1"), true, "unsupported_response_type", ""},
+	}
+	r, cookie := newOidcTestRoutes(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := authGet(t, r, cookie, tt.q)
+			if rec.Code != http.StatusFound {
+				t.Fatalf("status = %d, want 302: %s", rec.Code, rec.Body.String())
+			}
+			params, other := splitLocation(t, rec)
+			if tt.wantFragment {
+				params, other = other, params
+			}
+			if len(other) != 0 {
+				t.Errorf("parameters %v in the wrong part of %q", other, rec.Header().Get("Location"))
+			}
+			if got := params.Get("state"); got != state {
+				t.Errorf("state = %q, want %q", got, state)
+			}
+			if got := params.Get("error"); got != tt.wantError {
+				t.Errorf("error = %q, want %q", got, tt.wantError)
+			}
+			for _, p := range []string{"id_token", "code"} {
+				if got := params.Get(p) != ""; got != (p == tt.wantParam) {
+					t.Errorf("%s present = %v, want %v", p, got, p == tt.wantParam)
+				}
+			}
+		})
+	}
+}
+
+// TestOidcAuth_ImplicitSigningError delivers a failed implicit signing in the
+// fragment too. The provider's private key is broken after the signers were
+// built from it, so signing fails.
+func TestOidcAuth_ImplicitSigningError(t *testing.T) {
+	r, cookie := newOidcTestRoutes(t)
+	kc := keychain.New()
+	o, err := oidc.New(oidc.Config{
+		BaseUrl:           "https://idp.example.com",
+		Clients:           []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s"}},
+		Keychain:          kc,
+		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		GenerateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+	r.oidc = o
+	key := kc.GetAll()[0].Key.(*rsa.PrivateKey)
+	key.Precomputed = rsa.PrecomputedValues{}
+	key.D = big.NewInt(0)
+
+	rec := authGet(t, r, cookie, url.Values{
+		"scope": {"openid"}, "response_type": {"id_token"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "nonce": {"n1"}, "state": {"s t"},
+	})
+	query, fragment := splitLocation(t, rec)
+	if rec.Code != http.StatusFound || len(query) != 0 || fragment.Get("error") != "server_error" || fragment.Get("state") != "s t" || fragment.Has("id_token") {
+		t.Errorf("signing failure = %d %q, want 302 with error=server_error and the state in the fragment only", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// TestOidcAuth_FragmentKeepsCallbackQuery appends the implicit response to a
+// registered callback that has a query of its own, which stays as registered.
+func TestOidcAuth_FragmentKeepsCallbackQuery(t *testing.T) {
+	const callback = "https://app.example.test/cb?x=1&y=a%2Fb"
+	r, cookie := newOidcTestRoutes(t)
+	o, err := oidc.New(oidc.Config{
+		BaseUrl:           "https://idp.example.com",
+		Clients:           []oidc.Client{{Id: "app", RedirectUris: []string{callback}, ClientSecret: "s"}},
+		Keychain:          keychain.New(),
+		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
+		GenerateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+	r.oidc = o
+
+	rec := authGet(t, r, cookie, url.Values{
+		"scope": {"openid"}, "response_type": {"id_token"}, "client_id": {"app"}, "redirect_uri": {callback}, "nonce": {"n1"}, "state": {"s"},
+	})
+	loc := rec.Header().Get("Location")
+	base, frag, _ := strings.Cut(loc, "#")
+	f, err := url.ParseQuery(frag)
+	if rec.Code != http.StatusFound || base != callback || err != nil || f.Get("id_token") == "" || f.Get("state") != "s" {
+		t.Errorf("redirect = %d %q, want %s#id_token=…&state=s", rec.Code, loc, callback)
 	}
 }
 
@@ -176,6 +320,7 @@ func TestOidcAuth_UnregisteredRedirectIsNotRedirect(t *testing.T) {
 
 func newTokenTestRoutes(t *testing.T) *Routes {
 	t.Helper()
+	r := newTestRoutes(t, false)
 	o, err := oidc.New(oidc.Config{
 		BaseUrl: "https://idp.example.com",
 		Clients: []oidc.Client{
@@ -188,7 +333,9 @@ func newTokenTestRoutes(t *testing.T) *Routes {
 	if err != nil {
 		t.Fatalf("oidc.New: %v", err)
 	}
-	return &Routes{oidc: o, store: codestore.New()}
+	r.oidc = o
+	r.store = codestore.New()
+	return r
 }
 
 func postToken(t *testing.T, r *Routes, form url.Values) *httptest.ResponseRecorder {
@@ -253,7 +400,7 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
-	code := r.store.Create(codestore.Grant{User: user.UserInfo{ID: "u1", Username: "alice"}, Nonce: "n1"}, "app", testRedirectURI)
+	code := r.store.Create(codestore.Grant{User: user.UserInfo{ID: "bob"}, Nonce: "n1"}, "app", testRedirectURI)
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {"app"},
@@ -278,14 +425,14 @@ func TestOidcToken_Success(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("bad json: %v", err)
 	}
-	// both tokens are minted at redemption from the grant
+	// both tokens are minted at redemption from the grant's nonce and the user's current record
 	typ, claims := verifiedClaims(t, r, body.IDToken)
-	if typ != "JWT" || claims["sub"] != "u1" || claims["nonce"] != "n1" || claims["aud"] != "app" {
-		t.Errorf("id_token typ=%q sub=%v nonce=%v aud=%v, want JWT u1 n1 app", typ, claims["sub"], claims["nonce"], claims["aud"])
+	if typ != "JWT" || claims["sub"] != "bob" || claims["name"] != "bob" || claims["nonce"] != "n1" || claims["aud"] != "app" {
+		t.Errorf("id_token typ=%q sub=%v name=%v nonce=%v aud=%v, want JWT bob bob n1 app", typ, claims["sub"], claims["name"], claims["nonce"], claims["aud"])
 	}
 	typ, claims = verifiedClaims(t, r, body.AccessToken)
-	if typ != "at+jwt" || claims["sub"] != "u1" || claims["aud"] != "app" || claims["client_id"] != "app" {
-		t.Errorf("access_token typ=%q sub=%v aud=%v client_id=%v, want at+jwt u1 app app", typ, claims["sub"], claims["aud"], claims["client_id"])
+	if typ != "at+jwt" || claims["sub"] != "bob" || claims["aud"] != "app" || claims["client_id"] != "app" {
+		t.Errorf("access_token typ=%q sub=%v aud=%v client_id=%v, want at+jwt bob app app", typ, claims["sub"], claims["aud"], claims["client_id"])
 	}
 	if body.ExpiresIn != 24*3600 {
 		t.Errorf("expires_in = %d, want %d", body.ExpiresIn, 24*3600)
@@ -320,5 +467,504 @@ func TestOidcRevokeBadClientCredentials(t *testing.T) {
 	}
 	if body.Error != "invalid_client" {
 		t.Errorf("error = %q, want %q", body.Error, "invalid_client")
+	}
+}
+
+// userChanges are the admin changes that land between issuance and use; nil
+// groups means the user is gone.
+var userChanges = []struct {
+	name       string
+	change     func(t *testing.T, u *user.User)
+	wantGroups []any
+}{
+	{"unchanged", func(*testing.T, *user.User) {}, []any{"user"}},
+	{"deleted", func(t *testing.T, u *user.User) {
+		if err := u.AdminDelete("admin1", "bob"); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+	}, nil},
+	{"group removed", func(t *testing.T, u *user.User) {
+		if err := u.AdminUpdateUserGroups("admin1", "bob", []string{}); err != nil {
+			t.Fatalf("update groups: %v", err)
+		}
+	}, []any{}},
+	{"group added", func(t *testing.T, u *user.User) {
+		if err := u.AdminUpdateUserGroups("admin1", "bob", []string{"user", "ops"}); err != nil {
+			t.Fatalf("update groups: %v", err)
+		}
+	}, []any{"user", "ops"}},
+	// the new account has the username but another ID, so it is someone else
+	{"deleted and recreated", func(t *testing.T, u *user.User) {
+		if err := u.AdminDelete("admin1", "bob"); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if err := u.Register("bob", "bobpass2", []string{"user"}, ""); err != nil {
+			t.Fatalf("recreate: %v", err)
+		}
+	}, nil},
+}
+
+// groupsOf returns the groups claim, empty when absent or null; any other
+// type fails the test, so a malformed value cannot pass as no groups.
+func groupsOf(t *testing.T, claims map[string]any) []any {
+	t.Helper()
+	switch groups := claims["groups"].(type) {
+	case nil:
+		return []any{}
+	case []any:
+		return groups
+	default:
+		t.Fatalf("groups = %#v, want an array", groups)
+		return nil
+	}
+}
+
+// TestOidcToken_LiveUser redeems a code issued before an admin change: the
+// tokens carry the user's record at redemption, and a user gone by then gets
+// no tokens.
+func TestOidcToken_LiveUser(t *testing.T) {
+	for _, tt := range userChanges {
+		t.Run(tt.name, func(t *testing.T) {
+			r, cookie := newPublicClientRoutes(t)
+			code := issueCode(t, r, cookie, url.Values{
+				"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI},
+			})
+			tt.change(t, r.user)
+
+			rec := postToken(t, r, url.Values{
+				"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+			})
+			if tt.wantGroups == nil {
+				assertRefusal(t, rec, "invalid_grant")
+				return
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+			}
+			body := tokenBody(t, rec)
+			for _, name := range []string{"id_token", "access_token"} {
+				_, claims := verifiedClaims(t, r, body[name].(string))
+				if claims["sub"] != "bob" || !slices.Equal(groupsOf(t, claims), tt.wantGroups) {
+					t.Errorf("%s sub=%v groups=%v, want bob %v", name, claims["sub"], claims["groups"], tt.wantGroups)
+				}
+			}
+		})
+	}
+}
+
+// TestUserinfo_LiveUser answers a token issued before an admin change with
+// the user's current groups, and refuses it once the user is gone. The token
+// comes from the public client's resource flow, whose aud is the resource.
+func TestUserinfo_LiveUser(t *testing.T) {
+	for _, tt := range userChanges {
+		t.Run(tt.name, func(t *testing.T) {
+			r, cookie := newPublicClientRoutes(t)
+			r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
+			rec := postToken(t, r, tfTokenForm(issueCode(t, r, cookie, cliAuthQuery())))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+			}
+			access := tokenBody(t, rec)["access_token"].(string)
+			tt.change(t, r.user)
+
+			got := userinfoGet(t, r, access)
+			if tt.wantGroups == nil {
+				if got.Code != http.StatusUnauthorized {
+					t.Errorf("userinfo = %d %s, want 401", got.Code, got.Body.String())
+				}
+				return
+			}
+			if got.Code != http.StatusOK {
+				t.Fatalf("userinfo = %d: %s", got.Code, got.Body.String())
+			}
+			var info map[string]any
+			if err := json.Unmarshal(got.Body.Bytes(), &info); err != nil {
+				t.Fatalf("userinfo body: %v", err)
+			}
+			if info["sub"] != "bob" || info["name"] != "bob" || !slices.Equal(groupsOf(t, info), tt.wantGroups) {
+				t.Errorf("userinfo = %v, want sub and name bob, groups %v", info, tt.wantGroups)
+			}
+		})
+	}
+}
+
+// registerCarol adds carol, who has an email address, and returns her record
+// and a session cookie for her.
+func registerCarol(t *testing.T, r *Routes) (user.UserInfo, *http.Cookie) {
+	t.Helper()
+	if err := r.user.Register("carol", "carolpass1", []string{"user"}, "carol@example.com"); err != nil {
+		t.Fatalf("register carol: %v", err)
+	}
+	carol, ok := r.user.Authenticate("carol", "carolpass1")
+	if !ok {
+		t.Fatal("carol cannot sign in")
+	}
+	return carol, &http.Cookie{Name: "session", Value: r.session.Create(carol.ID)}
+}
+
+// TestOidcToken_CodeFlowClaims authorizes with a nonce through the real
+// handler and redeems the code after carol gained a group: the ID token
+// carries the request's nonce and carol's record at redemption.
+func TestOidcToken_CodeFlowClaims(t *testing.T) {
+	r, _ := newPublicClientRoutes(t)
+	carol, cookie := registerCarol(t, r)
+	code := issueCode(t, r, cookie, url.Values{
+		"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "nonce": {"n-code"},
+	})
+	if err := r.user.AdminUpdateUserGroups("admin1", carol.ID, []string{"user", "ops"}); err != nil {
+		t.Fatalf("update groups: %v", err)
+	}
+
+	rec := postToken(t, r, url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+	}
+	_, claims := verifiedClaims(t, r, tokenBody(t, rec)["id_token"].(string))
+	if claims["nonce"] != "n-code" || claims["sub"] != carol.ID || claims["name"] != "carol" || claims["email"] != "carol@example.com" || !slices.Equal(groupsOf(t, claims), []any{"user", "ops"}) {
+		t.Errorf("id_token nonce=%v sub=%v name=%v email=%v groups=%v, want n-code %s carol carol@example.com [user ops]", claims["nonce"], claims["sub"], claims["name"], claims["email"], claims["groups"], carol.ID)
+	}
+}
+
+// TestUserinfo_LiveNameAndEmail answers a token whose identity claims are
+// older than the record with the record's name, email and groups.
+func TestUserinfo_LiveNameAndEmail(t *testing.T) {
+	r, _ := newPublicClientRoutes(t)
+	r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
+	carol, _ := registerCarol(t, r)
+	stale := user.UserInfo{ID: carol.ID, Username: "carol-old", Email: "old@example.com", Groups: []string{"old"}}
+	token, err := r.oidc.GenerateAccessToken(stale, "app", "")
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+
+	got := userinfoGet(t, r, token)
+	if got.Code != http.StatusOK {
+		t.Fatalf("userinfo = %d: %s", got.Code, got.Body.String())
+	}
+	var info map[string]any
+	if err := json.Unmarshal(got.Body.Bytes(), &info); err != nil {
+		t.Fatalf("userinfo body: %v", err)
+	}
+	if info["sub"] != carol.ID || info["name"] != "carol" || info["email"] != "carol@example.com" || !slices.Equal(groupsOf(t, info), []any{"user"}) {
+		t.Errorf("userinfo = %v, want carol's record", info)
+	}
+}
+
+// TestOidcAuth_ImplicitLoginLiveUser changes bob's record after the login
+// form's password check and before the implicit ID token is signed: the token
+// carries the record as it is after the login, and a user gone by then gets
+// neither a token nor a session.
+func TestOidcAuth_ImplicitLoginLiveUser(t *testing.T) {
+	q := url.Values{
+		"scope": {"openid"}, "response_type": {"id_token"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "nonce": {"n1"},
+	}
+	for _, tt := range userChanges {
+		t.Run(tt.name, func(t *testing.T) {
+			r, _ := newPublicClientRoutes(t)
+			hookRan := false
+			r.hooks.afterCreateSession = func() {
+				hookRan = true
+				tt.change(t, r.user)
+			}
+
+			rec := loginPost(t, r, q)
+			if !hookRan {
+				t.Fatal("the hook did not run")
+			}
+			query, fragment := splitLocation(t, rec)
+			if tt.wantGroups == nil {
+				if query.Has("id_token") || fragment.Has("id_token") {
+					t.Errorf("a deleted user got an id_token: %d %q", rec.Code, rec.Header().Get("Location"))
+				}
+				if resolvingSession(r, rec) {
+					t.Error("a deleted user got a resolving session")
+				}
+				return
+			}
+			if rec.Code != http.StatusFound || fragment.Get("id_token") == "" {
+				t.Fatalf("login = %d %q, want 302 with an id_token in the fragment", rec.Code, rec.Header().Get("Location"))
+			}
+			_, claims := verifiedClaims(t, r, fragment.Get("id_token"))
+			current, _ := r.user.Get("bob")
+			if claims["sub"] != current.ID || claims["name"] != current.Username || claims["email"] != current.Email || !slices.Equal(groupsOf(t, claims), tt.wantGroups) {
+				t.Errorf("id_token sub=%v name=%v email=%v groups=%v, want %s %s %q %v", claims["sub"], claims["name"], claims["email"], claims["groups"], current.ID, current.Username, current.Email, tt.wantGroups)
+			}
+		})
+	}
+}
+
+// newSameKeyRoutes returns routes whose provider registers the confidential
+// "app" with a resource, and a foreign provider that signs with the same key
+// under another issuer.
+func newSameKeyRoutes(t *testing.T) (*Routes, *oidc.Oidc) {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "signing-key.json")
+	provider := func(baseURL string) *oidc.Oidc {
+		o, err := oidc.New(oidc.Config{
+			BaseUrl:           baseURL,
+			Clients:           []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s3cret", Resources: []string{cliResource}}},
+			Keychain:          keychain.New(),
+			SigningKeyPath:    keyPath,
+			GenerateIfMissing: true,
+		})
+		if err != nil {
+			t.Fatalf("oidc.New: %v", err)
+		}
+		return o
+	}
+	r := newTestRoutes(t, false)
+	r.oidc = provider("https://idp.example.com")
+	r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
+	return r, provider("https://other.example.com")
+}
+
+// TestUserinfo_TokenClaims refuses an access token this server's key signed
+// but whose claims do not name this issuer, a registered client and an
+// audience of that client.
+func TestUserinfo_TokenClaims(t *testing.T) {
+	r, foreign := newSameKeyRoutes(t)
+	bob, _ := r.user.Get("bob")
+
+	tests := []struct {
+		name     string
+		issuer   *oidc.Oidc
+		user     user.UserInfo
+		clientID string
+		resource string
+		want     int
+	}{
+		{"aud the client", r.oidc, bob, "app", "", http.StatusOK},
+		{"aud a registered resource", r.oidc, bob, "app", cliResource, http.StatusOK},
+		{"foreign issuer", foreign, bob, "app", "", http.StatusUnauthorized},
+		{"unregistered client", r.oidc, bob, "nope", "", http.StatusUnauthorized},
+		{"aud not the client's", r.oidc, bob, "app", "https://api.example/other", http.StatusUnauthorized},
+		{"empty sub", r.oidc, user.UserInfo{}, "app", "", http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token, err := tt.issuer.GenerateAccessToken(tt.user, tt.clientID, tt.resource)
+			if err != nil {
+				t.Fatalf("GenerateAccessToken: %v", err)
+			}
+			if got := userinfoGet(t, r, token); got.Code != tt.want {
+				t.Errorf("userinfo = %d %s, want %d", got.Code, got.Body.String(), tt.want)
+			}
+		})
+	}
+}
+
+func postRevoke(t *testing.T, r *Routes, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.OidcRevoke(rec, req)
+	return rec
+}
+
+// TestOidcRevoke_Ownership lets a client revoke its own access tokens only:
+// another client's token is answered, by local policy, as an invalid token
+// (RFC 7009 §2.2), so the request succeeds and nothing is recorded.
+func TestOidcRevoke_Ownership(t *testing.T) {
+	appToken := func(t *testing.T, r *Routes, cookie *http.Cookie) string {
+		code := issueCode(t, r, cookie, url.Values{
+			"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI},
+		})
+		rec := postToken(t, r, url.Values{
+			"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+		}
+		return tokenBody(t, rec)["access_token"].(string)
+	}
+	cliToken := func(t *testing.T, r *Routes, cookie *http.Cookie) string {
+		rec := postToken(t, r, tfTokenForm(issueCode(t, r, cookie, cliAuthQuery())))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("token status = %d: %s", rec.Code, rec.Body.String())
+		}
+		return tokenBody(t, rec)["access_token"].(string)
+	}
+
+	tests := []struct {
+		name        string
+		token       func(t *testing.T, r *Routes, cookie *http.Cookie) string
+		client      url.Values
+		wantStatus  int
+		wantRevoked bool
+	}{
+		{"the owner", appToken, url.Values{"client_id": {"app"}, "client_secret": {"s3cret"}}, http.StatusOK, true},
+		{"another confidential client", appToken, url.Values{"client_id": {"app2"}, "client_secret": {"s3cret2"}}, http.StatusOK, false},
+		{"a public owner", cliToken, url.Values{"client_id": {"cli"}}, http.StatusUnauthorized, false},
+		{"a confidential client, a public client's token", cliToken, url.Values{"client_id": {"app2"}, "client_secret": {"s3cret2"}}, http.StatusOK, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, cookie := newPublicClientRoutes(t)
+			r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
+			access := tt.token(t, r, cookie)
+			form := url.Values{"token": {access}}
+			for k, v := range tt.client {
+				form[k] = v
+			}
+
+			if rec := postRevoke(t, r, form); rec.Code != tt.wantStatus {
+				t.Fatalf("revoke = %d %s, want %d", rec.Code, rec.Body.String(), tt.wantStatus)
+			}
+			_, claims := verifiedClaims(t, r, access)
+			if got := r.tokenStore.IsRevoked(claims["jti"].(string)); got != tt.wantRevoked {
+				t.Errorf("IsRevoked = %v, want %v", got, tt.wantRevoked)
+			}
+			wantUserinfo := http.StatusOK
+			if tt.wantRevoked {
+				wantUserinfo = http.StatusUnauthorized
+			}
+			if got := userinfoGet(t, r, access); got.Code != wantUserinfo {
+				t.Errorf("userinfo after the revoke = %d, want %d", got.Code, wantUserinfo)
+			}
+		})
+	}
+}
+
+// moveToQuery posts body to handler with the named parameters moved from the
+// body to the URL query.
+func moveToQuery(t *testing.T, handler http.HandlerFunc, path string, body url.Values, keys ...string) *httptest.ResponseRecorder {
+	t.Helper()
+	query := url.Values{}
+	for _, k := range keys {
+		query[k] = body[k]
+		body.Del(k)
+	}
+	req := httptest.NewRequest(http.MethodPost, path+"?"+query.Encode(), strings.NewReader(body.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	return rec
+}
+
+// TestOidcToken_CredentialsInQuery takes the client's credentials, the code
+// and the verifier from the request body only: in the URL they reach logs.
+func TestOidcToken_CredentialsInQuery(t *testing.T) {
+	appForm := func(t *testing.T, r *Routes, cookie *http.Cookie) url.Values {
+		code := issueCode(t, r, cookie, url.Values{
+			"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI},
+		})
+		return url.Values{
+			"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+		}
+	}
+	cliForm := func(t *testing.T, r *Routes, cookie *http.Cookie) url.Values {
+		return tfTokenForm(issueCode(t, r, cookie, cliAuthQuery()))
+	}
+	tests := []struct {
+		name       string
+		form       func(t *testing.T, r *Routes, cookie *http.Cookie) url.Values
+		key        string
+		wantStatus int
+		wantError  string
+	}{
+		{"client_secret", appForm, "client_secret", http.StatusUnauthorized, "invalid_client"},
+		{"client_id", appForm, "client_id", http.StatusUnauthorized, "invalid_client"},
+		{"code", appForm, "code", http.StatusBadRequest, "invalid_grant"},
+		{"code_verifier", cliForm, "code_verifier", http.StatusBadRequest, "invalid_request"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, cookie := newPublicClientRoutes(t)
+			rec := moveToQuery(t, r.OidcToken, "/token", tt.form(t, r, cookie), tt.key)
+			if rec.Code != tt.wantStatus || tokenBody(t, rec)["error"] != tt.wantError {
+				t.Errorf("token with %s in the query = %d %s, want %d %s", tt.key, rec.Code, rec.Body.String(), tt.wantStatus, tt.wantError)
+			}
+		})
+	}
+}
+
+// TestOidcRevoke_CredentialsInQuery takes the client's credentials and the
+// token from the request body only.
+func TestOidcRevoke_CredentialsInQuery(t *testing.T) {
+	tests := []struct {
+		key        string
+		wantStatus int
+	}{
+		{"client_secret", http.StatusUnauthorized},
+		{"client_id", http.StatusUnauthorized},
+		{"token", http.StatusBadRequest}, // the body lacks the token RFC 7009 §2.1 requires
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			r, cookie := newPublicClientRoutes(t)
+			r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
+			code := issueCode(t, r, cookie, url.Values{
+				"scope": {"openid"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI},
+			})
+			tok := postToken(t, r, url.Values{
+				"grant_type": {"authorization_code"}, "client_id": {"app"}, "client_secret": {"s3cret"}, "redirect_uri": {testRedirectURI}, "code": {code},
+			})
+			access := tokenBody(t, tok)["access_token"].(string)
+
+			rec := moveToQuery(t, r.OidcRevoke, "/revoke", url.Values{
+				"token": {access}, "client_id": {"app"}, "client_secret": {"s3cret"},
+			}, tt.key)
+			if rec.Code != tt.wantStatus {
+				t.Errorf("revoke with %s in the query = %d %s, want %d", tt.key, rec.Code, rec.Body.String(), tt.wantStatus)
+			}
+			_, claims := verifiedClaims(t, r, access)
+			if r.tokenStore.IsRevoked(claims["jti"].(string)) {
+				t.Errorf("revoke with %s in the query recorded the revocation", tt.key)
+			}
+		})
+	}
+}
+
+// TestOidcRevoke_TokenParameter refuses an authenticated request without a
+// token as malformed, since RFC 7009 §2.1 requires the parameter, and records
+// nothing for a token another issuer signed with this server's key.
+func TestOidcRevoke_TokenParameter(t *testing.T) {
+	tests := []struct {
+		name        string
+		token       func(r *Routes, foreign *oidc.Oidc, bob user.UserInfo) (string, error)
+		wantStatus  int
+		wantRevoked bool
+	}{
+		{"absent", nil, http.StatusBadRequest, false},
+		{"empty", func(*Routes, *oidc.Oidc, user.UserInfo) (string, error) { return "", nil }, http.StatusBadRequest, false},
+		{"foreign issuer", func(_ *Routes, foreign *oidc.Oidc, bob user.UserInfo) (string, error) {
+			return foreign.GenerateAccessToken(bob, "app", "")
+		}, http.StatusOK, false},
+		{"own", func(r *Routes, _ *oidc.Oidc, bob user.UserInfo) (string, error) {
+			return r.oidc.GenerateAccessToken(bob, "app", "")
+		}, http.StatusOK, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, foreign := newSameKeyRoutes(t)
+			bob, _ := r.user.Get("bob")
+			form := url.Values{"client_id": {"app"}, "client_secret": {"s3cret"}}
+			token := ""
+			if tt.token != nil {
+				var err error
+				if token, err = tt.token(r, foreign, bob); err != nil {
+					t.Fatalf("token: %v", err)
+				}
+				form.Set("token", token)
+			}
+
+			rec := postRevoke(t, r, form)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("revoke = %d %s, want %d", rec.Code, rec.Body.String(), tt.wantStatus)
+			}
+			if tt.wantStatus == http.StatusBadRequest && tokenBody(t, rec)["error"] != "invalid_request" {
+				t.Errorf("revoke body = %s, want invalid_request", rec.Body.String())
+			}
+			if token == "" {
+				return
+			}
+			_, claims := verifiedClaims(t, r, token)
+			if got := r.tokenStore.IsRevoked(claims["jti"].(string)); got != tt.wantRevoked {
+				t.Errorf("IsRevoked = %v, want %v", got, tt.wantRevoked)
+			}
+		})
 	}
 }

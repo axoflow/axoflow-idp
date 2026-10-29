@@ -50,6 +50,11 @@ go run main.go
 > `redirectUri`; any request whose `redirect_uri` is not an exact match is
 > rejected.
 
+> The implicit flow (`response_type=id_token`) requires a `nonce` and delivers
+> its response, the ID token or an error, in the redirect's fragment
+> (`#id_token=…&state=…`), never in the query; `response_mode` is ignored. The
+> code flow keeps the query (`?code=…&state=…`).
+
 ### Public clients
 
 A client that cannot keep a secret, such as a command-line tool, is
@@ -71,6 +76,19 @@ one), and it carries `client_id`. The ID token's `aud` stays the client id.
 `/oidc/userinfo` answers to the access token only; the ID token is refused
 there. A revocation is recorded under the access token's `jti`, so every
 spelling of the revoked token is refused; revoking an ID token records nothing.
+A client can revoke only the access tokens issued to it: another client's
+token is answered `200` like an unknown token and stays valid.
+
+The tokens are signed from the user's record when the code is redeemed, not
+when the user logged in: a user deleted in between gets `invalid_grant`, and a
+group removed in between is not in the tokens. `/oidc/userinfo` returns the
+user's current groups, name and email, and `401` once the user is deleted. The
+user is looked up by ID, so an account deleted and registered again under the
+same username is someone else to both. The implicit flow's ID token is
+signed from the record as it is after the login. A change after that read
+cannot recall a token already issued: a relying party that validates a JWT
+offline accepts it, with the groups it was issued with, until its `exp`. A
+password reset does not revoke outstanding codes or tokens either.
 
 A public client cannot call `/revoke` (`401 invalid_client`); its tokens expire
 instead. A revocation is kept for the maximum token lifetime (24 hours),
@@ -111,6 +129,19 @@ A client that is not public must have a `clientSecret`.
 > even with `generateIfMissing`: without it every start generated a new key, so
 > tokens signed with the previous key no longer validated against the restarted
 > provider (a verifier that still held the old key was not affected).
+
+> Upgrading: `/token` and `/revoke` read the client's credentials and the
+> secrets of the exchange from the `application/x-www-form-urlencoded` POST
+> body only, as a URL reaches access logs and proxies. `/token` reads
+> `client_id`, `client_secret`, `code` and `code_verifier` there; `/revoke`
+> reads `client_id`, `client_secret` and `token`. A copy in the URL query is
+> ignored, so a client that sent one of them only in the query now gets
+> `401 invalid_client` for its id or secret, `400 invalid_grant` for the code,
+> and for the verifier `400 invalid_request` (public client) or
+> `400 invalid_grant` (a confidential client's PKCE code, which is then
+> spent). `/revoke` without a `token` in the body is now
+> `400 invalid_request`, not `200`. The client authentication methods this
+> server supports are `client_secret_post` and, for public clients, `none`.
 
 ### Sessions
 

@@ -48,7 +48,7 @@ func pkceChallenge() string {
 
 // newPublicClientRoutes registers the CLI-shaped public client "cli", a
 // second public client "cli2" sharing its callback and resource, and the
-// confidential "app".
+// confidential "app" and "app2".
 func newPublicClientRoutes(t *testing.T) (*Routes, *http.Cookie) {
 	t.Helper()
 	r := newTestRoutes(t, false)
@@ -58,6 +58,7 @@ func newPublicClientRoutes(t *testing.T) (*Routes, *http.Cookie) {
 			{Id: "cli", RedirectUris: []string{loopbackCallback, localhostCallback}, Public: true, Resources: []string{cliResource}},
 			{Id: "cli2", RedirectUris: []string{loopbackCallback}, Public: true, Resources: []string{cliResource}, TokenTTL: "1h"},
 			{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s3cret"},
+			{Id: "app2", RedirectUri: testRedirectURI, ClientSecret: "s3cret2"},
 		},
 		Keychain:          keychain.New(),
 		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
@@ -394,6 +395,18 @@ func TestPublicClient_AuthorizeRefusals(t *testing.T) {
 	r, cookie := newPublicClientRoutes(t)
 	twoResources := cliAuthQuery()
 	twoResources.Add("resource", "https://api.example/other")
+
+	t.Run("unregistered redirect is refused before the login", func(t *testing.T) {
+		q := cliAuthQuery()
+		q.Set("redirect_uri", "http://127.0.0.1:9999/callback")
+		rec := loginPost(t, r, q)
+		if rec.Code != http.StatusBadRequest || rec.Header().Get("Location") != "" {
+			t.Fatalf("status = %d Location %q, want 400 and no redirect", rec.Code, rec.Header().Get("Location"))
+		}
+		if c := rec.Header().Get("Set-Cookie"); c != "" {
+			t.Errorf("Set-Cookie = %q, want no session for a refused request", c)
+		}
+	})
 
 	t.Run("unregistered loopback port is refused in place", func(t *testing.T) {
 		q := cliAuthQuery()

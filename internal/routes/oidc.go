@@ -73,10 +73,28 @@ func authRequest(values url.Values) oidc.AuthenticationRequest {
 	}
 }
 
+// fragmentResponse reports whether the response to responseType goes in the
+// redirect's fragment: one that carries a token does, so the token reaches no
+// server log or Referer. The fragment is the default response mode of such a
+// type (OAuth 2.0 Multiple Response Type Encoding Practices §2.1, §3 for a
+// lone id_token), and an implicit request's errors go there too (OpenID
+// Connect Core §3.2.2.6).
+func fragmentResponse(responseType string) bool {
+	return slices.ContainsFunc(strings.Fields(responseType), func(t string) bool {
+		return t == "id_token" || t == "token"
+	})
+}
+
 // authRedirect sends a 302 back to redirectUri with params merged into its
-// query string, all properly percent-encoded. It must only be called with a
-// redirect_uri that has already passed ValidateRedirect.
-func authRedirect(res http.ResponseWriter, req *http.Request, redirectUri string, params url.Values) {
+// query string, or as its fragment, all properly percent-encoded. It must only
+// be called with a redirect_uri that has already passed ValidateRedirect.
+func authRedirect(res http.ResponseWriter, req *http.Request, redirectUri string, params url.Values, fragment bool) {
+	// config validation refuses a registered URI with a fragment, so appending one is safe; assigning the
+	// already percent-encoded params.Encode() to url.URL.Fragment would escape its percent signs again
+	if fragment {
+		http.Redirect(res, req, redirectUri+"#"+params.Encode(), http.StatusFound)
+		return
+	}
 	u, err := url.Parse(redirectUri)
 	if err != nil {
 		http.Error(res, "invalid redirect_uri", http.StatusBadRequest)
@@ -94,17 +112,18 @@ func authRedirect(res http.ResponseWriter, req *http.Request, redirectUri string
 
 // authError redirects an authorization error back to the client, echoing the
 // request's state when present (RFC 6749 §4.1.2.1).
-func authError(res http.ResponseWriter, req *http.Request, authReq oidc.AuthenticationRequest, errCode string) {
+func authError(res http.ResponseWriter, req *http.Request, authReq oidc.AuthenticationRequest, errCode string, fragment bool) {
 	params := url.Values{"error": {errCode}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
 	}
-	authRedirect(res, req, authReq.RedirectUri, params)
+	authRedirect(res, req, authReq.RedirectUri, params, fragment)
 }
 
 func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	var user *user.UserInfo
 	var authReq oidc.AuthenticationRequest
+	loginForm := false
 	switch req.Method {
 	case http.MethodGet:
 		authReq = authRequest(req.URL.Query())
@@ -116,9 +135,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 
 		if req.Form.Has("username") {
 			// GET -> login form
-			if user = r.login(res, req); user == nil {
-				return // failure, handled in r.login
-			}
+			loginForm = true
 			authReq = authRequest(req.URL.Query())
 		} else {
 			// POST based auth flow
@@ -131,15 +148,23 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	}
 
 	// Validate the client and redirect_uri before redirecting anything back to
-	// it; an unregistered URI is rejected in place rather than turned into an
-	// open redirect (RFC 6749 §4.1.2.1).
+	// it, or signing anyone in for it; an unregistered URI is rejected in place
+	// rather than turned into an open redirect (RFC 6749 §4.1.2.1).
 	if err := r.oidc.ValidateRedirect(authReq.ClientID, authReq.RedirectUri); err != nil {
 		r.renderError(res, req, http.StatusBadRequest, "Invalid Request", err.Error())
 		return
 	}
 
+	if loginForm {
+		if user = r.login(res, req); user == nil {
+			return // failure, handled in r.login
+		}
+	}
+
+	fragment := fragmentResponse(authReq.ResponseType)
+
 	if err := r.oidc.ValidateAuthenticationRequest(authReq); err != nil {
-		authError(res, req, authReq, err.Error())
+		authError(res, req, authReq, err.Error(), fragment)
 		return
 	}
 
@@ -161,35 +186,41 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	}
 
 	if authReq.ResponseType == "id_token" {
-		idToken, err := r.oidc.GenerateIDToken(*user, authReq.ClientID, authReq.Nonce)
+		// the login returns the record its password was checked against, read before that check; an admin
+		// change since then applies here as at code redemption. A deleted user is refused, not a failed signing.
+		current, ok := r.user.Get(user.ID)
+		if !ok {
+			authError(res, req, authReq, "access_denied", fragment)
+			return
+		}
+		current.Password = ""
+		idToken, err := r.oidc.GenerateIDToken(current, authReq.ClientID, authReq.Nonce)
 		if err != nil {
-			authError(res, req, authReq, "server_error")
+			authError(res, req, authReq, "server_error", fragment)
 			return
 		}
 		params := url.Values{"id_token": {idToken}}
 		if authReq.State != "" {
 			params.Set("state", authReq.State)
 		}
-		authRedirect(res, req, authReq.RedirectUri, params)
+		authRedirect(res, req, authReq.RedirectUri, params, fragment)
 		return
 	}
 
 	// the tokens are minted when the code is redeemed, so their iat and expires_in are those of the redemption;
-	// the grant keeps what the claims come from, not the password hash, and its own copy of the groups
+	// the grant names the user by ID only, as the claims come from the user's record at that time
 	grant := codestore.Grant{
-		User:          *user,
 		Nonce:         authReq.Nonce,
 		Resource:      authReq.Resource(),
 		CodeChallenge: authReq.CodeChallenge,
 	}
-	grant.User.Password = ""
-	grant.User.Groups = slices.Clone(user.Groups)
+	grant.User.ID = user.ID
 	code := r.store.Create(grant, authReq.ClientID, authReq.RedirectUri)
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
 	}
-	authRedirect(res, req, authReq.RedirectUri, params)
+	authRedirect(res, req, authReq.RedirectUri, params, fragment)
 }
 
 func (r *Routes) OidcJwks(res http.ResponseWriter, _ *http.Request) {
@@ -219,13 +250,16 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		// the credentials, the code and the verifier are read from the body only: in the URL they reach
+		// access logs and proxies. RFC 6749 §2.3.1 keeps client credentials sent as parameters (the
+		// alternative to HTTP Basic) out of the URI; the code and the verifier stay out of it by local policy.
 		tokenRequest = oidc.TokenRequest{
 			GrantType:    req.Form.Get("grant_type"),
-			ClientID:     req.Form.Get("client_id"),
-			ClientSecret: req.Form.Get("client_secret"),
+			ClientID:     req.PostForm.Get("client_id"),
+			ClientSecret: req.PostForm.Get("client_secret"),
 			RedirectUri:  req.Form.Get("redirect_uri"),
-			Code:         req.Form.Get("code"),
-			CodeVerifier: req.Form.Get("code_verifier"),
+			Code:         req.PostForm.Get("code"),
+			CodeVerifier: req.PostForm.Get("code_verifier"),
 			Resources:    req.Form["resource"],
 		}
 	default:
@@ -254,13 +288,22 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	idToken, err := r.oidc.GenerateIDToken(grant.User, tokenRequest.ClientID, grant.Nonce)
+	// an admin change since the login applies here: a deleted user gets no tokens, a removed group is not
+	// in them. The lookup is by ID, since a username can be deleted and registered again by someone else.
+	current, ok := r.user.Get(grant.User.ID)
+	if !ok {
+		writeTokenError(res, oidc.ErrInvalidGrant)
+		return
+	}
+	current.Password = ""
+
+	idToken, err := r.oidc.GenerateIDToken(current, tokenRequest.ClientID, grant.Nonce)
 	if err != nil {
 		slog.Error("failed to sign the id token", "error", err)
 		http.Error(res, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	accessToken, err := r.oidc.GenerateAccessToken(grant.User, tokenRequest.ClientID, grant.Resource)
+	accessToken, err := r.oidc.GenerateAccessToken(current, tokenRequest.ClientID, grant.Resource)
 	if err != nil {
 		slog.Error("failed to sign the access token", "error", err)
 		http.Error(res, "internal server error", http.StatusInternalServerError)
@@ -305,15 +348,16 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 	}
 
 	revocationRequest := oidc.RevocationRequest{
-		Token:        req.Form.Get("token"),
-		ClientID:     req.Form.Get("client_id"),
-		ClientSecret: req.Form.Get("client_secret"),
+		Token:        req.PostForm.Get("token"),
+		ClientID:     req.PostForm.Get("client_id"),
+		ClientSecret: req.PostForm.Get("client_secret"),
 	}
 
 	if err := r.oidc.ValidateRevocationRequest(revocationRequest); err != nil {
 		// Per RFC 7009 an invalid/unknown token still returns 200 OK, but a
-		// failed client authentication is a 401 invalid_client.
-		if errors.Is(err, oidc.ErrInvalidClient) {
+		// failed client authentication is a 401 invalid_client, and a request
+		// without the token it requires (§2.1) a 400 invalid_request.
+		if errors.Is(err, oidc.ErrInvalidClient) || errors.Is(err, oidc.ErrInvalidRequest) {
 			writeTokenError(res, err)
 			return
 		}
@@ -323,8 +367,10 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 
 	// the revocation is recorded under the verified token's jti, not its bytes: an access token has more
 	// than one valid spelling, its id has one. A token this server did not sign as an access token (the ID
-	// token is not a credential here) is the RFC 7009 unknown token: 200 and nothing recorded.
-	if id, err := r.oidc.AccessTokenID(revocationRequest.Token); err == nil {
+	// token is not a credential here) is an invalid token, 200 and nothing recorded (RFC 7009 §2.2). One
+	// issued to another client gets the same answer by local policy: §2.1 lets a client revoke only its own
+	// tokens and says to refuse the rest, but a refusal would tell the caller whose token it was.
+	if id, clientID, err := r.oidc.AccessTokenIdentity(revocationRequest.Token); err == nil && clientID == revocationRequest.ClientID {
 		r.tokenStore.Revoke(id)
 	}
 
@@ -361,6 +407,14 @@ func (r *Routes) OidcUserinfo(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "invalid token", http.StatusUnauthorized)
 		return
 	}
+	// the token's claims are those of its issuance; userinfo answers with the user's record as it is now,
+	// and not at all for a user deleted since (an ID is never reused, a username can be)
+	current, ok := r.user.Get(userinfo.Subject)
+	if !ok {
+		http.Error(res, "invalid token", http.StatusUnauthorized)
+		return
+	}
+	userinfo.Name, userinfo.Email, userinfo.Groups = current.Username, current.Email, current.Groups
 
 	userinfoJSON, err := json.Marshal(userinfo)
 	if err != nil {
