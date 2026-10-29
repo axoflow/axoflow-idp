@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -549,12 +550,33 @@ func TestSweeperCleansEveryStore(t *testing.T) {
 	}
 }
 
-// stop returns once the sweeper goroutine has, and no store is cleaned after.
+// blockingCleaner reports entering CleanUp and then holds it until release is
+// closed, so stop can be called while a cleanup is in progress.
+type blockingCleaner struct {
+	entered, left, release chan struct{}
+	calls                  atomic.Int64
+}
+
+func (c *blockingCleaner) CleanUp() {
+	c.calls.Add(1)
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	<-c.release
+	select {
+	case c.left <- struct{}{}:
+	default:
+	}
+}
+
+// stop waits for a cleanup in progress to finish, and no store is cleaned
+// after it returns.
 func TestSweeperStops(t *testing.T) {
-	c := countingCleaner{make(chan struct{}, 8)}
+	c := &blockingCleaner{entered: make(chan struct{}, 1), left: make(chan struct{}, 1), release: make(chan struct{})}
 	stop := startSweeper(time.Millisecond, c)
 	select {
-	case <-c.calls:
+	case <-c.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the store was not cleaned")
 	}
@@ -566,15 +588,25 @@ func TestSweeperStops(t *testing.T) {
 	}()
 	select {
 	case <-stopped:
+		t.Error("stop returned while a cleanup was in progress")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(c.release)
+	select {
+	case <-c.left:
 	case <-time.After(5 * time.Second):
-		t.Fatal("stop did not return")
+		t.Fatal("the cleanup did not finish after its release")
 	}
-	for len(c.calls) > 0 {
-		<-c.calls
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not return after the cleanup finished")
 	}
+	n := c.calls.Load()
 	time.Sleep(20 * time.Millisecond)
-	if n := len(c.calls); n != 0 {
-		t.Errorf("the store was cleaned %d times after stop returned", n)
+	if after := c.calls.Load() - n; after != 0 {
+		t.Errorf("the store was cleaned %d times after stop returned", after)
 	}
 }
 
