@@ -18,12 +18,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // cheapHash is an argon2id PHC string with the smallest valid parameters, so
@@ -265,9 +267,75 @@ func TestVerifyArgon2id_ParameterBounds(t *testing.T) {
 			if err != nil || ok != tc.want {
 				t.Fatalf("verifyPassword(%.60s) = %v, %v; want %v, nil", tc.stored, ok, err, tc.want)
 			}
-			if wantDerivations := map[bool]int{true: 1, false: 0}[tc.want]; derivations != wantDerivations {
-				t.Errorf("%d derivations, want %d", derivations, wantDerivations)
+			// a refused value runs the dummy derivation instead of its own
+			if derivations != 1 {
+				t.Errorf("%d derivations, want 1", derivations)
 			}
 		})
 	}
+}
+
+// A stored value that can never match is refused after the same derivation
+// as a wrong password, through the same gate: its owner's account looks like
+// any other to a caller who times the answer. A bcrypt hash compares the first
+// 72 bytes only, so a longer password is refused rather than truncated.
+func TestVerifyPassword_RefusalDerives(t *testing.T) {
+	bcryptHash := func(password string) string {
+		h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(h)
+	}
+	pw72 := strings.Repeat("p", 72)
+	tests := []struct {
+		name, stored, password string
+		want                   bool
+		wantDummy              bool
+	}{
+		{"argon2id, right password", cheapHash("salt-of-alice", "alicepass1"), "alicepass1", true, false},
+		{"argon2id, wrong password", cheapHash("salt-of-alice", "alicepass1"), "wrong", false, false},
+		{"bcrypt, right password", bcryptHash("alicepass1"), "alicepass1", true, false},
+		{"bcrypt, a password of 72 bytes", bcryptHash(pw72), pw72, true, false},
+		{"bcrypt, a password over 72 bytes", bcryptHash(pw72), pw72 + "x", false, true},
+		{"locked", LockedPasswordHash, "!", false, true},
+		{"empty", "", "", false, true},
+		{"malformed argon2id", "$argon2id$v=19$m=8,t=1,p=1$c2FsdA", "pw", false, true},
+		{"argon2id over the bounds", "$argon2id$v=19$m=1048576,t=1,p=1$c29tZXNhbHQ$AAAAAAAAAAAAAAAAAAAAAA", "pw", false, true},
+		{"malformed bcrypt", "$2a$10$tooshort", "pw", false, true},
+		{"not base64", "not a hash!", "pw", false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var derivations, dummies int
+			testOnDerive = func() { derivations++ }
+			testOnDummy = func() { dummies++ }
+			t.Cleanup(func() { testOnDerive, testOnDummy = nil, nil })
+
+			ok, err := verifyPassword(UserInfo{ID: "alice", Password: tc.stored}, tc.password)
+			if err != nil || ok != tc.want {
+				t.Fatalf("verifyPassword = %v, %v; want %v, nil", ok, err, tc.want)
+			}
+			if derivations != 1 || (dummies == 1) != tc.wantDummy {
+				t.Errorf("%d derivations, %d against the dummy hash; want 1, dummy %v", derivations, dummies, tc.wantDummy)
+			}
+		})
+	}
+
+	t.Run("unknown user", func(t *testing.T) {
+		u, err := New(Config{})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		var derivations, dummies int
+		testOnDerive = func() { derivations++ }
+		testOnDummy = func() { dummies++ }
+		t.Cleanup(func() { testOnDerive, testOnDummy = nil, nil })
+		if _, err := u.Verify("nobody", "pw"); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("Verify = %v, want ErrInvalidCredentials", err)
+		}
+		if derivations != 1 || dummies != 1 {
+			t.Errorf("%d derivations, %d against the dummy hash; want 1 and 1", derivations, dummies)
+		}
+	})
 }

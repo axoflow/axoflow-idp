@@ -115,10 +115,9 @@ func newAccountIdentity(username, email string) (string, string, error) {
 }
 
 // dummyPasswordHash is a valid argon2id hash verified on the username-not-found
-// path of Authenticate so that path spends the same ~100ms as a real password
-// check, denying an attacker a timing oracle for enumerating valid usernames.
-// LockedPasswordHash ("!") would not work here: it fails base64 decoding before
-// argon2 runs, so it returns early and does not equalize the timing.
+// path of Authenticate, and for a stored value that can never match, so those
+// paths spend the same ~100ms as a real password check, denying an attacker a
+// timing oracle for enumerating valid usernames or locked accounts.
 var dummyPasswordHash = hash([]byte("timing-equalization-salt"), "timing-equalization-password")
 
 type UserInfo struct {
@@ -569,7 +568,7 @@ func (u *User) Verify(username, password string) (UserInfo, error) {
 		u.mu.RUnlock()
 		// Run a verify against a dummy hash so the not-found path takes the same
 		// ~100ms as a real check, closing the username-enumeration timing oracle.
-		if _, err := verifyPassword(UserInfo{Password: dummyPasswordHash}, password); err != nil {
+		if _, err := refuse(password); err != nil {
 			return UserInfo{}, err
 		}
 		return UserInfo{}, ErrInvalidCredentials

@@ -279,6 +279,26 @@ client with the count, and the client is otherwise unaffected. The secret's
 length is what bounds a guesser, so the server warns at start for a
 `clientSecret` under 16 characters; use a long random one.
 
+### Password hashes
+
+New passwords are stored as argon2id (`m=15 MiB`, `t=2`, `p=1`). A stored
+argon2id hash is checked with the parameters it names, within bounds: `m` at
+most 32 MiB, `t` from 1 to 10, `p` from 1 to 4; a hash outside them, a
+malformed one and a locked account (`"!"`) never verify. An unknown username, a
+locked account and a malformed hash cost the same derivation as a wrong
+password, so the time of the answer does not tell them apart.
+
+A bcrypt hash compares only the first 72 bytes of a password, so a bcrypt user
+who submits a longer one is refused instead of being let in on its first 72
+bytes. Such a user sets a new password through a reset link or an admin reset.
+
+Hashes are not upgraded on sign-in. A bcrypt hash, or an argon2id one with
+other parameters, takes a different time to check than the default, so the
+time of a wrong-password answer can tell such an account from an unknown
+username. To close that, give those users new passwords (a reset link, an
+admin reset, or the user's own change); every password set in the IdP is
+stored with the default argon2id parameters.
+
 ## Releases
 
 The container image `ghcr.io/axoflow/axoflow-idp` (linux/amd64 and

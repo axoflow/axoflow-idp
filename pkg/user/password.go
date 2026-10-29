@@ -69,17 +69,23 @@ func hash(salt []byte, password string) string {
 		base64.RawStdEncoding.EncodeToString(h))
 }
 
+// bcryptMaxPassword is the longest password bcrypt reads: it ignores every
+// byte after it.
+const bcryptMaxPassword = 72
+
 // verifyPassword verifies a plaintext password against a stored hash string,
 // with the derivation run through kdf; the error is ErrBusy when the gate
 // refused. Supports argon2id PHC strings ($argon2id$...) and bcrypt MCF
-// strings ($2a$/$2b$/$2y$...).
+// strings ($2a$/$2b$/$2y$...). A stored value that can never match, such as
+// LockedPasswordHash or a malformed hash, is refused after the dummy
+// derivation, so it takes as long as a wrong password.
 func verifyPassword(user UserInfo, password string) (bool, error) {
 	var ok bool
 	switch {
 	case strings.HasPrefix(user.Password, "$argon2id$"):
 		params, valid := parseArgon2id(user.Password)
 		if !valid {
-			return false, nil
+			return refuse(password)
 		}
 		err := kdf.run(func() {
 			actual := argon2.IDKey([]byte(password), params.salt, params.time, params.memory, params.threads, uint32(len(params.key)))
@@ -87,6 +93,14 @@ func verifyPassword(user UserInfo, password string) (bool, error) {
 		})
 		return ok, err
 	case strings.HasPrefix(user.Password, "$2"):
+		if _, err := bcrypt.Cost([]byte(user.Password)); err != nil {
+			return refuse(password)
+		}
+		// bcrypt would compare the first 72 bytes only, so any suffix would
+		// pass; such a user sets a shorter password through a reset.
+		if len(password) > bcryptMaxPassword {
+			return refuse(password)
+		}
 		err := kdf.run(func() {
 			ok = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) == nil
 		})
@@ -100,8 +114,8 @@ func verifyPassword(user UserInfo, password string) (bool, error) {
 		// expected value. Upgrade such users to PHC argon2id or bcrypt (both embed
 		// their own salt) before changing their ID.
 		raw, err := base64.StdEncoding.DecodeString(user.Password)
-		if err != nil {
-			return false, nil //nolint:nilerr // not a hash this server can match: no error, no match
+		if err != nil || len(raw) != argon2KeyLen {
+			return refuse(password)
 		}
 		err = kdf.run(func() {
 			expected := argon2.IDKey([]byte(password), []byte(user.ID), argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
@@ -123,6 +137,16 @@ const (
 	minKeyLen        = 16
 	maxKeyLen        = 64
 )
+
+// refuse runs the derivation of a wrong password against dummyPasswordHash,
+// through the gate, and reports false.
+func refuse(password string) (bool, error) {
+	if testOnDummy != nil {
+		testOnDummy()
+	}
+	_, err := verifyPassword(UserInfo{Password: dummyPasswordHash}, password)
+	return false, err
+}
 
 // argon2idParams is a parsed argon2id PHC string.
 type argon2idParams struct {

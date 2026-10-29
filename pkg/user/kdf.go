@@ -85,6 +85,10 @@ func SetKDFGate(slots, waiters int, wait time.Duration) (restore func()) {
 // Nil in production.
 var testOnDerive func()
 
+// testOnDummy, when a test sets it, runs before each derivation against
+// dummyPasswordHash. Nil in production.
+var testOnDummy func()
+
 // gatedHash is hash run through kdf.
 func gatedHash(salt []byte, password string) (string, error) {
 	var h string
