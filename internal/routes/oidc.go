@@ -20,7 +20,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
@@ -175,15 +174,13 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 	}
 
 	// the tokens are minted when the code is redeemed, so their iat and expires_in are those of the redemption;
-	// the grant keeps what the claims come from, not the password hash, and its own copy of the groups
+	// the grant names the user by ID only, as the claims come from the user's record at that time
 	grant := codestore.Grant{
-		User:          *user,
 		Nonce:         authReq.Nonce,
 		Resource:      authReq.Resource(),
 		CodeChallenge: authReq.CodeChallenge,
 	}
-	grant.User.Password = ""
-	grant.User.Groups = slices.Clone(user.Groups)
+	grant.User.ID = user.ID
 	code := r.store.Create(grant, authReq.ClientID, authReq.RedirectUri)
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
@@ -254,13 +251,22 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	idToken, err := r.oidc.GenerateIDToken(grant.User, tokenRequest.ClientID, grant.Nonce)
+	// an admin change since the login applies here: a deleted user gets no tokens, a removed group is not
+	// in them. The lookup is by ID, since a username can be deleted and registered again by someone else.
+	current, ok := r.user.Get(grant.User.ID)
+	if !ok {
+		writeTokenError(res, oidc.ErrInvalidGrant)
+		return
+	}
+	current.Password = ""
+
+	idToken, err := r.oidc.GenerateIDToken(current, tokenRequest.ClientID, grant.Nonce)
 	if err != nil {
 		slog.Error("failed to sign the id token", "error", err)
 		http.Error(res, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	accessToken, err := r.oidc.GenerateAccessToken(grant.User, tokenRequest.ClientID, grant.Resource)
+	accessToken, err := r.oidc.GenerateAccessToken(current, tokenRequest.ClientID, grant.Resource)
 	if err != nil {
 		slog.Error("failed to sign the access token", "error", err)
 		http.Error(res, "internal server error", http.StatusInternalServerError)
@@ -361,6 +367,14 @@ func (r *Routes) OidcUserinfo(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "invalid token", http.StatusUnauthorized)
 		return
 	}
+	// the token's claims are those of its issuance; userinfo answers with the user's record as it is now,
+	// and not at all for a user deleted since (an ID is never reused, a username can be)
+	current, ok := r.user.Get(userinfo.Subject)
+	if !ok {
+		http.Error(res, "invalid token", http.StatusUnauthorized)
+		return
+	}
+	userinfo.Name, userinfo.Email, userinfo.Groups = current.Username, current.Email, current.Groups
 
 	userinfoJSON, err := json.Marshal(userinfo)
 	if err != nil {

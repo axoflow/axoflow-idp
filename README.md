@@ -72,6 +72,16 @@ one), and it carries `client_id`. The ID token's `aud` stays the client id.
 there. A revocation is recorded under the access token's `jti`, so every
 spelling of the revoked token is refused; revoking an ID token records nothing.
 
+The tokens are signed from the user's record when the code is redeemed, not
+when the user logged in: a user deleted in between gets `invalid_grant`, and a
+group removed in between is not in the tokens. `/oidc/userinfo` returns the
+user's current groups, name and email, and `401` once the user is deleted. The
+user is looked up by ID, so an account deleted and registered again under the
+same username is someone else to both. Tokens already issued are not
+withdrawn: a relying party that validates a JWT offline accepts it, with the
+groups it was issued with, until its `exp`. A password reset does not revoke
+outstanding codes or tokens either.
+
 A public client cannot call `/revoke` (`401 invalid_client`); its tokens expire
 instead. A revocation is kept for the maximum token lifetime (24 hours),
 whatever the client's `tokenTTL`, and pruned on a later valid access-token revocation.

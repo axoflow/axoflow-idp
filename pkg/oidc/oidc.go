@@ -652,6 +652,15 @@ func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, erro
 	if claims.JWTID == "" {
 		return nil, errors.New("access token without jti") // no identity to revoke it under
 	}
+	// the signature only says this key signed it; the claims must say this issuer issued it to a client
+	// registered here, for that client or one of its resources
+	if claims.Issuer != o.baseUrl || claims.Subject == "" {
+		return nil, errors.New("access token not issued by this provider")
+	}
+	client, ok := o.getClient(claims.ClientID)
+	if !ok || (claims.Audience != client.Id && !slices.Contains(client.Resources, claims.Audience)) {
+		return nil, errors.New("access token not issued to a registered client")
+	}
 
 	// RFC 7519 §4.1.4: a token is not accepted on or after exp. main.go keeps a revocation for the token lifetime
 	// from the revoke, so this is also what keeps a revoked token from outliving its record.
