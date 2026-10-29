@@ -16,7 +16,7 @@ package user
 
 import (
 	"bytes"
-	"fmt"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -223,23 +223,105 @@ func TestSeedPasswordFollowsTheAccountNotTheName(t *testing.T) {
 	}
 }
 
-// With updateSeedPasswords every seed entry names its account by ID; without
-// the option an ID-less entry still seeds a new database with a generated one.
-func TestSeedPasswordsRequireAnID(t *testing.T) {
-	for _, update := range []bool{true, false} {
-		t.Run(fmt.Sprintf("updateSeedPasswords=%v", update), func(t *testing.T) {
+// A seed entry's hash reaches an account only when its ID and its username
+// both name that account. Any other match is warned about once and changes
+// no hash; an entry naming no account is the deleted seed account.
+func TestSeedPasswordNeedsTheIDAndTheName(t *testing.T) {
+	aliceHash, bobHash, seedHash := bcryptHash(t, "alicepass1"), bcryptHash(t, "bobpass1"), bcryptHash(t, "seedpass1")
+	tests := []struct {
+		name         string
+		seed         UserInfo
+		wantAlice    string
+		wantWarnings int
+	}{
+		{"the ID and the name of one account", UserInfo{ID: "id-alice", Username: "alice"}, seedHash, 0},
+		{"the ID only", UserInfo{ID: "id-alice", Username: "carol"}, aliceHash, 1},
+		{"the name only", UserInfo{ID: "id-carol", Username: "alice"}, aliceHash, 1},
+		{"the ID and the name of two accounts", UserInfo{ID: "id-alice", Username: "bob"}, aliceHash, 1},
+		{"neither", UserInfo{ID: "id-carol", Username: "carol"}, aliceHash, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "users.json")
-			_, err := New(Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: update, Defaults: []UserInfo{
-				{Username: "admin", Password: bcryptHash(t, "adminpass")},
-			}})
-			if update && err == nil {
-				t.Error("New accepted a seed entry without an ID")
+			writeUsers(t, path, []UserInfo{
+				{ID: "id-alice", Username: "alice", Password: aliceHash},
+				{ID: "id-bob", Username: "bob", Password: bobHash},
+			})
+			warnings := captureSeedWarnings(t)
+			tt.seed.Password = seedHash
+
+			u, err := New(Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: true, Defaults: []UserInfo{tt.seed}})
+			if err != nil {
+				t.Fatalf("New: %v", err)
 			}
-			if !update && err != nil {
-				t.Errorf("New refused a seed entry without an ID: %v", err)
+
+			for id, want := range map[string]string{"id-alice": tt.wantAlice, "id-bob": bobHash} {
+				if got, _ := u.Get(id); got.Password != want {
+					t.Errorf("%s hash = %q, want %q", id, got.Password, want)
+				}
+			}
+			got := warnings()
+			if len(got) != tt.wantWarnings {
+				t.Errorf("warnings = %q, want %d", got, tt.wantWarnings)
+			}
+			for _, w := range got {
+				if !strings.Contains(w, `"msg":"seed entry does not match its account"`) || strings.Contains(w, "$2") {
+					t.Errorf("warning = %q, want the mismatch without a hash", w)
+				}
 			}
 		})
 	}
+}
+
+func writeUsers(t *testing.T, path string, users []UserInfo) {
+	t.Helper()
+	data, err := json.Marshal(users)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}
+
+// With updateSeedPasswords every seed entry names its account by ID, on a new
+// database and on an existing one, which is left as it was; without the
+// option an ID-less entry still seeds a new database with a generated one.
+func TestSeedPasswordsRequireAnID(t *testing.T) {
+	idless := []UserInfo{{Username: "admin", Password: bcryptHash(t, "adminpass")}}
+	t.Run("updateSeedPasswords=true, a new database", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "users.json")
+		if _, err := New(Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: true, Defaults: idless}); err == nil {
+			t.Error("New accepted a seed entry without an ID")
+		}
+		if _, err := os.Stat(path); err == nil {
+			t.Error("the refused seed was written")
+		}
+	})
+	t.Run("updateSeedPasswords=true, an existing database", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "users.json")
+		writeUsers(t, path, []UserInfo{{ID: "admin-id", Username: "admin", Password: bcryptHash(t, "oldpass1")}})
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if _, err := New(Config{FilePath: path, CreateIfMissing: true, UpdateSeedPasswords: true, Defaults: idless}); err == nil {
+			t.Error("New accepted a seed entry without an ID")
+		}
+		if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+			t.Errorf("the database changed: %q (%v), want %q", after, err, before)
+		}
+	})
+	t.Run("updateSeedPasswords=false", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "users.json")
+		u, err := New(Config{FilePath: path, CreateIfMissing: true, Defaults: idless})
+		if err != nil {
+			t.Fatalf("New refused a seed entry without an ID: %v", err)
+		}
+		if admin, ok := u.Authenticate("admin", "adminpass"); !ok || admin.ID == "" {
+			t.Errorf("the seeded admin = %+v, want one with a generated ID", admin)
+		}
+	})
 }
 
 func captureSeedWarnings(t *testing.T) func() []string {
