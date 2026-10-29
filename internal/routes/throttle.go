@@ -34,8 +34,8 @@ func (r *Routes) loginFailed(username string, cooldown time.Duration) {
 		"username_sha256", hex.EncodeToString(sum[:6]), "cooldown", cooldown.String())
 }
 
-// setRetryAfter tells a client refused for wait when to try again, in whole
-// seconds rounded up.
+// Rounded up, so a client that retries at Retry-After never lands before the
+// wait ends.
 func setRetryAfter(res http.ResponseWriter, wait time.Duration) {
 	res.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
 }

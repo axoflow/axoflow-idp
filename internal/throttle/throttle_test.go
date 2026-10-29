@@ -34,7 +34,6 @@ func newTestLimiter() (*Limiter, *clock) {
 	return l, c
 }
 
-// fail runs an attempt of key that fails.
 func fail(t *testing.T, l *Limiter, key string) {
 	t.Helper()
 	wait, done := l.Begin(key)
