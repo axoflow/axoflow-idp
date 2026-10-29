@@ -62,6 +62,17 @@ func (r *Routes) renderErrorPage(res http.ResponseWriter, req *http.Request, sta
 	}
 }
 
+// refuseBusy renders a 503 and reports true when err is user.ErrBusy: the
+// password check was not run, so the client may retry it shortly.
+func (r *Routes) refuseBusy(res http.ResponseWriter, req *http.Request, err error) bool {
+	if !errors.Is(err, user.ErrBusy) {
+		return false
+	}
+	res.Header().Set("Retry-After", "2")
+	r.renderError(res, req, http.StatusServiceUnavailable, "Server Busy", "Too many sign-ins are being checked. Try again in a few seconds.")
+	return true
+}
+
 func (r *Routes) renderSessionExpired(res http.ResponseWriter, req *http.Request) {
 	r.renderErrorPage(res, req, http.StatusUnauthorized, "Session Expired", "Your session has expired. Please sign in again.", "/login", "Sign in")
 }

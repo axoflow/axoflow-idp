@@ -51,12 +51,13 @@ func validatePassword(p string) error {
 
 // HashNewPassword checks password against the policy and returns the hash
 // that would be stored for userID, so a caller can run the ~100ms argon2id
-// before a transaction such as SetPasswordByReset rather than inside it.
+// before a transaction such as SetPasswordByReset rather than inside it. It
+// returns ErrBusy when the derivation gate refuses.
 func HashNewPassword(userID, password string) (string, error) {
 	if err := validatePassword(password); err != nil {
 		return "", err
 	}
-	return hash([]byte(userID), password), nil
+	return gatedHash([]byte(userID), password)
 }
 
 // hash returns an argon2id PHC string: $argon2id$v=<v>$m=<m>,t=<t>,p=<p>$<salt>$<hash>
@@ -68,14 +69,28 @@ func hash(salt []byte, password string) string {
 		base64.RawStdEncoding.EncodeToString(h))
 }
 
-// verifyPassword verifies a plaintext password against a stored hash string.
-// Supports argon2id PHC strings ($argon2id$...) and bcrypt MCF strings ($2a$/$2b$/$2y$...).
-func verifyPassword(user UserInfo, password string) bool {
+// verifyPassword verifies a plaintext password against a stored hash string,
+// with the derivation run through kdf; the error is ErrBusy when the gate
+// refused. Supports argon2id PHC strings ($argon2id$...) and bcrypt MCF
+// strings ($2a$/$2b$/$2y$...).
+func verifyPassword(user UserInfo, password string) (bool, error) {
+	var ok bool
 	switch {
 	case strings.HasPrefix(user.Password, "$argon2id$"):
-		return verifyArgon2id(user.Password, password)
+		params, valid := parseArgon2id(user.Password)
+		if !valid {
+			return false, nil
+		}
+		err := kdf.run(func() {
+			actual := argon2.IDKey([]byte(password), params.salt, params.time, params.memory, params.threads, uint32(len(params.key)))
+			ok = subtle.ConstantTimeCompare(actual, params.key) == 1
+		})
+		return ok, err
 	case strings.HasPrefix(user.Password, "$2"):
-		return bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) == nil
+		err := kdf.run(func() {
+			ok = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) == nil
+		})
+		return ok, err
 	default:
 		// Backward compat: Password was []byte, serialized by encoding/json as standard base64.
 		// Salt was user.ID.String() with the current argon2id parameters.
@@ -86,42 +101,66 @@ func verifyPassword(user UserInfo, password string) bool {
 		// their own salt) before changing their ID.
 		raw, err := base64.StdEncoding.DecodeString(user.Password)
 		if err != nil {
-			return false
+			return false, nil //nolint:nilerr // not a hash this server can match: no error, no match
 		}
-		expected := argon2.IDKey([]byte(password), []byte(user.ID), argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
-		return subtle.ConstantTimeCompare(raw, expected) == 1
+		err = kdf.run(func() {
+			expected := argon2.IDKey([]byte(password), []byte(user.ID), argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+			ok = subtle.ConstantTimeCompare(raw, expected) == 1
+		})
+		return ok, err
 	}
 }
 
-func verifyArgon2id(encoded, password string) bool {
+// Bounds on the parameters of a stored argon2id string. users.json is read
+// as it is, and argon2 allocates memory KiB, runs time passes and would
+// panic on a time or threads of zero; a salt or digest length outside
+// these is no hash this server writes either.
+const (
+	maxArgon2Memory  = 32 * 1024 // KiB
+	maxArgon2Time    = 10
+	maxArgon2Threads = 4
+	maxSaltLen       = 1024 // salted with the user ID, which has no length limit
+	minKeyLen        = 16
+	maxKeyLen        = 64
+)
+
+// argon2idParams is a parsed argon2id PHC string.
+type argon2idParams struct {
+	memory, time uint32
+	threads      uint8
+	salt, key    []byte
+}
+
+// parseArgon2id parses encoded, reporting false for a malformed string or one
+// whose parameters are outside the bounds above.
+func parseArgon2id(encoded string) (argon2idParams, bool) {
+	var params argon2idParams
 	// $argon2id$v=<v>$m=<m>,t=<t>,p=<p>$<salt>$<hash>
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
-		return false
+		return params, false
 	}
 
 	var v int
-	if _, err := fmt.Sscanf(parts[2], "v=%d", &v); err != nil {
-		return false
+	if _, err := fmt.Sscanf(parts[2], "v=%d", &v); err != nil || v != argon2.Version {
+		return params, false
 	}
 
-	var m uint32
-	var t uint32
-	var p uint8
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
-		return false
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &params.memory, &params.time, &params.threads); err != nil {
+		return params, false
+	}
+	if params.memory > maxArgon2Memory ||
+		params.time < 1 || params.time > maxArgon2Time ||
+		params.threads < 1 || params.threads > maxArgon2Threads {
+		return params, false
 	}
 
-	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
-	if err != nil {
-		return false
+	var err error
+	if params.salt, err = base64.RawStdEncoding.DecodeString(parts[4]); err != nil || len(params.salt) < 1 || len(params.salt) > maxSaltLen {
+		return params, false
 	}
-
-	expected, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil {
-		return false
+	if params.key, err = base64.RawStdEncoding.DecodeString(parts[5]); err != nil || len(params.key) < minKeyLen || len(params.key) > maxKeyLen {
+		return params, false
 	}
-
-	actual := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(expected)))
-	return subtle.ConstantTimeCompare(actual, expected) == 1
+	return params, true
 }

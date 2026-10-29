@@ -58,6 +58,9 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		newHash, err := r.user.ChangePassword(u.ID, currentPassword, newPassword)
+		if r.refuseBusy(res, req, err) {
+			return
+		}
 		if err != nil {
 			if saveFailed(err, "operation", "change_password", "user_id", u.ID) {
 				res.WriteHeader(http.StatusInternalServerError)
@@ -226,6 +229,9 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		newHash, err := user.HashNewPassword(target.ID, newPassword)
+		if r.refuseBusy(res, req, err) {
+			return
+		}
 		if err != nil {
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderSetPasswordForm(res, token, err.Error())

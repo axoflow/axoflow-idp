@@ -19,7 +19,7 @@ import "testing"
 func TestLockedPasswordHashNeverVerifies(t *testing.T) {
 	u := UserInfo{ID: "x", Password: LockedPasswordHash}
 	for _, attempt := range []string{"", LockedPasswordHash, "password", "!"} {
-		if verifyPassword(u, attempt) {
+		if verifies(t, u, attempt) {
 			t.Errorf("locked password should never verify, but %q did", attempt)
 		}
 	}

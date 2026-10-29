@@ -128,6 +128,9 @@ func (r *Routes) AdminRegister(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.AdminRegister(admin.ID, username, password, groups, email); err != nil {
+			if r.refuseBusy(res, req, err) {
+				return
+			}
 			if saveFailed(err, "operation", "register", "admin", admin.Username, "new_user", username) {
 				res.WriteHeader(http.StatusInternalServerError)
 				r.renderAdminRegister(res, sessionCookie.Value, admin.Username, saveFailedMessage)
@@ -288,6 +291,9 @@ func (r *Routes) AdminResetPassword(res http.ResponseWriter, req *http.Request) 
 	}
 
 	if err := r.user.AdminResetPassword(admin.ID, userId, newPassword); err != nil {
+		if r.refuseBusy(res, req, err) {
+			return
+		}
 		if saveFailed(err, "operation", "reset_password", "admin", admin.Username, "target_user_id", userId) {
 			http.Error(res, saveFailedMessage, http.StatusInternalServerError)
 			return

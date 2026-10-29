@@ -136,17 +136,20 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	username := req.PostForm.Get("username")
 	password := req.PostForm.Get("password")
 
-	user, ok := r.user.Authenticate(username, password)
-	if ok {
-		if err := r.issueSession(res, user.ID, user.Password); err == nil {
+	account, err := r.user.Verify(username, password)
+	if r.refuseBusy(res, req, err) {
+		return nil
+	}
+	if err == nil {
+		if err := r.issueSession(res, account.ID, account.Password); err == nil {
 			// The new cookie replaces the request's (the /oidc/auth form signs
 			// in over a live session); end the session it pointed to.
 			if old, err := req.Cookie("session"); err == nil {
 				r.session.Delete(old.Value)
 			}
-			return &user
+			return &account
 		}
-		slog.Info("login refused: the password changed while it was checked", "user_id", user.ID)
+		slog.Info("login refused: the password changed while it was checked", "user_id", account.ID)
 	}
 
 	res.WriteHeader(http.StatusUnauthorized)
@@ -273,6 +276,9 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		}
 
 		id, passwordHash, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
+		if r.refuseBusy(res, req, err) {
+			return
+		}
 		if err != nil {
 			status, message := http.StatusBadRequest, err.Error()
 			switch {
