@@ -209,6 +209,17 @@ func TestValidateClientTokenTTL(t *testing.T) {
 func newTestMux(t *testing.T, baseUrl string) *http.ServeMux {
 	t.Helper()
 
+	u, err := user.New(user.Config{UserAdminGroup: "admin"})
+	if err != nil {
+		t.Fatalf("user.New: %v", err)
+	}
+	return newTestMuxWithUsers(t, baseUrl, u)
+}
+
+// newTestMuxWithUsers is newTestMux serving the users of u.
+func newTestMuxWithUsers(t *testing.T, baseUrl string, u *user.User) *http.ServeMux {
+	t.Helper()
+
 	o, err := oidc.New(oidc.Config{
 		BaseUrl:           baseUrl,
 		Clients:           []oidc.Client{{Id: "c", RedirectUri: "https://rp/cb"}},
@@ -220,31 +231,75 @@ func newTestMux(t *testing.T, baseUrl string) *http.ServeMux {
 		t.Fatalf("oidc.New: %v", err)
 	}
 
-	u, err := user.New(user.Config{UserAdminGroup: "admin"})
-	if err != nil {
-		t.Fatalf("user.New: %v", err)
-	}
-
-	parsed, err := url.Parse(baseUrl)
-	if err != nil {
-		t.Fatalf("parse baseUrl: %v", err)
-	}
-
-	r, err := routes.New(routes.Config{
-		Oidc:        o,
-		Session:     session.New(session.Config{}),
-		User:        u,
-		CodeStore:   codestore.New(),
-		TokenStore:  tokenstore.New(time.Hour),
-		ResetTokens: resettoken.New(time.Hour),
-		BaseURL:     baseUrl,
-		PathPrefix:  parsed.Path,
-	})
+	cfg := baseRoutesConfig(baseUrl, time.Hour)
+	cfg.Oidc = o
+	cfg.Session = session.New(session.Config{})
+	cfg.User = u
+	cfg.CodeStore = codestore.New()
+	cfg.TokenStore = tokenstore.New(time.Hour)
+	cfg.ResetTokens = resettoken.New(time.Hour)
+	r, err := routes.New(cfg)
 	if err != nil {
 		t.Fatalf("routes.New: %v", err)
 	}
 
-	return newMux(r, parsed.Path, u)
+	return newMux(r, cfg.PathPrefix, u)
+}
+
+// TestSecureCookieFromScheme signs in through the server's wiring from a
+// validated baseUrl: the scheme is case-insensitive, so every spelling of
+// https marks the session cookie Secure.
+func TestSecureCookieFromScheme(t *testing.T) {
+	tests := []struct {
+		baseUrl    string
+		wantSecure bool
+	}{
+		{baseUrl: "https://host", wantSecure: true},
+		{baseUrl: "HTTPS://host", wantSecure: true},
+		{baseUrl: "Https://host/idp", wantSecure: true},
+		{baseUrl: "http://host", wantSecure: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.baseUrl, func(t *testing.T) {
+			cfg := config{
+				BaseUrl: tc.baseUrl,
+				Clients: []oidc.Client{{Id: "c", ClientSecret: "s", RedirectUri: "https://rp/cb"}},
+			}
+			cfg.SigningKey.FilePath = "signing-key.json"
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+
+			u, err := user.New(user.Config{})
+			if err != nil {
+				t.Fatalf("user.New: %v", err)
+			}
+			if err := u.Register("alice", "alicepass1", nil, ""); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			mux := newTestMuxWithUsers(t, cfg.BaseUrl, u)
+
+			parsed, _ := url.Parse(cfg.BaseUrl)
+			form := url.Values{"username": {"alice"}, "password": {"alicepass1"}}
+			req := httptest.NewRequest(http.MethodPost, parsed.Path+"/login", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			var session *http.Cookie
+			for _, c := range rec.Result().Cookies() {
+				if c.Name == "session" {
+					session = c
+				}
+			}
+			if session == nil {
+				t.Fatalf("login = %d, no session cookie", rec.Code)
+			}
+			if session.Secure != tc.wantSecure {
+				t.Errorf("session cookie Secure = %v, want %v", session.Secure, tc.wantSecure)
+			}
+		})
+	}
 }
 
 // TestMuxWiring exercises the pattern registration under a prefix and at the

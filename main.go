@@ -321,6 +321,19 @@ func newMux(r *routes.Routes, pathPrefix string, u *user.User) *http.ServeMux {
 	return mux
 }
 
+// baseRoutesConfig is the part of the routes configuration that follows from
+// baseUrl, which Validate has already parsed; the caller adds the stores.
+func baseRoutesConfig(baseUrl string, cookieTTL time.Duration) routes.Config {
+	parsed, _ := url.Parse(baseUrl)
+	return routes.Config{
+		BaseURL:    baseUrl,
+		PathPrefix: parsed.Path,
+		// url.Parse lowercases the scheme, so "HTTPS://" counts as https too.
+		SecureCookies: parsed.Scheme == "https",
+		CookieTTL:     cookieTTL,
+	}
+}
+
 // logSessionLimits logs the effective session limits, and warns for each
 // client whose tokens outlive the absolute limit: shortening the session does
 // not shorten them.
@@ -412,10 +425,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Validate() has already parsed baseUrl, so this cannot fail.
-	parsedBaseUrl, _ := url.Parse(cfg.BaseUrl)
-	pathPrefix := parsedBaseUrl.Path
-
 	// Validate() has already parsed the session block, so this cannot fail.
 	limits, _ := cfg.Session.limits()
 	logSessionLimits(slog.Default(), limits, cfg.Clients, o.ClientTokenTTL)
@@ -424,18 +433,15 @@ func main() {
 	codes := codestore.New()
 	tokens := tokenstore.New(o.IDTokenTTL())
 	resetTokens := resettoken.New(passwordResetLinkTTL)
-	r, err := routes.New(routes.Config{
-		Oidc:          o,
-		Session:       sessions,
-		User:          u,
-		CodeStore:     codes,
-		TokenStore:    tokens,
-		ResetTokens:   resetTokens,
-		BaseURL:       cfg.BaseUrl,
-		PathPrefix:    pathPrefix,
-		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
-		CookieTTL:     limits.cookie,
-	})
+	routesCfg := baseRoutesConfig(cfg.BaseUrl, limits.cookie)
+	pathPrefix := routesCfg.PathPrefix
+	routesCfg.Oidc = o
+	routesCfg.Session = sessions
+	routesCfg.User = u
+	routesCfg.CodeStore = codes
+	routesCfg.TokenStore = tokens
+	routesCfg.ResetTokens = resetTokens
+	r, err := routes.New(routesCfg)
 	if err != nil {
 		slog.Error("failed to create routes", "error", err)
 		os.Exit(1)
