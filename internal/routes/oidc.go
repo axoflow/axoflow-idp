@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
@@ -159,13 +160,12 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	idToken, err := r.oidc.GenerateIDToken(*user, authReq.ClientID, authReq.Nonce)
-	if err != nil {
-		authError(res, req, authReq, "server_error")
-		return
-	}
-
 	if authReq.ResponseType == "id_token" {
+		idToken, err := r.oidc.GenerateIDToken(*user, authReq.ClientID, authReq.Nonce)
+		if err != nil {
+			authError(res, req, authReq, "server_error")
+			return
+		}
 		params := url.Values{"id_token": {idToken}}
 		if authReq.State != "" {
 			params.Set("state", authReq.State)
@@ -174,18 +174,17 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	accessToken, err := r.oidc.GenerateAccessToken(*user, authReq.ClientID, authReq.Resource())
-	if err != nil {
-		authError(res, req, authReq, "server_error")
-		return
-	}
-
-	code := r.store.Create(codestore.Issued{
-		IDToken:       idToken,
-		AccessToken:   accessToken,
-		CodeChallenge: authReq.CodeChallenge,
+	// the tokens are minted when the code is redeemed, so their iat and expires_in are those of the redemption;
+	// the grant keeps what the claims come from, not the password hash, and its own copy of the groups
+	grant := codestore.Grant{
+		User:          *user,
+		Nonce:         authReq.Nonce,
 		Resource:      authReq.Resource(),
-	}, authReq.ClientID, authReq.RedirectUri)
+		CodeChallenge: authReq.CodeChallenge,
+	}
+	grant.User.Password = ""
+	grant.User.Groups = slices.Clone(user.Groups)
+	code := r.store.Create(grant, authReq.ClientID, authReq.RedirectUri)
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
@@ -241,17 +240,30 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 	}
 
 	// the code is consumed first, so a failed verifier still spends it (RFC 9700 §4.8.1)
-	issued, err := r.store.Pop(tokenRequest.Code, tokenRequest.ClientID, tokenRequest.RedirectUri)
+	grant, err := r.store.Pop(tokenRequest.Code, tokenRequest.ClientID, tokenRequest.RedirectUri)
 	if err != nil {
 		writeTokenError(res, oidc.ErrInvalidGrant)
 		return
 	}
-	if err := oidc.VerifyCodeExchange(issued.CodeChallenge, tokenRequest.CodeVerifier); err != nil {
+	if err := oidc.VerifyCodeExchange(grant.CodeChallenge, tokenRequest.CodeVerifier); err != nil {
 		writeTokenError(res, err)
 		return
 	}
-	if err := oidc.VerifyTokenResource(tokenRequest, issued.Resource); err != nil {
+	if err := oidc.VerifyTokenResource(tokenRequest, grant.Resource); err != nil {
 		writeTokenError(res, err)
+		return
+	}
+
+	idToken, err := r.oidc.GenerateIDToken(grant.User, tokenRequest.ClientID, grant.Nonce)
+	if err != nil {
+		slog.Error("failed to sign the id token", "error", err)
+		http.Error(res, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	accessToken, err := r.oidc.GenerateAccessToken(grant.User, tokenRequest.ClientID, grant.Resource)
+	if err != nil {
+		slog.Error("failed to sign the access token", "error", err)
+		http.Error(res, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -261,9 +273,9 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		ExpiresIn   int    `json:"expires_in"`
 		TokenType   string `json:"token_type"`
 	}{
-		IDToken:     issued.IDToken,
-		AccessToken: issued.AccessToken,
-		ExpiresIn:   int(r.oidc.IDTokenTTL().Seconds()),
+		IDToken:     idToken,
+		AccessToken: accessToken,
+		ExpiresIn:   int(r.oidc.ClientTokenTTL(tokenRequest.ClientID).Seconds()),
 		TokenType:   "Bearer",
 	}
 

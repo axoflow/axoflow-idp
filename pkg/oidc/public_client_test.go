@@ -423,6 +423,38 @@ func TestGenerateAccessTokenClaims(t *testing.T) {
 	}
 }
 
+// TestClientTokenTTL covers the effective lifetime: a client's tokenTTL, the default without one or for
+// an unknown client, and both tokens of a client sharing it.
+func TestClientTokenTTL(t *testing.T) {
+	o := newTestOidc(t, []Client{
+		{Id: "short", RedirectUri: "http://127.0.0.1/callback", Public: true, TokenTTL: "1h"},
+		{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret"},
+	})
+	for clientID, want := range map[string]time.Duration{"short": time.Hour, "app": DefaultTokenTTL, "nobody": DefaultTokenTTL} {
+		if got := o.ClientTokenTTL(clientID); got != want {
+			t.Errorf("ClientTokenTTL(%q) = %v, want %v", clientID, got, want)
+		}
+	}
+
+	u := user.UserInfo{ID: "u1", Username: "alice"}
+	for clientID, want := range map[string]float64{"short": 3600, "app": 86400} {
+		id, err := o.GenerateIDToken(u, clientID, "")
+		if err != nil {
+			t.Fatalf("GenerateIDToken(%s): %v", clientID, err)
+		}
+		access, err := o.GenerateAccessToken(u, clientID, "")
+		if err != nil {
+			t.Fatalf("GenerateAccessToken(%s): %v", clientID, err)
+		}
+		for name, token := range map[string]string{"id_token": id, "access_token": access} {
+			claims := accessTokenClaims(t, o, token)
+			if got := claims["exp"].(float64) - claims["iat"].(float64); got != want {
+				t.Errorf("%s of %s: exp-iat = %v, want %v", name, clientID, got, want)
+			}
+		}
+	}
+}
+
 func TestOpenIDProviderMetadata_AdvertisesPublicClientSupport(t *testing.T) {
 	o := newTestOidc(t, publicClients())
 	meta := o.GetOpenIDProviderMetadata()
@@ -458,6 +490,23 @@ func TestValidResourceIndicator(t *testing.T) {
 	for _, tt := range tests {
 		if got := ValidResourceIndicator(tt.s); got != tt.want {
 			t.Errorf("ValidResourceIndicator(%q) = %v, want %v", tt.s, got, tt.want)
+		}
+	}
+}
+
+func TestParseTokenTTL(t *testing.T) {
+	for _, tc := range []struct {
+		s       string
+		want    time.Duration
+		wantErr bool
+	}{
+		{s: "1m", want: time.Minute}, {s: "1h", want: time.Hour}, {s: "24h", want: 24 * time.Hour},
+		{s: "59s", wantErr: true}, {s: "500ms", wantErr: true}, {s: "0s", wantErr: true}, {s: "-1h", wantErr: true},
+		{s: "24h1s", wantErr: true}, {s: "3600", wantErr: true},
+	} {
+		got, err := ParseTokenTTL(tc.s)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("ParseTokenTTL(%q) = %v, %v; want %v, wantErr %v", tc.s, got, err, tc.want, tc.wantErr)
 		}
 	}
 }

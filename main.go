@@ -137,6 +137,11 @@ func (c *config) Validate() error {
 		if !client.Public && client.ClientSecret == "" {
 			return fmt.Errorf("client %d (%s): clientSecret is required unless the client is public", i, client.Id)
 		}
+		if client.TokenTTL != "" {
+			if _, err := oidc.ParseTokenTTL(client.TokenTTL); err != nil {
+				return fmt.Errorf("client %d (%s): tokenTTL %q must be a duration between %dm and %dh", i, client.Id, client.TokenTTL, int(oidc.MinTokenTTL.Minutes()), int(oidc.DefaultTokenTTL.Hours()))
+			}
+		}
 	}
 
 	if !c.SigningKey.GenerateIfMissing && c.SigningKey.FilePath == "" {

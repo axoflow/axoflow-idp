@@ -19,13 +19,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 const cb = "https://app.example.com/cb"
 
 func TestCreateReturnsDistinctCodes(t *testing.T) {
 	s := New()
-	if a, b := s.Create(Issued{}, "app", cb), s.Create(Issued{}, "app", cb); a == b {
+	if a, b := s.Create(Grant{}, "app", cb), s.Create(Grant{}, "app", cb); a == b {
 		t.Errorf("two codes are the same: %q", a)
 	}
 }
@@ -33,7 +35,7 @@ func TestCreateReturnsDistinctCodes(t *testing.T) {
 func TestCodeIsSingleUse(t *testing.T) {
 	s := New()
 
-	code := s.Create(Issued{IDToken: "id-token-1"}, "app", cb)
+	code := s.Create(Grant{User: user.UserInfo{ID: "u1"}}, "app", cb)
 	if _, err := s.Pop(code, "app", cb); err != nil {
 		t.Fatalf("Pop returned error: %v", err)
 	}
@@ -44,14 +46,14 @@ func TestCodeIsSingleUse(t *testing.T) {
 
 func TestPop_WrongClientIsRejectedAndSpendsTheCode(t *testing.T) {
 	s := New()
-	code := s.Create(Issued{IDToken: "id-token"}, "app", cb)
+	code := s.Create(Grant{User: user.UserInfo{ID: "u1"}}, "app", cb)
 
 	got, err := s.Pop(code, "other", cb)
 	if !errors.Is(err, ErrClientMismatch) {
 		t.Fatalf("Pop err = %v, want %v", err, ErrClientMismatch)
 	}
-	if got != (Issued{}) {
-		t.Errorf("Pop returned tokens %+v on failure", got)
+	if got.User.ID != "" {
+		t.Errorf("Pop returned a grant %+v on failure", got)
 	}
 	if _, err := s.Pop(code, "app", cb); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Pop after failure err = %v, want %v", err, ErrNotFound)
@@ -62,14 +64,14 @@ func TestPop_WrongClientIsRejectedAndSpendsTheCode(t *testing.T) {
 func TestPop_ExpiredCodeIsRejectedAndSpent(t *testing.T) {
 	s := New()
 	const id = "stale-code"
-	s.codes[id] = code{createdAt: time.Now().Add(-2 * time.Minute), issued: Issued{IDToken: "id-token"}, clientID: "app", redirectURI: cb}
+	s.codes[id] = code{createdAt: time.Now().Add(-2 * time.Minute), grant: Grant{User: user.UserInfo{ID: "u1"}}, clientID: "app", redirectURI: cb}
 
 	got, err := s.Pop(id, "app", cb)
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("Pop err = %v, want %v", err, ErrExpired)
 	}
-	if got != (Issued{}) {
-		t.Errorf("Pop returned tokens %+v for an expired code", got)
+	if got.User.ID != "" {
+		t.Errorf("Pop returned a grant %+v for an expired code", got)
 	}
 	if _, err := s.Pop(id, "app", cb); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Pop after expiry err = %v, want %v", err, ErrNotFound)
@@ -88,7 +90,7 @@ func TestConcurrentAccess(_ *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				code := s.Create(Issued{IDToken: "id-token"}, "app", cb)
+				code := s.Create(Grant{User: user.UserInfo{ID: "u1"}}, "app", cb)
 				s.CleanUp()
 				_, _ = s.Pop(code, "app", cb)
 			}
