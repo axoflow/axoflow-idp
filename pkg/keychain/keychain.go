@@ -19,7 +19,7 @@ import (
 	"crypto/rsa"
 	"errors"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 )
 
 type Keychain struct {
