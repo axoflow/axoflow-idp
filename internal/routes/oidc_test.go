@@ -252,7 +252,7 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
-	code := r.store.Create("the-id-token")
+	code := r.store.Create(codestore.Issued{IDToken: "the-id-token", AccessToken: "the-access-token"}, "app", testRedirectURI)
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {"app"},
@@ -280,8 +280,8 @@ func TestOidcToken_Success(t *testing.T) {
 	if body.IDToken != "the-id-token" {
 		t.Errorf("id_token = %q, want %q", body.IDToken, "the-id-token")
 	}
-	if body.AccessToken != "the-id-token" {
-		t.Errorf("access_token = %q, want it to equal the id_token", body.AccessToken)
+	if body.AccessToken != "the-access-token" {
+		t.Errorf("access_token = %q, want %q", body.AccessToken, "the-access-token")
 	}
 	if body.ExpiresIn != 24*3600 {
 		t.Errorf("expires_in = %d, want %d", body.ExpiresIn, 24*3600)

@@ -73,7 +73,8 @@ scripts/e2e.py           # stdlib-only end-to-end tests
 
 Login verifies the password and sets a `session` cookie (in-memory `session`
 store). OIDC auth issues an authorization code (`codestore`); `/token` exchanges
-it for a JWT signed with the key from `keychain`; `/revoke` records revocations
+it for a JWT signed with the key from `keychain`; `/oidc/userinfo` answers to the
+`at+jwt` access token only, never to the ID token; `/revoke` records revocations
 in `tokenstore`.
 
 ## Conventions
