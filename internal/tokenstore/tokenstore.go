@@ -19,29 +19,36 @@ import (
 	"time"
 )
 
-type Config struct {
-	TTL time.Duration `json:"ttl,omitempty"`
-}
-
 type TokenStore struct {
 	revokedTokens map[string]time.Time
 	mu            sync.RWMutex
 	ttl           time.Duration
 }
 
-func New(cfg Config) *TokenStore {
+// New keeps a revocation for ttl, the lifetime of the tokens it is asked about; a zero ttl keeps every one.
+func New(ttl time.Duration) *TokenStore {
 	return &TokenStore{
 		revokedTokens: make(map[string]time.Time),
 		mu:            sync.RWMutex{},
-		ttl:           cfg.TTL,
+		ttl:           ttl,
 	}
 }
 
+// Revoke records the token and drops the revocations older than the token lifetime: the list grows only
+// here, and a token that old is refused by its own expiry.
 func (s *TokenStore) Revoke(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.revokedTokens[token] = time.Now()
+	now := time.Now()
+	if s.ttl != 0 {
+		for revoked, revokedAt := range s.revokedTokens {
+			if now.Sub(revokedAt) > s.ttl {
+				delete(s.revokedTokens, revoked)
+			}
+		}
+	}
+	s.revokedTokens[token] = now
 }
 
 func (s *TokenStore) IsRevoked(token string) bool {
@@ -50,16 +57,4 @@ func (s *TokenStore) IsRevoked(token string) bool {
 
 	_, exists := s.revokedTokens[token]
 	return exists
-}
-
-func (s *TokenStore) CleanUp() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now()
-	for token, revokedAt := range s.revokedTokens {
-		if now.Sub(revokedAt) > s.ttl {
-			delete(s.revokedTokens, token)
-		}
-	}
 }

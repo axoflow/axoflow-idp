@@ -73,7 +73,8 @@ there. A revocation is recorded under the access token's `jti`, so every
 spelling of the revoked token is refused; revoking an ID token records nothing.
 
 A public client cannot call `/revoke` (`401 invalid_client`); its tokens expire
-instead.
+instead. A revocation is kept for the token lifetime (24 hours) and dropped on
+a later `/revoke`.
 
 ```json
 {
@@ -95,7 +96,9 @@ A client that is not public must have a `clientSecret`.
 > server refuses to start and names the client and the value. `/oidc/userinfo`
 > now takes the access token only: a client that sent the ID token gets `401`
 > and must send the code flow's `access_token`; a token issued before the
-> upgrade, when the access token was the ID token, must be re-acquired.
+> upgrade, when the access token was the ID token, must be re-acquired. The
+> undocumented `token.ttl` is no longer read: a revocation is kept for the
+> token lifetime.
 
 ## Seeding the user database
 

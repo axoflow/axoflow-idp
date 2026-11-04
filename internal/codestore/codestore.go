@@ -15,11 +15,10 @@
 package codestore
 
 import (
+	"crypto/rand"
 	"errors"
 	"sync"
 	"time"
-
-	"github.com/oklog/ulid/v2"
 )
 
 // Issued is what a code redeems to.
@@ -33,7 +32,7 @@ type Issued struct {
 }
 
 type code struct {
-	ID          ulid.ULID
+	createdAt   time.Time
 	issued      Issued
 	clientID    string
 	redirectURI string
@@ -72,7 +71,7 @@ func (s *CodeStore) cleanUp() {
 		return
 	}
 	for k, v := range s.codes {
-		if ulid.Time(v.ID.Time()).Before(time.Now().Add(-s.ttl)) {
+		if v.createdAt.Before(time.Now().Add(-s.ttl)) {
 			delete(s.codes, k)
 		}
 	}
@@ -84,15 +83,16 @@ func (s *CodeStore) Create(issued Issued, clientID, redirectURI string) string {
 	defer s.mu.Unlock()
 
 	s.cleanUp()
-	code := code{
-		ID:          ulid.Make(),
+	// the code is a credential (RFC 6749 §10.10), so it comes from crypto/rand: a ULID's entropy is math/rand
+	id := rand.Text()
+	s.codes[id] = code{
+		createdAt:   time.Now(),
 		issued:      issued,
 		clientID:    clientID,
 		redirectURI: redirectURI,
 	}
-	s.codes[code.ID.String()] = code
 
-	return code.ID.String()
+	return id
 }
 
 // Pop consumes the code even when the binding fails: single use per RFC 6749 §4.1.2.
@@ -107,7 +107,7 @@ func (s *CodeStore) Pop(code, clientID, redirectURI string) (Issued, error) {
 	}
 
 	delete(s.codes, code)
-	if s.ttl != 0 && ulid.Time(session.ID.Time()).Before(time.Now().Add(-s.ttl)) {
+	if s.ttl != 0 && session.createdAt.Before(time.Now().Add(-s.ttl)) {
 		return Issued{}, ErrExpired
 	}
 	if session.clientID != clientID {

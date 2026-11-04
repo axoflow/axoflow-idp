@@ -618,7 +618,9 @@ func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, erro
 		return nil, errors.New("access token without jti") // no identity to revoke it under
 	}
 
-	if time.Now().Unix() > claims.Expiration {
+	// RFC 7519 §4.1.4: a token is not accepted on or after exp. main.go keeps a revocation for the token lifetime
+	// from the revoke, so this is also what keeps a revoked token from outliving its record.
+	if time.Now().Unix() >= claims.Expiration {
 		return nil, errors.New("token expired")
 	}
 

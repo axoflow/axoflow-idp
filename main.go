@@ -41,10 +41,9 @@ import (
 const passwordResetLinkTTL = time.Hour
 
 type config struct {
-	BaseUrl    string             `json:"baseUrl"`
-	Clients    []oidc.Client      `json:"clients"`
-	Users      *user.Config       `json:"users,omitempty"`
-	Token      *tokenstore.Config `json:"token,omitempty"`
+	BaseUrl    string        `json:"baseUrl"`
+	Clients    []oidc.Client `json:"clients"`
+	Users      *user.Config  `json:"users,omitempty"`
 	SigningKey struct {
 		FilePath          string `json:"filePath,omitempty"`
 		GenerateIfMissing bool   `json:"generateIfMissing,omitempty"`
@@ -70,12 +69,6 @@ func LoadConfig() (cfg config, err error) {
 
 	if cfg.Users == nil {
 		cfg.Users = &user.Config{}
-	}
-
-	if cfg.Token == nil {
-		cfg.Token = &tokenstore.Config{
-			TTL: 24 * time.Hour,
-		}
 	}
 
 	return
@@ -268,7 +261,7 @@ func main() {
 		Session:       session.New(),
 		User:          u,
 		CodeStore:     codestore.New(),
-		TokenStore:    tokenstore.New(*cfg.Token),
+		TokenStore:    tokenstore.New(o.IDTokenTTL()),
 		ResetTokens:   resettoken.New(passwordResetLinkTTL),
 		BaseURL:       cfg.BaseUrl,
 		PathPrefix:    pathPrefix,

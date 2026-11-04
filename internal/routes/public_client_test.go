@@ -424,7 +424,7 @@ func userinfoGet(t *testing.T, r *Routes, token string) *httptest.ResponseRecord
 // Before the access token was split from the ID token, revoking "the token" covered userinfo by itself.
 func TestUserinfo_AccessTokenOnly(t *testing.T) {
 	r, cookie := newPublicClientRoutes(t)
-	r.tokenStore = tokenstore.New(tokenstore.Config{})
+	r.tokenStore = tokenstore.New(r.oidc.IDTokenTTL())
 	q := url.Values{
 		"scope": {"openid profile email"}, "response_type": {"code"}, "client_id": {"app"}, "redirect_uri": {testRedirectURI}, "nonce": {"n1"},
 	}

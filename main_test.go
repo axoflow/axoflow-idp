@@ -187,7 +187,7 @@ func newTestMux(t *testing.T, baseUrl string) *http.ServeMux {
 		Session:     session.New(),
 		User:        u,
 		CodeStore:   codestore.New(),
-		TokenStore:  tokenstore.New(tokenstore.Config{TTL: time.Hour}),
+		TokenStore:  tokenstore.New(time.Hour),
 		ResetTokens: resettoken.New(time.Hour),
 		BaseURL:     baseUrl,
 		PathPrefix:  parsed.Path,

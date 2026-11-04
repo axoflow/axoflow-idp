@@ -15,16 +15,20 @@
 package codestore
 
 import (
-	"crypto/rand"
 	"errors"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/oklog/ulid/v2"
 )
 
 const cb = "https://app.example.com/cb"
+
+func TestCreateReturnsDistinctCodes(t *testing.T) {
+	s := New()
+	if a, b := s.Create(Issued{}, "app", cb), s.Create(Issued{}, "app", cb); a == b {
+		t.Errorf("two codes are the same: %q", a)
+	}
+}
 
 func TestCodeIsSingleUse(t *testing.T) {
 	s := New()
@@ -57,17 +61,17 @@ func TestPop_WrongClientIsRejectedAndSpendsTheCode(t *testing.T) {
 // The entry goes straight into the map, so no Create runs cleanUp before Pop.
 func TestPop_ExpiredCodeIsRejectedAndSpent(t *testing.T) {
 	s := New()
-	id := ulid.MustNew(ulid.Timestamp(time.Now().Add(-2*time.Minute)), rand.Reader)
-	s.codes[id.String()] = code{ID: id, issued: Issued{IDToken: "id-token"}, clientID: "app", redirectURI: cb}
+	const id = "stale-code"
+	s.codes[id] = code{createdAt: time.Now().Add(-2 * time.Minute), issued: Issued{IDToken: "id-token"}, clientID: "app", redirectURI: cb}
 
-	got, err := s.Pop(id.String(), "app", cb)
+	got, err := s.Pop(id, "app", cb)
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("Pop err = %v, want %v", err, ErrExpired)
 	}
 	if got != (Issued{}) {
 		t.Errorf("Pop returned tokens %+v for an expired code", got)
 	}
-	if _, err := s.Pop(id.String(), "app", cb); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Pop(id, "app", cb); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Pop after expiry err = %v, want %v", err, ErrNotFound)
 	}
 }
