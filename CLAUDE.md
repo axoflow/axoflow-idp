@@ -24,14 +24,16 @@ Go version is pinned in `.go-version`.
 ## Running
 
 ```sh
-CONFIG=config.json go run .   # serves on :8080
+CONFIG=config.json go run .   # serves on :8080 (server.listenAddr)
 ```
 
 Templates load from `./templates` (override with `TEMPLATES_DIR`). A minimal
 `config.json` needs `baseUrl`, at least one `client` (`id` + `redirectUri`),
 and a `signingKey` (`generateIfMissing: true` for local dev). `config.json`,
 `users.json`, and `signing-key.json` are gitignored local/dev artifacts — never
-commit real secrets or users.
+commit real secrets or users. Without `signingKey.filePath`, every start
+generates a new key into `./signing-key.json` and overwrites the local one, so
+give throwaway configs a `filePath` outside the repo.
 
 ### Local Kubernetes (Axoflow devs)
 
@@ -52,6 +54,7 @@ so it runs the in-daemon image instead of pulling from the registry.
 main.go                  # config load + route wiring + server start
 internal/routes/         # HTTP handlers (login, password, admin, OIDC), CSRF, templates
 internal/session/        # in-memory session store
+internal/certreloader/   # TLS certificate, reloaded when its file changes
 internal/resettoken/     # single-use password-reset tokens
 internal/codestore/      # OIDC authorization codes
 internal/tokenstore/     # OIDC token revocation list
@@ -118,3 +121,9 @@ in `tokenstore`.
   prefix every route, redirect, cookie and template link is scoped to, so a
   reverse proxy must pass the prefix through instead of stripping it.
 - Config is loaded from the path in `CONFIG` (default `config.json`).
+- `server` sets the listen address and the `http.Server` timeouts (Go duration
+  strings; unset fields keep the defaults in `defaultServerConfig`).
+  `server.tls.certFile` + `keyFile` switch the listener to HTTPS; the
+  certificate is reloaded on the next handshake after `certFile` changes.
+- The Dockerfile copies only `main.go` from the repo root; new Go code goes
+  under `internal/` or `pkg/`, or the image build breaks.

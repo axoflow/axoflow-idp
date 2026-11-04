@@ -102,6 +102,81 @@ func TestBaseUrlPrefixDerivation(t *testing.T) {
 	}
 }
 
+// loadAndValidate writes a minimal config with the given server block, then
+// loads and validates it the way main() does.
+func loadAndValidate(t *testing.T, server map[string]any) (config, error) {
+	t.Helper()
+
+	raw, err := json.Marshal(map[string]any{
+		"baseUrl":    "https://host",
+		"clients":    []map[string]string{{"id": "c", "redirectUri": "https://rp/cb"}},
+		"signingKey": map[string]any{"generateIfMissing": true},
+		"server":     server,
+	})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CONFIG", cfgPath)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	return cfg, cfg.Validate()
+}
+
+func TestServerConfig(t *testing.T) {
+	withReadTimeout := defaultServerConfig
+	withReadTimeout.ReadTimeout = duration(20 * time.Second)
+	withTLS := defaultServerConfig
+	withTLS.TLS = tlsConfig{CertFile: "tls.crt", KeyFile: "tls.key"}
+
+	tests := map[string]struct {
+		server  map[string]any
+		want    serverConfig
+		wantErr bool
+	}{
+		"unset fields keep their defaults":        {server: map[string]any{"readTimeout": "20s"}, want: withReadTimeout},
+		"a duration without a unit is rejected":   {server: map[string]any{"readTimeout": "10"}, wantErr: true},
+		"a zero timeout is rejected":              {server: map[string]any{"idleTimeout": "0s"}, wantErr: true},
+		"a listenAddr without a port is rejected": {server: map[string]any{"listenAddr": "8080"}, wantErr: true},
+		"readHeaderTimeout longer than readTimeout is rejected": {
+			server: map[string]any{"readHeaderTimeout": "20s"}, wantErr: true,
+		},
+		"a certificate with its key enables TLS": {
+			server: map[string]any{"tls": map[string]string{"certFile": "tls.crt", "keyFile": "tls.key"}}, want: withTLS,
+		},
+		"a certificate without a key is rejected": {
+			server: map[string]any{"tls": map[string]string{"certFile": "tls.crt"}}, wantErr: true,
+		},
+		"a key without a certificate is rejected": {
+			server: map[string]any{"tls": map[string]string{"keyFile": "tls.key"}}, wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := loadAndValidate(t, tc.server)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("config accepted, want an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("config rejected: %v", err)
+			}
+			if cfg.Server != tc.want {
+				t.Errorf("server config = %+v, want %+v", cfg.Server, tc.want)
+			}
+		})
+	}
+}
+
 // newTestMux builds the real handler stack — OIDC provider, routes, mux — the
 // same way main() does, so the registered patterns are the ones production
 // serves.

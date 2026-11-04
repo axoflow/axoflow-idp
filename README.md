@@ -49,6 +49,49 @@ go run main.go
 > `redirectUri`; any request whose `redirect_uri` is not an exact match is
 > rejected.
 
+## Listener
+
+The optional `server` block sets the listen address and the HTTP server
+timeouts. Each field is optional, and the values below are the defaults:
+
+```json
+"server": {
+    "listenAddr": ":8080",
+    "readHeaderTimeout": "5s",
+    "readTimeout": "10s",
+    "writeTimeout": "30s",
+    "idleTimeout": "120s"
+}
+```
+
+The timeouts are Go durations such as `10s` or `2m` and must be positive.
+`readHeaderTimeout` must not be longer than `readTimeout`. Keep `idleTimeout`
+longer than the idle timeout of a reverse proxy in front of the IdP, so the
+proxy closes an idle connection first.
+
+## Serving TLS
+
+By default the IdP serves plain HTTP, for a TLS-terminating reverse proxy in
+front of it. To encrypt the proxy-to-IdP hop too, set `server.tls` to a PEM
+certificate and key. The IdP then serves HTTPS on `listenAddr`:
+
+```json
+"server": {
+    "tls": {
+        "certFile": "/tls/tls.crt",
+        "keyFile": "/tls/tls.key"
+    }
+}
+```
+
+If an intermediate CA signed the certificate, `certFile` must hold the chain:
+the server certificate first, then the intermediates. The certificate only
+secures the proxy-to-IdP hop. `baseUrl` stays the public URL that clients use.
+
+The IdP reloads both files when `certFile` changes, so a renewed certificate
+takes effect without a restart. If the new files do not load, the IdP keeps the
+previous certificate and logs a warning.
+
 ## Seeding the user database
 
 With `users.createIfMissing: true`, the IdP writes `users.users` to
