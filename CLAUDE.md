@@ -11,7 +11,7 @@ This repo uses [`just`](https://github.com/casey/just) (see `justfile`):
 
 ```sh
 just              # list recipes
-just verify       # editorconfig + lint + license check + tests (pre-commit gate)
+just verify       # lint + license check + tests (pre-commit gate)
 just test         # unit/integration tests
 just test-race    # tests with the race detector
 just test-e2e     # end-to-end suite (builds the server, drives real HTTP flows)

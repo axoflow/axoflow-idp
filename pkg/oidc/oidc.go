@@ -28,7 +28,7 @@ import (
 
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/user"
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 )
 
 const (
@@ -403,7 +403,7 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 }
 
 func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
-	token, err := jose.ParseSigned(tokenString)
+	token, err := jose.ParseSignedCompact(tokenString, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}

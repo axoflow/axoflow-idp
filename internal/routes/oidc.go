@@ -24,7 +24,7 @@ import (
 
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
 	"github.com/axoflow/axoflow-idp/pkg/user"
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 )
 
 // writeTokenError emits an RFC 6749 §5.2 JSON error; err must be an oidc.Err* sentinel.

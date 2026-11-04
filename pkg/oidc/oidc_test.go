@@ -24,7 +24,7 @@ import (
 
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/user"
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 )
 
 func newTestOidc(t *testing.T, clients []Client) *Oidc {
@@ -181,7 +181,7 @@ func newSignedOidc(t *testing.T, cfg Config) *Oidc {
 
 func decodeIDToken(t *testing.T, o *Oidc, idToken string) IDTokenPayload {
 	t.Helper()
-	tok, err := jose.ParseSigned(idToken)
+	tok, err := jose.ParseSignedCompact(idToken, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
 		t.Fatalf("parse token: %v", err)
 	}
