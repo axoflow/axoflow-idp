@@ -1,6 +1,6 @@
 module github.com/axoflow/axoflow-idp
 
-go 1.26.6
+go 1.26.10
 
 require (
 	github.com/go-jose/go-jose/v3 v3.0.5
