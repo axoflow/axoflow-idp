@@ -16,6 +16,7 @@ Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authenticati
     "clients": [
     {
         "id": "your-client-id",
+        "clientSecret": "change-me",
         "redirectUri": "http://localhost:3000/callback"
     }
     ],
@@ -48,6 +49,53 @@ go run main.go
 > callbacks with a `redirectUris` array alongside (or instead of) the singular
 > `redirectUri`; any request whose `redirect_uri` is not an exact match is
 > rejected.
+
+### Public clients
+
+A client that cannot keep a secret, such as a command-line tool, is
+registered with `"public": true` and no `clientSecret`. It must use the
+authorization code flow with a PKCE `S256` challenge (`plain` is refused) and
+sends its `code_verifier` instead of a secret at `/token`.
+
+A `resource` parameter (RFC 8707) names the API the access token is for. A
+request may carry at most one; a non-empty value must be one of the client's
+`resources`, and a client without that list may not send one. Anything else is
+refused with `invalid_target`; a single empty value counts as omitted (RFC 6749
+§3.1). A `resource` repeated at `/token` must be the one the code was issued
+for; another is refused with `invalid_target` and spends the code.
+
+The access token is a JWT separate from the ID token. Its header carries
+`typ: at+jwt` (RFC 9068), so a validator that enforces the profile can tell it
+from an ID token. Its `aud` is the requested resource (the client id without
+one), and it carries `client_id`. The ID token's `aud` stays the client id.
+`/oidc/userinfo` answers to the access token only; the ID token is refused
+there. A revocation is recorded under the access token's `jti`, so every
+spelling of the revoked token is refused; revoking an ID token records nothing.
+
+A public client cannot call `/revoke` (`401 invalid_client`); its tokens expire
+instead.
+
+```json
+{
+    "id": "example-cli",
+    "name": "Example CLI",
+    "public": true,
+    "redirectUris": ["http://127.0.0.1/callback"],
+    "resources": ["https://api.example.com/v1"]
+}
+```
+
+A client that is not public must have a `clientSecret`.
+
+> Upgrading: the configuration is now checked at start. A client needs
+> `redirectUri` or `redirectUris`; every redirect URI, the singular one and each
+> list entry, must be an `http` or `https` URL with a host and no fragment; a
+> client that is not public needs a `clientSecret`; every `resources` entry must
+> have a scheme and no fragment. Correct such entries before upgrading, or the
+> server refuses to start and names the client and the value. `/oidc/userinfo`
+> now takes the access token only: a client that sent the ID token gets `401`
+> and must send the code flow's `access_token`; a token issued before the
+> upgrade, when the access token was the ID token, must be re-acquired.
 
 ## Seeding the user database
 

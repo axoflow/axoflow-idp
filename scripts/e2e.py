@@ -37,6 +37,7 @@ Standard unittest flags (-v, -k, -f, test selectors) all work.
 """
 
 import base64
+import hashlib
 import http.cookiejar
 import json
 import os
@@ -135,7 +136,10 @@ def _write_config(path, users_path, signing_path, static, base=BASE,
         json.dump({
             "baseUrl": base,
             "clients": [{"id": "dev", "name": "Dev", "clientSecret": "s",
-                         "redirectUri": BASE + "/cb"}],
+                         "redirectUri": BASE + "/cb"},
+                        {"id": "cli", "name": "Example CLI", "public": True,
+                         "redirectUris": ["http://127.0.0.1/callback"],
+                         "resources": [BASE + "/api/v1"]}],
             "users": {
                 "createIfMissing": False,
                 "filePath": users_path,
@@ -424,6 +428,116 @@ class AuthorizeRedirectTest(ServerCase):
         self.assertEqual(code, 400)
         self.assertIsNone(hdrs.get("Location"))
 
+
+
+class PublicClientTest(ServerCase):
+    """The public client "cli" (a native app's registration): code
+    flow with PKCE S256, no secret, one registered resource.
+    """
+
+    CB = "http://127.0.0.1/callback"
+    RESOURCE = BASE + "/api/v1"
+    VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"  # RFC 7636 appendix B
+    CHALLENGE = base64.urlsafe_b64encode(
+        hashlib.sha256(VERIFIER.encode()).digest()).rstrip(b"=").decode()
+
+    def _authorize(self, client, **overrides):
+        params = {"scope": "openid profile email", "response_type": "code",
+                  "client_id": "cli", "redirect_uri": self.CB,
+                  "code_challenge": self.CHALLENGE,
+                  "code_challenge_method": "S256",
+                  "resource": self.RESOURCE, "state": "s"}
+        params.update(overrides)
+        code, hdrs, _ = client.get(
+            "/oidc/auth?" + urllib.parse.urlencode(params, doseq=True))
+        return code, hdrs
+
+    @staticmethod
+    def _location_query(hdrs):
+        return urllib.parse.parse_qs(
+            urllib.parse.urlparse(hdrs["Location"]).query, keep_blank_values=True)
+
+    def _code(self, client):
+        code, hdrs = self._authorize(client)
+        self.assertEqual(code, 302)
+        return self._location_query(hdrs)["code"][0]
+
+    def _token(self, auth_code, **overrides):
+        """POSTs /token as cli; an override of None leaves the field out."""
+        form = {"grant_type": "authorization_code", "client_id": "cli",
+                "redirect_uri": self.CB, "code": auth_code,
+                "code_verifier": self.VERIFIER}
+        form.update(overrides)
+        code, _, body = Client().post(
+            "/token", {k: v for k, v in form.items() if v is not None})
+        return code, json.loads(body)
+
+    @staticmethod
+    def _jwt_part(token, index):
+        part = token.split(".")[index]
+        part += "=" * (-len(part) % 4)
+        return json.loads(base64.urlsafe_b64decode(part))
+
+    def test_pkce_flow_mints_a_resource_bound_access_token(self):
+        bob = Client()
+        bob.login("bob", "bobpass")
+        code, hdrs = self._authorize(bob)
+        self.assertEqual(code, 302)
+        q = self._location_query(hdrs)
+        self.assertEqual(q.get("state"), ["s"])
+        self.assertTrue(q.get("code"), "authorization code must be present")
+
+        code, body = self._token(q["code"][0])
+        self.assertEqual(code, 200, body)
+        access = body["access_token"]
+        self.assertEqual(self._jwt_part(access, 0)["typ"], "at+jwt")
+        claims = self._jwt_part(access, 1)
+        self.assertEqual(claims["aud"], self.RESOURCE)
+        self.assertEqual(claims["client_id"], "cli")
+        self.assertIn("id_token", body)
+        self.assertEqual(self._jwt_part(body["id_token"], 1)["aud"], "cli",
+                         "the ID token stays bound to the client")
+
+    def test_refusals(self):
+        bob = Client()
+        bob.login("bob", "bobpass")
+
+        # a wrong verifier spends the code: the right one is refused after it
+        auth_code = self._code(bob)
+        self.assertEqual(self._token(auth_code, code_verifier="x" * 43),
+                         (400, {"error": "invalid_grant"}))
+        self.assertEqual(self._token(auth_code),
+                         (400, {"error": "invalid_grant"}))
+
+        # a client_secret or a missing verifier is refused before the code is spent
+        for overrides in ({"client_secret": "s"}, {"code_verifier": None}):
+            with self.subTest(**{k: str(v) for k, v in overrides.items()}):
+                auth_code = self._code(bob)
+                self.assertEqual(self._token(auth_code, **overrides),
+                                 (400, {"error": "invalid_request"}))
+                code, body = self._token(auth_code)
+                self.assertEqual(code, 200, body)
+                self.assertIn("access_token", body)
+
+        # a resource that is not registered, or more than one (even the
+        # registered one twice), is redirected back as invalid_target
+        for resource in (BASE + "/other", [self.RESOURCE, self.RESOURCE]):
+            with self.subTest(resource=resource):
+                code, hdrs = self._authorize(bob, resource=resource)
+                self.assertEqual(code, 302)
+                loc = urllib.parse.urlparse(hdrs["Location"])
+                self.assertEqual(loc._replace(query="").geturl(), self.CB,
+                                 "the error must go to the registered callback")
+                self.assertEqual(
+                    urllib.parse.parse_qs(loc.query, keep_blank_values=True),
+                    {"error": ["invalid_target"], "state": ["s"]},
+                    "the query must carry the error and the state, no code")
+
+        # an unregistered port is refused in place, never redirected to
+        code, hdrs = self._authorize(
+            bob, redirect_uri="http://127.0.0.1:9999/callback")
+        self.assertEqual(code, 400)
+        self.assertIsNone(hdrs.get("Location"))
 
 class StaticModeTest(ServerCase):
     CONFIG_KEY = "cfg_static"

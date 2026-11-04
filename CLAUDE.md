@@ -28,8 +28,9 @@ CONFIG=config.json go run .   # serves on :8080
 ```
 
 Templates load from `./templates` (override with `TEMPLATES_DIR`). A minimal
-`config.json` needs `baseUrl`, at least one `client` (`id` + `redirectUri`),
-and a `signingKey` (`generateIfMissing: true` for local dev). `config.json`,
+`config.json` needs `baseUrl`, at least one `client` (`id`, `redirectUri` or
+`redirectUris`, and either `clientSecret` or `public: true`), and a
+`signingKey` (`generateIfMissing: true` for local dev). `config.json`,
 `users.json`, and `signing-key.json` are gitignored local/dev artifacts — never
 commit real secrets or users.
 
@@ -75,7 +76,8 @@ Login verifies the password and sets a `session` cookie (in-memory `session`
 store). OIDC auth issues an authorization code (`codestore`); `/token` exchanges
 it for a JWT signed with the key from `keychain`; `/oidc/userinfo` answers to the
 `at+jwt` access token only, never to the ID token; `/revoke` records revocations
-in `tokenstore`.
+in `tokenstore`. The response's access token is a separate JWT (`typ: at+jwt`)
+whose `aud` is the requested RFC 8707 `resource`, or the client id without one.
 
 ## Conventions
 
@@ -118,4 +120,8 @@ in `tokenstore`.
 - `baseUrl` may carry a path (e.g. `https://host/idp`). Its path becomes the
   prefix every route, redirect, cookie and template link is scoped to, so a
   reverse proxy must pass the prefix through instead of stripping it.
+- A `public: true` client has no `clientSecret`, must use the code flow with
+  PKCE `S256` and cannot call `/revoke`; any client may request one `resource`
+  from its `resources` list (an empty value counts as omitted), and anything
+  else is `invalid_target`.
 - Config is loaded from the path in `CONFIG` (default `config.json`).

@@ -119,11 +119,30 @@ func (c *config) Validate() error {
 		if client.Id == "" {
 			return fmt.Errorf("client %d: id is required", i)
 		}
-		if client.RedirectUri == "" {
-			return fmt.Errorf("client %d (%s): redirectUri is required", i, client.Id)
+		uris := append([]string{}, client.RedirectUris...)
+		if client.RedirectUri != "" {
+			uris = append(uris, client.RedirectUri)
 		}
-		if !strings.HasPrefix(client.RedirectUri, "http://") && !strings.HasPrefix(client.RedirectUri, "https://") {
-			return fmt.Errorf("client %d (%s): redirectUri must start with http:// or https://", i, client.Id)
+		if len(uris) == 0 {
+			return fmt.Errorf("client %d (%s): redirectUri or redirectUris is required", i, client.Id)
+		}
+		// requests are still matched by exact string; this refuses a URI no browser could be sent to
+		for _, uri := range uris {
+			u, err := url.Parse(uri)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.Contains(uri, "#") {
+				return fmt.Errorf("client %d (%s): redirect URI %q must be an http or https URL with a host and no fragment", i, client.Id, uri)
+			}
+		}
+		for _, resource := range client.Resources {
+			if !oidc.ValidResourceIndicator(resource) {
+				return fmt.Errorf("client %d (%s): resource %q must be an absolute URI without a fragment", i, client.Id, resource)
+			}
+		}
+		if client.Public && client.ClientSecret != "" {
+			return fmt.Errorf("client %d (%s): a public client has no clientSecret", i, client.Id)
+		}
+		if !client.Public && client.ClientSecret == "" {
+			return fmt.Errorf("client %d (%s): clientSecret is required unless the client is public", i, client.Id)
 		}
 	}
 
