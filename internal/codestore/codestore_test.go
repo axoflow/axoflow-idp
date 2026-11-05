@@ -19,6 +19,13 @@ import (
 	"testing"
 )
 
+func TestCreateReturnsDistinctCodes(t *testing.T) {
+	s := New()
+	if a, b := s.Create("id-token"), s.Create("id-token"); a == b {
+		t.Errorf("two codes are the same: %q", a)
+	}
+}
+
 func TestCodeIsSingleUse(t *testing.T) {
 	s := New()
 
