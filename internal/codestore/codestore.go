@@ -15,16 +15,15 @@
 package codestore
 
 import (
+	"crypto/rand"
 	"errors"
 	"sync"
 	"time"
-
-	"github.com/oklog/ulid/v2"
 )
 
 type code struct {
-	ID       ulid.ULID
-	id_token string
+	createdAt time.Time
+	id_token  string
 }
 
 type CodeStore struct {
@@ -53,7 +52,7 @@ func (s *CodeStore) cleanUp() {
 		return
 	}
 	for k, v := range s.codes {
-		if ulid.Time(v.ID.Time()).Before(time.Now().Add(-s.ttl)) {
+		if v.createdAt.Before(time.Now().Add(-s.ttl)) {
 			delete(s.codes, k)
 		}
 	}
@@ -64,13 +63,14 @@ func (s *CodeStore) Create(id_token string) string {
 	defer s.mu.Unlock()
 
 	s.cleanUp()
-	code := code{
-		ID:       ulid.Make(),
-		id_token: id_token,
+	// the code is a credential (RFC 6749 §10.10), so it comes from crypto/rand: a ULID's entropy is math/rand
+	id := rand.Text()
+	s.codes[id] = code{
+		createdAt: time.Now(),
+		id_token:  id_token,
 	}
-	s.codes[code.ID.String()] = code
 
-	return code.ID.String()
+	return id
 }
 
 func (s *CodeStore) Pop(code string) (string, error) {

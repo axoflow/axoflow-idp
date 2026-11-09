@@ -26,6 +26,9 @@ func TestCreateGetDelete(t *testing.T) {
 	if id == "" {
 		t.Fatal("Create returned empty session id")
 	}
+	if other := s.Create("user-1"); other == id {
+		t.Errorf("two sessions have the same id: %q", id)
+	}
 
 	userID, err := s.Get(id)
 	if err != nil {
