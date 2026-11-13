@@ -249,21 +249,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Validate() has already parsed baseUrl, so this cannot fail.
-	parsedBaseUrl, _ := url.Parse(cfg.BaseUrl)
-	pathPrefix := parsedBaseUrl.Path
-
-	r, err := routes.New(routes.Config{
-		Oidc:          o,
-		Session:       session.New(),
-		User:          u,
-		CodeStore:     codestore.New(),
-		TokenStore:    tokenstore.New(*cfg.Token),
-		ResetTokens:   resettoken.New(passwordResetLinkTTL),
-		BaseURL:       cfg.BaseUrl,
-		PathPrefix:    pathPrefix,
-		SecureCookies: strings.HasPrefix(cfg.BaseUrl, "https://"),
-	})
+	routesCfg := baseRoutesConfig(cfg.BaseUrl)
+	pathPrefix := routesCfg.PathPrefix
+	routesCfg.Oidc = o
+	routesCfg.Session = session.New()
+	routesCfg.User = u
+	routesCfg.CodeStore = codestore.New()
+	routesCfg.TokenStore = tokenstore.New(*cfg.Token)
+	routesCfg.ResetTokens = resettoken.New(passwordResetLinkTTL)
+	r, err := routes.New(routesCfg)
 	if err != nil {
 		slog.Error("failed to create routes", "error", err)
 		os.Exit(1)
@@ -275,6 +269,18 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
+	}
+}
+
+// baseRoutesConfig is the part of the routes configuration that follows from
+// baseUrl, which Validate has already parsed; the caller adds the stores.
+func baseRoutesConfig(baseUrl string) routes.Config {
+	parsed, _ := url.Parse(baseUrl)
+	return routes.Config{
+		BaseURL:    baseUrl,
+		PathPrefix: parsed.Path,
+		// url.Parse lowercases the scheme, so "HTTPS://" counts as https too.
+		SecureCookies: parsed.Scheme == "https",
 	}
 }
 
