@@ -428,20 +428,39 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 	return nil
 }
 
-func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
+// verifiedClaims returns the claims of a token this provider signed.
+func (o *Oidc) verifiedClaims(tokenString string) (IDTokenPayload, error) {
+	var claims IDTokenPayload
 	token, err := jose.ParseSignedCompact(tokenString, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse token: %w", err)
+		return claims, fmt.Errorf("failed to parse token: %w", err)
 	}
 
 	payload, err := token.Verify(o.keychain.GetAll()[0].Public().Key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify token: %w", err)
+		return claims, fmt.Errorf("failed to verify token: %w", err)
 	}
 
-	var claims IDTokenPayload
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal claims: %w", err)
+		return claims, fmt.Errorf("failed to unmarshal claims: %w", err)
+	}
+	return claims, nil
+}
+
+// TokenAudience returns the client a token this provider signed was issued
+// to.
+func (o *Oidc) TokenAudience(tokenString string) (string, error) {
+	claims, err := o.verifiedClaims(tokenString)
+	if err != nil {
+		return "", err
+	}
+	return claims.Audience, nil
+}
+
+func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
+	claims, err := o.verifiedClaims(tokenString)
+	if err != nil {
+		return nil, err
 	}
 
 	if time.Now().Unix() > claims.Expiration {

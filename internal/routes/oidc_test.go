@@ -29,6 +29,7 @@ import (
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 const testRedirectURI = "https://app.example.com/cb"
@@ -379,5 +380,31 @@ func TestOidcRevokeBadClientCredentials(t *testing.T) {
 	}
 	if body.Error != "invalid_client" {
 		t.Errorf("error = %q, want %q", body.Error, "invalid_client")
+	}
+}
+
+// A client revokes only its own tokens: another client's revocation is
+// answered 200 and records nothing.
+func TestOidcRevoke_Ownership(t *testing.T) {
+	r := newTokenTestRoutes(t)
+	r.tokenStore = tokenstore.New(tokenstore.Config{})
+	token, err := r.oidc.GenerateIDToken(user.UserInfo{ID: "bob", Username: "bob"}, "app", "")
+	if err != nil {
+		t.Fatalf("GenerateIDToken: %v", err)
+	}
+	revoke := func(clientID, secret string) int {
+		form := url.Values{"token": {token}, "client_id": {clientID}, "client_secret": {secret}}
+		req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		r.OidcRevoke(rec, req)
+		return rec.Code
+	}
+
+	if code := revoke("other", "0ther"); code != http.StatusOK || r.tokenStore.IsRevoked(token) {
+		t.Fatalf("another client's revocation = %d, revoked %v; want 200 and not revoked", code, r.tokenStore.IsRevoked(token))
+	}
+	if code := revoke("app", "s3cret"); code != http.StatusOK || !r.tokenStore.IsRevoked(token) {
+		t.Errorf("the owner's revocation = %d, revoked %v; want 200 and revoked", code, r.tokenStore.IsRevoked(token))
 	}
 }

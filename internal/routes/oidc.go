@@ -283,6 +283,12 @@ func (r *Routes) OidcRevoke(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// A client revokes only the tokens issued to it; another's token is
+	// answered as an unknown one, with nothing recorded (RFC 7009 §2.2).
+	if aud, err := r.oidc.TokenAudience(revocationRequest.Token); err != nil || aud != revocationRequest.ClientID {
+		res.WriteHeader(http.StatusOK)
+		return
+	}
 	r.tokenStore.Revoke(revocationRequest.Token)
 
 	res.WriteHeader(http.StatusOK)
