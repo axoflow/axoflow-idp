@@ -19,8 +19,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
@@ -31,6 +33,40 @@ import (
 
 const testRedirectURI = "https://app.example.com/cb"
 
+// testSigningKey is generated once: a 4096-bit RSA key takes up to seconds.
+var testSigningKey = sync.OnceValues(func() ([]byte, error) {
+	dir, err := os.MkdirTemp("", "signing-key")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	path := filepath.Join(dir, "signing-key.json")
+	if _, err := oidc.New(oidc.Config{
+		BaseUrl:           "https://idp.example.com",
+		Clients:           []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s"}},
+		Keychain:          keychain.New(),
+		SigningKeyPath:    path,
+		GenerateIfMissing: true,
+	}); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
+})
+
+// testSigningKeyPath writes testSigningKey to a file of the test.
+func testSigningKeyPath(t *testing.T) string {
+	t.Helper()
+	key, err := testSigningKey()
+	if err != nil {
+		t.Fatalf("signing key: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "signing-key.json")
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		t.Fatalf("write signing key: %v", err)
+	}
+	return path
+}
+
 // newOidcTestRoutes returns routes wired with a real OIDC provider and a
 // codestore, plus a session cookie for the seeded "bob" user.
 func newOidcTestRoutes(t *testing.T) (*Routes, *http.Cookie) {
@@ -38,11 +74,10 @@ func newOidcTestRoutes(t *testing.T) (*Routes, *http.Cookie) {
 	r := newTestRoutes(t, false)
 
 	o, err := oidc.New(oidc.Config{
-		BaseUrl:           "https://idp.example.com",
-		Clients:           []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s"}},
-		Keychain:          keychain.New(),
-		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
-		GenerateIfMissing: true,
+		BaseUrl:        "https://idp.example.com",
+		Clients:        []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s"}},
+		Keychain:       keychain.New(),
+		SigningKeyPath: testSigningKeyPath(t),
 	})
 	if err != nil {
 		t.Fatalf("oidc.New: %v", err)
@@ -182,9 +217,8 @@ func newTokenTestRoutes(t *testing.T) *Routes {
 			// same callback as app, so only the client binding refuses its code
 			{Id: "other", RedirectUri: "https://app.example.com/cb", ClientSecret: "0ther"},
 		},
-		Keychain:          keychain.New(),
-		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
-		GenerateIfMissing: true,
+		Keychain:       keychain.New(),
+		SigningKeyPath: testSigningKeyPath(t),
 	})
 	if err != nil {
 		t.Fatalf("oidc.New: %v", err)

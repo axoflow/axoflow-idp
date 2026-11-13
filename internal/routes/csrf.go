@@ -20,6 +20,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 func generateCSRFKey() []byte {
@@ -46,4 +48,39 @@ func (r *Routes) validateCSRF(req *http.Request, sessionID string) bool {
 	}
 	expected := r.csrfToken(sessionID)
 	return hmac.Equal([]byte(token), []byte(expected))
+}
+
+// newSignInOrigin returns the check that refuses a sign-in POST a page of
+// another origin made the browser send: such a page could otherwise sign the
+// browser in to an account the page chose. A request without
+// Sec-Fetch-Site and Origin, from a non-browser client, passes. The origin of
+// baseURL is trusted: behind a proxy that rewrites Host, a browser that sends
+// Origin but not Sec-Fetch-Site names it, and it never matches the Host.
+func newSignInOrigin(baseURL string) (*http.CrossOriginProtection, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	// a browser's Origin has a lowercase host and no default port
+	host := strings.ToLower(u.Host)
+	if port := u.Port(); (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		host = strings.TrimSuffix(host, ":"+port)
+	}
+	c := http.NewCrossOriginProtection()
+	if err := c.AddTrustedOrigin(u.Scheme + "://" + host); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// refuseCrossOriginSignIn renders a 403 and reports true when req comes from
+// another origin. A Sec-Fetch-Site the browser sent decides on its own:
+// CrossOriginProtection would let a trusted Origin overrule a cross-site one.
+func (r *Routes) refuseCrossOriginSignIn(res http.ResponseWriter, req *http.Request) bool {
+	site := req.Header.Get("Sec-Fetch-Site")
+	if (site != "" && site != "same-origin" && site != "none") || r.signInOrigin.Check(req) != nil {
+		r.renderError(res, req, http.StatusForbidden, "Invalid Request", "The form was sent from another site. Open the sign-in page and try again.")
+		return true
+	}
+	return false
 }

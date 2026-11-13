@@ -126,6 +126,9 @@ func (r *Routes) loginTemplateData(message string) struct {
 }
 
 func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInfo {
+	if r.refuseCrossOriginSignIn(res, req) {
+		return nil
+	}
 	if err := req.ParseForm(); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
 		return nil
@@ -226,6 +229,10 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		return
 
 	case http.MethodPost:
+		// a registration signs the browser in, as a login does
+		if r.refuseCrossOriginSignIn(res, req) {
+			return
+		}
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
