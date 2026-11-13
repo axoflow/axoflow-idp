@@ -63,7 +63,7 @@ func TestBaseUrlPrefixDerivation(t *testing.T) {
 		t.Run(tc.baseUrl, func(t *testing.T) {
 			raw, err := json.Marshal(map[string]any{
 				"baseUrl":    tc.baseUrl,
-				"clients":    []map[string]string{{"id": "c", "redirectUri": "https://rp/cb"}},
+				"clients":    []map[string]string{{"id": "c", "redirectUri": "https://rp/cb", "clientSecret": "s"}},
 				"signingKey": map[string]any{"generateIfMissing": true},
 			})
 			if err != nil {
@@ -97,6 +97,29 @@ func TestBaseUrlPrefixDerivation(t *testing.T) {
 			}
 			if parsed.Path != tc.prefix {
 				t.Errorf("derived prefix = %q, want %q", parsed.Path, tc.prefix)
+			}
+		})
+	}
+}
+
+func TestValidateClientSecret(t *testing.T) {
+	tests := []struct {
+		name    string
+		secret  string
+		wantErr bool
+	}{
+		{name: "set", secret: "s"},
+		{name: "missing", secret: "", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{
+				BaseUrl: "https://host",
+				Clients: []oidc.Client{{Id: "c", RedirectUri: "https://rp/cb", ClientSecret: tc.secret}},
+			}
+			cfg.SigningKey.GenerateIfMissing = true
+			if err := cfg.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
 	}

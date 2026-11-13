@@ -125,6 +125,9 @@ func (c *config) Validate() error {
 		if !strings.HasPrefix(client.RedirectUri, "http://") && !strings.HasPrefix(client.RedirectUri, "https://") {
 			return fmt.Errorf("client %d (%s): redirectUri must start with http:// or https://", i, client.Id)
 		}
+		if client.ClientSecret == "" {
+			return fmt.Errorf("client %d (%s): clientSecret is required", i, client.Id)
+		}
 	}
 
 	if !c.SigningKey.GenerateIfMissing && c.SigningKey.FilePath == "" {

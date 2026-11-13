@@ -55,6 +55,13 @@ func (c Client) registeredRedirectUris() []string {
 	return append(uris, c.RedirectUris...)
 }
 
+// authenticates reports whether secret is the client's secret. A client
+// configured without one authenticates nobody: an empty secret would
+// otherwise match an empty client_secret.
+func (c Client) authenticates(secret string) bool {
+	return c.ClientSecret != "" && subtle.ConstantTimeCompare([]byte(c.ClientSecret), []byte(secret)) == 1
+}
+
 // allowsRedirect reports whether uri exactly matches one of the client's
 // registered redirect URIs. Matching is an exact string comparison per
 // RFC 6749 §3.1.2.3 / RFC 9700 §4.1.1 — no prefix or pattern matching.
@@ -371,7 +378,7 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return ErrInvalidClient
 	}
 
-	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
+	if !client.authenticates(req.ClientSecret) {
 		return ErrInvalidClient
 	}
 
@@ -391,7 +398,7 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 		return ErrInvalidClient
 	}
 
-	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
+	if !client.authenticates(req.ClientSecret) {
 		return ErrInvalidClient
 	}
 

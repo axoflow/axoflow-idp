@@ -16,6 +16,7 @@ Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authenticati
     "clients": [
     {
         "id": "your-client-id",
+        "clientSecret": "change-me",
         "redirectUri": "http://localhost:3000/callback"
     }
     ],

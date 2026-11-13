@@ -285,6 +285,23 @@ func TestValidateRevocationRequest(t *testing.T) {
 	}
 }
 
+func TestClientWithoutSecretAuthenticatesNobody(t *testing.T) {
+	o := newTestOidc(t, []Client{{Id: "app", RedirectUri: "https://app.example.com/cb"}})
+
+	err := o.ValidateTokenRequest(TokenRequest{
+		GrantType:   "authorization_code",
+		ClientID:    "app",
+		RedirectUri: "https://app.example.com/cb",
+		Code:        "abc",
+	})
+	if !errors.Is(err, ErrInvalidClient) {
+		t.Errorf("token request with an empty secret: err = %v, want %v", err, ErrInvalidClient)
+	}
+	if err := o.ValidateRevocationRequest(RevocationRequest{Token: "t", ClientID: "app"}); !errors.Is(err, ErrInvalidClient) {
+		t.Errorf("revocation with an empty secret: err = %v, want %v", err, ErrInvalidClient)
+	}
+}
+
 func TestFirstClient_RedirectUrisOnly(t *testing.T) {
 	o := newTestOidc(t, []Client{{
 		Name:         "App",
