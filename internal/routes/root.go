@@ -133,8 +133,11 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	username := req.Form.Get("username")
 	password := req.Form.Get("password")
 
-	user, ok := r.user.Authenticate(username, password)
-	if !ok {
+	user, err := r.user.Verify(username, password)
+	if r.refuseBusy(res, req, err) {
+		return nil
+	}
+	if err != nil {
 		res.WriteHeader(http.StatusUnauthorized)
 		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
 			slog.Error("failed to render login template", "error", err)
@@ -234,6 +237,9 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		}
 
 		id, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
+		if r.refuseBusy(res, req, err) {
+			return
+		}
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, user.ErrRegistrationClosed) {

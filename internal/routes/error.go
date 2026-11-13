@@ -15,8 +15,11 @@
 package routes
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 // renderError renders the error page; the admin panel's fetch-based modal
@@ -43,6 +46,17 @@ func (r *Routes) renderErrorPage(res http.ResponseWriter, req *http.Request, sta
 	}{Status: status, Title: title, Message: message, LinkURL: linkURL, LinkText: linkText}); err != nil {
 		slog.Error("failed to render error template", "error", err)
 	}
+}
+
+// refuseBusy renders a 503 and reports true when err is user.ErrBusy: the
+// password check was not run, so the client may retry it shortly.
+func (r *Routes) refuseBusy(res http.ResponseWriter, req *http.Request, err error) bool {
+	if !errors.Is(err, user.ErrBusy) {
+		return false
+	}
+	res.Header().Set("Retry-After", "2")
+	r.renderError(res, req, http.StatusServiceUnavailable, "Try Again Later", "The service is busy. Please try again later.")
+	return true
 }
 
 func (r *Routes) renderSessionExpired(res http.ResponseWriter, req *http.Request) {

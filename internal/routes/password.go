@@ -59,6 +59,9 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.ChangePassword(u.ID, currentPassword, newPassword); err != nil {
+			if r.refuseBusy(res, req, err) {
+				return
+			}
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderChangePassword(res, sessionCookie.Value, err.Error())
 			return
@@ -211,6 +214,10 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.SetPassword(userID, newPassword); err != nil {
+			// Refused before anything was written: the link stays usable.
+			if r.refuseBusy(res, req, err) {
+				return
+			}
 			// A weak password is a client-side mistake: keep the token usable and
 			// re-render the form with the reason, like the empty-password branch.
 			if errors.Is(err, user.ErrWeakPassword) {

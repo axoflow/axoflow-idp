@@ -32,10 +32,10 @@ func TestHashAndVerify(t *testing.T) {
 	h := hash(salt, "correcthorsebatterystaple")
 	u := UserInfo{Password: h}
 
-	if !verifyPassword(u, "correcthorsebatterystaple") {
+	if !verifies(t, u, "correcthorsebatterystaple") {
 		t.Error("correct password should verify")
 	}
-	if verifyPassword(u, "wrong") {
+	if verifies(t, u, "wrong") {
 		t.Error("wrong password should not verify")
 	}
 }
@@ -47,17 +47,17 @@ func TestVerifyArgon2idDifferentParams(t *testing.T) {
 	if _, err := rand.Read(salt); err != nil {
 		t.Fatal(err)
 	}
-	// Hash with non-default params (t=1, m=64KB, p=2).
-	h := argon2.IDKey([]byte("mypassword"), salt, 1, 64*1024, 2, 32)
-	encoded := "$argon2id$v=19$m=65536,t=1,p=2$" +
+	// Hash with non-default params (t=1, m=32 MiB, p=2).
+	h := argon2.IDKey([]byte("mypassword"), salt, 1, 32*1024, 2, 32)
+	encoded := "$argon2id$v=19$m=32768,t=1,p=2$" +
 		base64.RawStdEncoding.EncodeToString(salt) + "$" +
 		base64.RawStdEncoding.EncodeToString(h)
 
 	u := UserInfo{Password: encoded}
-	if !verifyPassword(u, "mypassword") {
+	if !verifies(t, u, "mypassword") {
 		t.Error("should verify with params from encoded string")
 	}
-	if verifyPassword(u, "notmypassword") {
+	if verifies(t, u, "notmypassword") {
 		t.Error("wrong password should not verify")
 	}
 }
@@ -69,10 +69,10 @@ func TestVerifyBcrypt(t *testing.T) {
 	}
 	u := UserInfo{Password: string(hashed)}
 
-	if !verifyPassword(u, "secret") {
+	if !verifies(t, u, "secret") {
 		t.Error("correct password should verify against bcrypt hash")
 	}
-	if verifyPassword(u, "wrong") {
+	if verifies(t, u, "wrong") {
 		t.Error("wrong password should not verify against bcrypt hash")
 	}
 }
@@ -85,17 +85,27 @@ func TestVerifyLegacyBase64(t *testing.T) {
 		Password: base64.StdEncoding.EncodeToString(h),
 	}
 
-	if !verifyPassword(u, "legacypass") {
+	if !verifies(t, u, "legacypass") {
 		t.Error("correct password should verify against legacy base64 hash")
 	}
-	if verifyPassword(u, "wrong") {
+	if verifies(t, u, "wrong") {
 		t.Error("wrong password should not verify against legacy base64 hash")
 	}
 }
 
 func TestVerifyInvalidHash(t *testing.T) {
 	u := UserInfo{Password: "notahash"}
-	if verifyPassword(u, "anything") {
+	if verifies(t, u, "anything") {
 		t.Error("garbage hash should not verify")
 	}
+}
+
+// verifies is verifyPassword for a test whose gate never refuses.
+func verifies(t *testing.T, u UserInfo, password string) bool {
+	t.Helper()
+	ok, err := verifyPassword(u, password)
+	if err != nil {
+		t.Fatalf("verifyPassword: %v", err)
+	}
+	return ok
 }
