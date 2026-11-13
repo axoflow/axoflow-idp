@@ -70,6 +70,8 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 		resetTokens: resettoken.New(time.Hour),
 		baseURL:     "https://idp.example.com",
 		csrfKey:     generateCSRFKey(),
+		deviceKey:   generateCSRFKey(),
+		logins:      newLimiter(),
 	}
 }
 

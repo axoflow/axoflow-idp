@@ -351,7 +351,7 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) er
 	if ok, err := verifyPassword(user, oldPassword); err != nil {
 		return err
 	} else if !ok {
-		return errors.New("invalid old password")
+		return ErrInvalidOldPassword
 	}
 	newHash, err := gatedHash([]byte(user.ID), newPassword)
 	if err != nil {
@@ -399,6 +399,10 @@ func (u *User) SetPassword(userID, newPassword string) error {
 	u.users[i].Password = newHash
 	return nil
 }
+
+// ErrInvalidOldPassword is returned by ChangePassword for a wrong current
+// password.
+var ErrInvalidOldPassword = errors.New("invalid old password")
 
 // ErrInvalidCredentials is returned by Verify for an unknown username or a
 // wrong password.

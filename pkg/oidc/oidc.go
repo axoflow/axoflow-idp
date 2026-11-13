@@ -15,7 +15,10 @@
 package oidc
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,6 +78,8 @@ type Oidc struct {
 	keychain   *keychain.Keychain
 	signer     jose.Signer
 	idTokenTTL time.Duration
+	// keySecret is the SHA-256 of the signing key, the root of DeriveKey.
+	keySecret [sha256.Size]byte
 }
 
 type Config struct {
@@ -128,6 +133,11 @@ func New(cfg Config) (*Oidc, error) {
 
 	cfg.Keychain.Add(*signingKey)
 
+	der, err := x509.MarshalPKCS8PrivateKey(signingKey.Key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode signing key: %w", err)
+	}
+
 	signer, err := jose.NewSigner(jose.SigningKey{
 		Algorithm: jose.RS256,
 		Key:       signingKey,
@@ -142,7 +152,16 @@ func New(cfg Config) (*Oidc, error) {
 		keychain:   cfg.Keychain,
 		signer:     signer,
 		idTokenTTL: defaultIDTokenTTL,
+		keySecret:  sha256.Sum256(der),
 	}, nil
+}
+
+// DeriveKey returns a secret for label that stays the same across restarts
+// for as long as the signing key does.
+func (o *Oidc) DeriveKey(label string) []byte {
+	mac := hmac.New(sha256.New, o.keySecret[:])
+	mac.Write([]byte(label))
+	return mac.Sum(nil)
 }
 
 func (o *Oidc) IDTokenTTL() time.Duration {

@@ -15,6 +15,7 @@
 package oidc
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -314,5 +315,30 @@ func TestFirstClient_RedirectUrisOnly(t *testing.T) {
 	}
 	if info.URL != "https://app.example.com" {
 		t.Errorf("URL = %q, want %q", info.URL, "https://app.example.com")
+	}
+}
+
+// A derived key follows the signing key: the same across a restart that
+// loads the same key file, different for another label or another key.
+func TestDeriveKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "signing-key.json")
+	start := func(path string) *Oidc {
+		o, err := New(Config{BaseUrl: "https://idp.example.com", Keychain: keychain.New(), SigningKeyPath: path, GenerateIfMissing: true})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return o
+	}
+	first, restarted := start(path), start(path)
+	other := start(filepath.Join(t.TempDir(), "other-key.json"))
+
+	if !bytes.Equal(first.DeriveKey("device-cookie"), restarted.DeriveKey("device-cookie")) {
+		t.Error("the key changed across a restart with the same signing key")
+	}
+	if bytes.Equal(first.DeriveKey("device-cookie"), first.DeriveKey("other")) {
+		t.Error("two labels derived the same key")
+	}
+	if bytes.Equal(first.DeriveKey("device-cookie"), other.DeriveKey("device-cookie")) {
+		t.Error("two signing keys derived the same key")
 	}
 }

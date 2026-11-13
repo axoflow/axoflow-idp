@@ -58,7 +58,18 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if err := r.user.ChangePassword(u.ID, currentPassword, newPassword); err != nil {
+		// the current-password check counts toward the sign-in limit
+		if wait := r.logins.take(u.Username); wait > 0 {
+			setRetryAfter(res, wait)
+			res.WriteHeader(http.StatusTooManyRequests)
+			r.renderChangePassword(res, sessionCookie.Value, "Too many attempts; try again later")
+			return
+		}
+		err := r.user.ChangePassword(u.ID, currentPassword, newPassword)
+		if errors.Is(err, user.ErrInvalidOldPassword) {
+			slog.Warn("password change refused: wrong current password", "user_id", u.ID)
+		}
+		if err != nil {
 			if r.refuseBusy(res, req, err) {
 				return
 			}

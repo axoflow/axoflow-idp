@@ -55,6 +55,11 @@ type Routes struct {
 	prefix        string
 	secureCookies bool
 	csrfKey       []byte
+	// deviceKey signs the device cookie; derived from the signing key, it
+	// survives a restart, unlike csrfKey, whose sessions do not.
+	deviceKey []byte
+	// logins paces the sign-in attempts of each username.
+	logins *limiter
 }
 
 // templateFuncs are the helpers available to every HTML template.
@@ -104,6 +109,8 @@ func New(config Config) (*Routes, error) {
 		prefix:        config.PathPrefix,
 		secureCookies: config.SecureCookies,
 		csrfKey:       generateCSRFKey(),
+		deviceKey:     config.Oidc.DeriveKey("device-cookie"),
+		logins:        newLimiter(),
 	}, nil
 }
 

@@ -54,6 +54,7 @@ func newBootstrapRoutes(t *testing.T, users string, cfg user.Config) *Routes {
 		template: tpl,
 		baseURL:  "https://idp.example.com",
 		csrfKey:  generateCSRFKey(),
+		logins:   newLimiter(),
 	}
 }
 

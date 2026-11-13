@@ -133,20 +133,33 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	username := req.Form.Get("username")
 	password := req.Form.Get("password")
 
-	user, err := r.user.Verify(username, password)
+	// refused like a wrong password, whether the account exists or not
+	if !r.knownDevice(req, username) {
+		if wait := r.logins.take(username); wait > 0 {
+			setRetryAfter(res, wait)
+			r.renderLoginFailed(res)
+			return nil
+		}
+	}
+	account, err := r.user.Verify(username, password)
 	if r.refuseBusy(res, req, err) {
 		return nil
 	}
 	if err != nil {
-		res.WriteHeader(http.StatusUnauthorized)
-		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
-			slog.Error("failed to render login template", "error", err)
-		}
+		r.renderLoginFailed(res)
 		return nil
 	}
 
-	r.setSessionCookie(res, r.session.Create(user.ID))
-	return &user
+	r.setDeviceCookie(res, username)
+	r.setSessionCookie(res, r.session.Create(account.ID))
+	return &account
+}
+
+func (r *Routes) renderLoginFailed(res http.ResponseWriter) {
+	res.WriteHeader(http.StatusUnauthorized)
+	if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
+		slog.Error("failed to render login template", "error", err)
+	}
 }
 
 // setSessionCookie writes the session cookie with the standard attributes.
