@@ -22,8 +22,10 @@ import (
 )
 
 type code struct {
-	createdAt time.Time
-	id_token  string
+	createdAt   time.Time
+	id_token    string
+	clientID    string
+	redirectURI string
 }
 
 type CodeStore struct {
@@ -33,8 +35,10 @@ type CodeStore struct {
 }
 
 var (
-	ErrNotFound = errors.New("code not found")
-	ErrExpired  = errors.New("code expired")
+	ErrNotFound         = errors.New("code not found")
+	ErrExpired          = errors.New("code expired")
+	ErrClientMismatch   = errors.New("code issued to another client")
+	ErrRedirectMismatch = errors.New("code issued for another redirect_uri")
 )
 
 func New() *CodeStore {
@@ -63,7 +67,8 @@ func (s *CodeStore) cleanUp() {
 	}
 }
 
-func (s *CodeStore) Create(id_token string) string {
+// Create stores the ID token under a new code bound to clientID and redirectURI.
+func (s *CodeStore) Create(id_token, clientID, redirectURI string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,15 +76,18 @@ func (s *CodeStore) Create(id_token string) string {
 	// the code is a credential (RFC 6749 §10.10), so it comes from crypto/rand: a ULID's entropy is math/rand
 	id := rand.Text()
 	s.codes[id] = code{
-		createdAt: time.Now(),
-		id_token:  id_token,
+		createdAt:   time.Now(),
+		id_token:    id_token,
+		clientID:    clientID,
+		redirectURI: redirectURI,
 	}
 
 	return id
 }
 
-// Pop consumes the code and refuses an expired one, whether or not cleanUp has run since it expired.
-func (s *CodeStore) Pop(code string) (string, error) {
+// Pop consumes the code even when the binding fails: single use per RFC 6749 §4.1.2.
+// It refuses an expired code, whether or not cleanUp has run since it expired.
+func (s *CodeStore) Pop(code, clientID, redirectURI string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -91,6 +99,12 @@ func (s *CodeStore) Pop(code string) (string, error) {
 	delete(s.codes, code)
 	if s.ttl != 0 && session.createdAt.Before(time.Now().Add(-s.ttl)) {
 		return "", ErrExpired
+	}
+	if session.clientID != clientID {
+		return "", ErrClientMismatch
+	}
+	if session.redirectURI != redirectURI {
+		return "", ErrRedirectMismatch
 	}
 	return session.id_token, nil
 }

@@ -169,7 +169,7 @@ func (r *Routes) OidcAuth(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	code := r.store.Create(idToken)
+	code := r.store.Create(idToken, authReq.ClientID, authReq.RedirectUri)
 	params := url.Values{"code": {code}}
 	if authReq.State != "" {
 		params.Set("state", authReq.State)
@@ -222,7 +222,8 @@ func (r *Routes) OidcToken(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	id_token, err := r.store.Pop(tokenRequest.Code)
+	// a wrong client or redirect_uri still spends the code (RFC 6749 §4.1.2)
+	id_token, err := r.store.Pop(tokenRequest.Code, tokenRequest.ClientID, tokenRequest.RedirectUri)
 	if err != nil {
 		writeTokenError(res, oidc.ErrInvalidGrant)
 		return

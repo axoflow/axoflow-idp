@@ -179,6 +179,8 @@ func newTokenTestRoutes(t *testing.T) *Routes {
 		BaseUrl: "https://idp.example.com",
 		Clients: []oidc.Client{
 			{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret"},
+			// same callback as app, so only the client binding refuses its code
+			{Id: "other", RedirectUri: "https://app.example.com/cb", ClientSecret: "0ther"},
 		},
 		Keychain:          keychain.New(),
 		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
@@ -252,7 +254,7 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
-	code := r.store.Create("the-id-token")
+	code := r.store.Create("the-id-token", "app", "https://app.example.com/cb")
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {"app"},
@@ -288,6 +290,33 @@ func TestOidcToken_Success(t *testing.T) {
 	}
 	if body.TokenType != "Bearer" {
 		t.Errorf("token_type = %q, want Bearer", body.TokenType)
+	}
+}
+
+func TestOidcToken_CodeOfAnotherClient(t *testing.T) {
+	r := newTokenTestRoutes(t)
+	code := r.store.Create("the-id-token", "app", "https://app.example.com/cb")
+
+	rec := postToken(t, r, url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"other"},
+		"client_secret": {"0ther"},
+		"redirect_uri":  {"https://app.example.com/cb"},
+		"code":          {code},
+	})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_grant") {
+		t.Fatalf("redeemed by another client: status %d, body %q", rec.Code, rec.Body.String())
+	}
+
+	rec = postToken(t, r, url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+		"redirect_uri":  {"https://app.example.com/cb"},
+		"code":          {code},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("the refused redemption must spend the code: status %d", rec.Code)
 	}
 }
 
