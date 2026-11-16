@@ -55,6 +55,13 @@ type Routes struct {
 	prefix        string
 	secureCookies bool
 	csrfKey       []byte
+	// deviceKey signs the device cookie; derived from the signing key, it
+	// survives a restart, unlike csrfKey, whose sessions do not.
+	deviceKey []byte
+	// logins paces the sign-in attempts of each username.
+	logins *limiter
+	// signInOrigin refuses a sign-in form posted from another origin.
+	signInOrigin *http.CrossOriginProtection
 }
 
 // templateFuncs are the helpers available to every HTML template.
@@ -92,6 +99,11 @@ func New(config Config) (*Routes, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse templates in %s: %w", dir, err)
 	}
+	signInOrigin, err := newSignInOrigin(config.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("baseUrl %q as a trusted origin: %w", config.BaseURL, err)
+	}
+
 	return &Routes{
 		oidc:          config.Oidc,
 		session:       config.Session,
@@ -104,6 +116,9 @@ func New(config Config) (*Routes, error) {
 		prefix:        config.PathPrefix,
 		secureCookies: config.SecureCookies,
 		csrfKey:       generateCSRFKey(),
+		deviceKey:     config.Oidc.DeriveKey("device-cookie"),
+		logins:        newLimiter(),
+		signInOrigin:  signInOrigin,
 	}, nil
 }
 

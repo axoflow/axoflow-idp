@@ -19,17 +19,54 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/axoflow/axoflow-idp/internal/codestore"
 	"github.com/axoflow/axoflow-idp/internal/tokenstore"
 	"github.com/axoflow/axoflow-idp/pkg/keychain"
 	"github.com/axoflow/axoflow-idp/pkg/oidc"
+	"github.com/axoflow/axoflow-idp/pkg/user"
 )
 
 const testRedirectURI = "https://app.example.com/cb"
+
+// testSigningKey is generated once: a 4096-bit RSA key takes up to seconds.
+var testSigningKey = sync.OnceValues(func() ([]byte, error) {
+	dir, err := os.MkdirTemp("", "signing-key")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	path := filepath.Join(dir, "signing-key.json")
+	if _, err := oidc.New(oidc.Config{
+		BaseUrl:           "https://idp.example.com",
+		Clients:           []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s"}},
+		Keychain:          keychain.New(),
+		SigningKeyPath:    path,
+		GenerateIfMissing: true,
+	}); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
+})
+
+// testSigningKeyPath writes testSigningKey to a file of the test.
+func testSigningKeyPath(t *testing.T) string {
+	t.Helper()
+	key, err := testSigningKey()
+	if err != nil {
+		t.Fatalf("signing key: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "signing-key.json")
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		t.Fatalf("write signing key: %v", err)
+	}
+	return path
+}
 
 // newOidcTestRoutes returns routes wired with a real OIDC provider and a
 // codestore, plus a session cookie for the seeded "bob" user.
@@ -38,11 +75,10 @@ func newOidcTestRoutes(t *testing.T) (*Routes, *http.Cookie) {
 	r := newTestRoutes(t, false)
 
 	o, err := oidc.New(oidc.Config{
-		BaseUrl:           "https://idp.example.com",
-		Clients:           []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s"}},
-		Keychain:          keychain.New(),
-		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
-		GenerateIfMissing: true,
+		BaseUrl:        "https://idp.example.com",
+		Clients:        []oidc.Client{{Id: "app", RedirectUri: testRedirectURI, ClientSecret: "s"}},
+		Keychain:       keychain.New(),
+		SigningKeyPath: testSigningKeyPath(t),
 	})
 	if err != nil {
 		t.Fatalf("oidc.New: %v", err)
@@ -179,10 +215,11 @@ func newTokenTestRoutes(t *testing.T) *Routes {
 		BaseUrl: "https://idp.example.com",
 		Clients: []oidc.Client{
 			{Id: "app", RedirectUri: "https://app.example.com/cb", ClientSecret: "s3cret"},
+			// same callback as app, so only the client binding refuses its code
+			{Id: "other", RedirectUri: "https://app.example.com/cb", ClientSecret: "0ther"},
 		},
-		Keychain:          keychain.New(),
-		SigningKeyPath:    filepath.Join(t.TempDir(), "signing-key.json"),
-		GenerateIfMissing: true,
+		Keychain:       keychain.New(),
+		SigningKeyPath: testSigningKeyPath(t),
 	})
 	if err != nil {
 		t.Fatalf("oidc.New: %v", err)
@@ -252,7 +289,7 @@ func TestOidcToken_ErrorEnvelope(t *testing.T) {
 
 func TestOidcToken_Success(t *testing.T) {
 	r := newTokenTestRoutes(t)
-	code := r.store.Create("the-id-token")
+	code := r.store.Create("the-id-token", "app", "https://app.example.com/cb")
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {"app"},
@@ -291,6 +328,33 @@ func TestOidcToken_Success(t *testing.T) {
 	}
 }
 
+func TestOidcToken_CodeOfAnotherClient(t *testing.T) {
+	r := newTokenTestRoutes(t)
+	code := r.store.Create("the-id-token", "app", "https://app.example.com/cb")
+
+	rec := postToken(t, r, url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"other"},
+		"client_secret": {"0ther"},
+		"redirect_uri":  {"https://app.example.com/cb"},
+		"code":          {code},
+	})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_grant") {
+		t.Fatalf("redeemed by another client: status %d, body %q", rec.Code, rec.Body.String())
+	}
+
+	rec = postToken(t, r, url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"app"},
+		"client_secret": {"s3cret"},
+		"redirect_uri":  {"https://app.example.com/cb"},
+		"code":          {code},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("the refused redemption must spend the code: status %d", rec.Code)
+	}
+}
+
 func TestOidcRevokeBadClientCredentials(t *testing.T) {
 	r := newTokenTestRoutes(t)
 	r.tokenStore = tokenstore.New(tokenstore.Config{})
@@ -316,5 +380,31 @@ func TestOidcRevokeBadClientCredentials(t *testing.T) {
 	}
 	if body.Error != "invalid_client" {
 		t.Errorf("error = %q, want %q", body.Error, "invalid_client")
+	}
+}
+
+// A client revokes only its own tokens: another client's revocation is
+// answered 200 and records nothing.
+func TestOidcRevoke_Ownership(t *testing.T) {
+	r := newTokenTestRoutes(t)
+	r.tokenStore = tokenstore.New(tokenstore.Config{})
+	token, err := r.oidc.GenerateIDToken(user.UserInfo{ID: "bob", Username: "bob"}, "app", "")
+	if err != nil {
+		t.Fatalf("GenerateIDToken: %v", err)
+	}
+	revoke := func(clientID, secret string) int {
+		form := url.Values{"token": {token}, "client_id": {clientID}, "client_secret": {secret}}
+		req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		r.OidcRevoke(rec, req)
+		return rec.Code
+	}
+
+	if code := revoke("other", "0ther"); code != http.StatusOK || r.tokenStore.IsRevoked(token) {
+		t.Fatalf("another client's revocation = %d, revoked %v; want 200 and not revoked", code, r.tokenStore.IsRevoked(token))
+	}
+	if code := revoke("app", "s3cret"); code != http.StatusOK || !r.tokenStore.IsRevoked(token) {
+		t.Errorf("the owner's revocation = %d, revoked %v; want 200 and revoked", code, r.tokenStore.IsRevoked(token))
 	}
 }

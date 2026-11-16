@@ -126,6 +126,9 @@ func (r *Routes) loginTemplateData(message string) struct {
 }
 
 func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInfo {
+	if r.refuseCrossOriginSignIn(res, req) {
+		return nil
+	}
 	if err := req.ParseForm(); err != nil {
 		http.Error(res, err.Error(), http.StatusBadRequest)
 		return nil
@@ -133,17 +136,33 @@ func (r *Routes) login(res http.ResponseWriter, req *http.Request) *user.UserInf
 	username := req.Form.Get("username")
 	password := req.Form.Get("password")
 
-	user, ok := r.user.Authenticate(username, password)
-	if !ok {
-		res.WriteHeader(http.StatusUnauthorized)
-		if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
-			slog.Error("failed to render login template", "error", err)
+	// refused like a wrong password, whether the account exists or not
+	if !r.knownDevice(req, username) {
+		if wait := r.logins.take(username); wait > 0 {
+			setRetryAfter(res, wait)
+			r.renderLoginFailed(res)
+			return nil
 		}
+	}
+	account, err := r.user.Verify(username, password)
+	if r.refuseBusy(res, req, err) {
+		return nil
+	}
+	if err != nil {
+		r.renderLoginFailed(res)
 		return nil
 	}
 
-	r.setSessionCookie(res, r.session.Create(user.ID))
-	return &user
+	r.setDeviceCookie(res, username)
+	r.setSessionCookie(res, r.session.Create(account.ID))
+	return &account
+}
+
+func (r *Routes) renderLoginFailed(res http.ResponseWriter) {
+	res.WriteHeader(http.StatusUnauthorized)
+	if err := r.template.ExecuteTemplate(res, "login.html", r.loginTemplateData("Invalid username or password")); err != nil {
+		slog.Error("failed to render login template", "error", err)
+	}
 }
 
 // setSessionCookie writes the session cookie with the standard attributes.
@@ -210,6 +229,10 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		return
 
 	case http.MethodPost:
+		// a registration signs the browser in, as a login does
+		if r.refuseCrossOriginSignIn(res, req) {
+			return
+		}
 		if err := req.ParseForm(); err != nil {
 			http.Error(res, err.Error(), http.StatusBadRequest)
 			return
@@ -234,6 +257,9 @@ func (r *Routes) Register(res http.ResponseWriter, req *http.Request) {
 		}
 
 		id, err := r.user.SelfRegister(username, password, []string{user.RoleUser}, email)
+		if r.refuseBusy(res, req, err) {
+			return
+		}
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, user.ErrRegistrationClosed) {

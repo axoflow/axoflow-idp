@@ -108,7 +108,10 @@ func (u *User) AdminResetPassword(adminID string, targetID string, newPassword s
 	}
 
 	// hash runs argon2id (~100ms); keep it out of the lock.
-	newHash := hash([]byte(user.ID), newPassword)
+	newHash, err := gatedHash([]byte(user.ID), newPassword)
+	if err != nil {
+		return err
+	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -128,6 +131,9 @@ func (u *User) AdminUpdateUserGroups(adminID string, targetID string, groups []s
 	}
 	if !u.getAndVerifyAdmin(adminID) {
 		return errors.New("user is not an admin")
+	}
+	if !validUTF8(groups) {
+		return errInvalidUTF8
 	}
 
 	// With the self-delete guard in AdminDelete this keeps at least one admin:

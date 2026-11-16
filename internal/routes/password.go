@@ -58,7 +58,21 @@ func (r *Routes) ChangePassword(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if err := r.user.ChangePassword(u.ID, currentPassword, newPassword); err != nil {
+		// the current-password check counts toward the sign-in limit
+		if wait := r.logins.take(u.Username); wait > 0 {
+			setRetryAfter(res, wait)
+			res.WriteHeader(http.StatusTooManyRequests)
+			r.renderChangePassword(res, sessionCookie.Value, "Too many attempts; try again later")
+			return
+		}
+		err := r.user.ChangePassword(u.ID, currentPassword, newPassword)
+		if errors.Is(err, user.ErrInvalidOldPassword) {
+			slog.Warn("password change refused: wrong current password", "user_id", u.ID)
+		}
+		if err != nil {
+			if r.refuseBusy(res, req, err) {
+				return
+			}
 			res.WriteHeader(http.StatusBadRequest)
 			r.renderChangePassword(res, sessionCookie.Value, err.Error())
 			return
@@ -211,6 +225,10 @@ func (r *Routes) SetPassword(res http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := r.user.SetPassword(userID, newPassword); err != nil {
+			// Refused before anything was written: the link stays usable.
+			if r.refuseBusy(res, req, err) {
+				return
+			}
 			// A weak password is a client-side mistake: keep the token usable and
 			// re-render the form with the reason, like the empty-password branch.
 			if errors.Is(err, user.ErrWeakPassword) {

@@ -64,12 +64,15 @@ func newTestRoutes(t *testing.T, static bool) *Routes {
 	}
 
 	return &Routes{
-		session:     session.New(),
-		user:        u,
-		template:    tpl,
-		resetTokens: resettoken.New(time.Hour),
-		baseURL:     "https://idp.example.com",
-		csrfKey:     generateCSRFKey(),
+		session:      session.New(),
+		user:         u,
+		template:     tpl,
+		resetTokens:  resettoken.New(time.Hour),
+		baseURL:      "https://idp.example.com",
+		csrfKey:      generateCSRFKey(),
+		deviceKey:    generateCSRFKey(),
+		logins:       newLimiter(),
+		signInOrigin: mustSignInOrigin(t, "https://idp.example.com"),
 	}
 }
 

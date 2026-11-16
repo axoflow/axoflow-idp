@@ -21,6 +21,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,7 +65,7 @@ func TestBaseUrlPrefixDerivation(t *testing.T) {
 		t.Run(tc.baseUrl, func(t *testing.T) {
 			raw, err := json.Marshal(map[string]any{
 				"baseUrl":    tc.baseUrl,
-				"clients":    []map[string]string{{"id": "c", "redirectUri": "https://rp/cb"}},
+				"clients":    []map[string]string{{"id": "c", "redirectUri": "https://rp/cb", "clientSecret": "s"}},
 				"signingKey": map[string]any{"generateIfMissing": true},
 			})
 			if err != nil {
@@ -102,10 +104,44 @@ func TestBaseUrlPrefixDerivation(t *testing.T) {
 	}
 }
 
+func TestValidateClientSecret(t *testing.T) {
+	tests := []struct {
+		name    string
+		secret  string
+		wantErr bool
+	}{
+		{name: "set", secret: "s"},
+		{name: "missing", secret: "", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{
+				BaseUrl: "https://host",
+				Clients: []oidc.Client{{Id: "c", RedirectUri: "https://rp/cb", ClientSecret: tc.secret}},
+			}
+			cfg.SigningKey.GenerateIfMissing = true
+			if err := cfg.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // newTestMux builds the real handler stack — OIDC provider, routes, mux — the
 // same way main() does, so the registered patterns are the ones production
 // serves.
-func newTestMux(t *testing.T, baseUrl string) *http.ServeMux {
+func newTestMux(t *testing.T, baseUrl string) http.Handler {
+	t.Helper()
+
+	u, err := user.New(user.Config{UserAdminGroup: "admin"})
+	if err != nil {
+		t.Fatalf("user.New: %v", err)
+	}
+	return newTestMuxWithUsers(t, baseUrl, u)
+}
+
+// newTestMuxWithUsers is newTestMux serving the users of u.
+func newTestMuxWithUsers(t *testing.T, baseUrl string, u *user.User) http.Handler {
 	t.Helper()
 
 	o, err := oidc.New(oidc.Config{
@@ -119,31 +155,75 @@ func newTestMux(t *testing.T, baseUrl string) *http.ServeMux {
 		t.Fatalf("oidc.New: %v", err)
 	}
 
-	u, err := user.New(user.Config{UserAdminGroup: "admin"})
-	if err != nil {
-		t.Fatalf("user.New: %v", err)
-	}
-
-	parsed, err := url.Parse(baseUrl)
-	if err != nil {
-		t.Fatalf("parse baseUrl: %v", err)
-	}
-
-	r, err := routes.New(routes.Config{
-		Oidc:        o,
-		Session:     session.New(),
-		User:        u,
-		CodeStore:   codestore.New(),
-		TokenStore:  tokenstore.New(tokenstore.Config{TTL: time.Hour}),
-		ResetTokens: resettoken.New(time.Hour),
-		BaseURL:     baseUrl,
-		PathPrefix:  parsed.Path,
-	})
+	cfg := baseRoutesConfig(baseUrl)
+	cfg.Oidc = o
+	cfg.Session = session.New()
+	cfg.User = u
+	cfg.CodeStore = codestore.New()
+	cfg.TokenStore = tokenstore.New(tokenstore.Config{TTL: time.Hour})
+	cfg.ResetTokens = resettoken.New(time.Hour)
+	r, err := routes.New(cfg)
 	if err != nil {
 		t.Fatalf("routes.New: %v", err)
 	}
 
-	return newMux(r, parsed.Path, u)
+	return newMux(r, cfg.PathPrefix, u)
+}
+
+// TestSecureCookieFromScheme signs in through the server's wiring from a
+// validated baseUrl: the scheme is case-insensitive, so every spelling of
+// https marks the session cookie Secure.
+func TestSecureCookieFromScheme(t *testing.T) {
+	tests := []struct {
+		baseUrl    string
+		wantSecure bool
+	}{
+		{baseUrl: "https://host", wantSecure: true},
+		{baseUrl: "HTTPS://host", wantSecure: true},
+		{baseUrl: "Https://host/idp", wantSecure: true},
+		{baseUrl: "http://host", wantSecure: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.baseUrl, func(t *testing.T) {
+			cfg := config{
+				BaseUrl: tc.baseUrl,
+				Clients: []oidc.Client{{Id: "c", ClientSecret: "s", RedirectUri: "https://rp/cb"}},
+			}
+			cfg.SigningKey.FilePath = "signing-key.json"
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+
+			u, err := user.New(user.Config{})
+			if err != nil {
+				t.Fatalf("user.New: %v", err)
+			}
+			if err := u.Register("alice", "alicepass1", nil, ""); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			mux := newTestMuxWithUsers(t, cfg.BaseUrl, u)
+
+			parsed, _ := url.Parse(cfg.BaseUrl)
+			form := url.Values{"username": {"alice"}, "password": {"alicepass1"}}
+			req := httptest.NewRequest(http.MethodPost, parsed.Path+"/login", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			var session *http.Cookie
+			for _, c := range rec.Result().Cookies() {
+				if c.Name == "session" {
+					session = c
+				}
+			}
+			if session == nil {
+				t.Fatalf("login = %d, no session cookie", rec.Code)
+			}
+			if session.Secure != tc.wantSecure {
+				t.Errorf("session cookie Secure = %v, want %v", session.Secure, tc.wantSecure)
+			}
+		})
+	}
 }
 
 // TestMuxWiring exercises the pattern registration under a prefix and at the
@@ -176,7 +256,7 @@ func TestMuxWiring(t *testing.T) {
 
 	// One mux per distinct baseUrl; signing-key generation is too slow to
 	// repeat for every request.
-	muxes := map[string]*http.ServeMux{}
+	muxes := map[string]http.Handler{}
 	for _, tc := range tests {
 		if muxes[tc.baseUrl] == nil {
 			muxes[tc.baseUrl] = newTestMux(t, tc.baseUrl)
@@ -243,5 +323,168 @@ func TestDiscoveryDocumentUnderPrefix(t *testing.T) {
 		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMovedPermanently {
 			t.Errorf("%s %q is advertised but not served: got %d", name, endpoint, rec.Code)
 		}
+	}
+}
+
+// TestNewServer: a slow or oversized request must not hold a connection or
+// memory without bound.
+func TestNewServer(t *testing.T) {
+	t.Run("limits", func(t *testing.T) {
+		srv := newServer(http.NotFoundHandler())
+		if srv.Addr != ":8080" {
+			t.Errorf("Addr = %q, want :8080", srv.Addr)
+		}
+		for _, tc := range []struct {
+			name      string
+			got, want time.Duration
+		}{
+			{"ReadHeaderTimeout", srv.ReadHeaderTimeout, 5 * time.Second},
+			{"ReadTimeout", srv.ReadTimeout, 30 * time.Second},
+			{"WriteTimeout", srv.WriteTimeout, 30 * time.Second},
+			{"IdleTimeout", srv.IdleTimeout, 120 * time.Second},
+		} {
+			if tc.got != tc.want {
+				t.Errorf("%s = %v, want %v", tc.name, tc.got, tc.want)
+			}
+		}
+		if srv.MaxHeaderBytes != 64<<10 {
+			t.Errorf("MaxHeaderBytes = %d, want %d", srv.MaxHeaderBytes, 64<<10)
+		}
+	})
+
+	t.Run("request body", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			size   int
+			wantOK bool
+		}{
+			{"at the limit", 64 << 10, true},
+			{"over the limit", 64<<10 + 1, false},
+		} {
+			srv := newServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+				if err := req.ParseForm(); err != nil {
+					http.Error(res, err.Error(), http.StatusBadRequest)
+				}
+			}))
+			body := "a=" + strings.Repeat("x", tc.size-2)
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+			if gotOK := rec.Code == http.StatusOK; gotOK != tc.wantOK {
+				t.Errorf("%s: a %d-byte form = %d, want ok %v", tc.name, tc.size, rec.Code, tc.wantOK)
+			}
+		}
+	})
+}
+
+// TestResponseHeaders: no page may be framed or content-sniffed, and a page
+// that shows an account, a secret or a form for one, its errors included, must
+// not be kept by a browser or proxy cache.
+func TestResponseHeaders(t *testing.T) {
+	u, err := user.New(user.Config{UserAdminGroup: "admin", SelfRegistration: true})
+	if err != nil {
+		t.Fatalf("user.New: %v", err)
+	}
+	if err := u.Register("alice", "alicepass1", []string{"admin"}, ""); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	mux := newTestMuxWithUsers(t, "https://host/idp", u)
+
+	form := url.Values{"username": {"alice"}, "password": {"alicepass1"}}
+	login := httptest.NewRequest(http.MethodPost, "/idp/login", strings.NewReader(form.Encode()))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, login)
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			session = c
+		}
+	}
+	if session == nil {
+		t.Fatalf("login = %d, no session cookie", rec.Code)
+	}
+
+	code := url.Values{"scope": {"openid"}, "response_type": {"code"}, "client_id": {"c"}, "redirect_uri": {"https://rp/cb"}}
+	implicit := url.Values{"scope": {"openid"}, "response_type": {"id_token"}, "client_id": {"c"}, "redirect_uri": {"https://rp/cb"}, "nonce": {"n"}}
+	registration := func(confirm string) url.Values {
+		return url.Values{"username": {"carol"}, "email": {"carol@example.com"}, "password": {"carolpass1"}, "password_confirm": {confirm}}
+	}
+	tests := []struct {
+		method, path string
+		authed       bool
+		form         url.Values
+		wantStatus   int // checked when set
+		wantNoStore  bool
+	}{
+		{method: "GET", path: "/idp/", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/", wantNoStore: true},
+		{method: "GET", path: "/idp/admin", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/admin", wantNoStore: true},
+		{method: "GET", path: "/idp/admin/users/api", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/admin/users/api", wantNoStore: true},
+		{method: "GET", path: "/idp/admin/register", authed: true, wantNoStore: true},
+		{method: "POST", path: "/idp/admin/users/reset-link", authed: true, wantNoStore: true},
+		{method: "POST", path: "/idp/admin/users/reset-link", wantNoStore: true},
+		{method: "POST", path: "/idp/admin/users/delete", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/password", authed: true, wantNoStore: true},
+		{method: "GET", path: "/idp/password", wantNoStore: true},
+		{method: "GET", path: "/idp/set-password?token=t", wantNoStore: true},
+		{method: "GET", path: "/idp/set-password", wantNoStore: true},
+		{method: "POST", path: "/idp/set-password", wantNoStore: true},
+		{method: "GET", path: "/idp/oidc/userinfo", wantNoStore: true},
+		{method: "GET", path: "/idp/oidc/auth?" + code.Encode(), authed: true, wantStatus: http.StatusFound, wantNoStore: true},
+		{method: "GET", path: "/idp/oidc/auth?" + implicit.Encode(), authed: true, wantStatus: http.StatusFound, wantNoStore: true},
+		{method: "GET", path: "/idp/oidc/auth?" + code.Encode(), wantStatus: http.StatusOK, wantNoStore: true},
+		{method: "GET", path: "/idp/login", wantNoStore: true},
+		{method: "POST", path: "/idp/login", form: form, wantStatus: http.StatusFound, wantNoStore: true},
+		{method: "POST", path: "/idp/login", form: url.Values{"username": {"alice"}, "password": {"wrong"}}, wantStatus: http.StatusUnauthorized, wantNoStore: true},
+		{method: "POST", path: "/idp/register", form: registration("carolpass1"), wantStatus: http.StatusCreated, wantNoStore: true},
+		{method: "POST", path: "/idp/register", form: registration("other"), wantStatus: http.StatusBadRequest, wantNoStore: true},
+		{method: "POST", path: "/idp/logout", authed: true, wantStatus: http.StatusFound, wantNoStore: true},
+		{method: "GET", path: "/idp/.well-known/openid-configuration"},
+		{method: "POST", path: "/idp/token", wantStatus: http.StatusBadRequest, wantNoStore: true},
+		{method: "GET", path: "/idp/nonexistent", wantNoStore: true},
+		{method: "GET", path: "/idp"},
+		{method: "GET", path: "/outside"},
+	}
+	for _, tc := range tests {
+		name := tc.method + " " + tc.path
+		if tc.authed {
+			name += " signed in"
+		}
+		if tc.wantStatus != 0 {
+			name += " " + strconv.Itoa(tc.wantStatus)
+		}
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.form.Encode()))
+			if tc.form != nil {
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
+			if tc.authed {
+				req.AddCookie(session)
+			}
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if tc.wantStatus != 0 && rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			// the headers sent with the status, not the map a handler could
+			// still change after it
+			h := rec.Result().Header
+			for name, want := range map[string]string{
+				"Content-Security-Policy": "frame-ancestors 'none'",
+				"X-Frame-Options":         "DENY",
+				"X-Content-Type-Options":  "nosniff",
+			} {
+				if got := h.Get(name); got != want {
+					t.Errorf("%s = %q (status %d), want %q", name, got, rec.Code, want)
+				}
+			}
+			if gotNoStore := h.Get("Cache-Control") == "no-store"; gotNoStore != tc.wantNoStore {
+				t.Errorf("Cache-Control = %q (status %d), want no-store %v", h.Get("Cache-Control"), rec.Code, tc.wantNoStore)
+			}
+		})
 	}
 }

@@ -15,7 +15,10 @@
 package oidc
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +58,13 @@ func (c Client) registeredRedirectUris() []string {
 	return append(uris, c.RedirectUris...)
 }
 
+// authenticates reports whether secret is the client's secret. A client
+// configured without one authenticates nobody: an empty secret would
+// otherwise match an empty client_secret.
+func (c Client) authenticates(secret string) bool {
+	return c.ClientSecret != "" && subtle.ConstantTimeCompare([]byte(c.ClientSecret), []byte(secret)) == 1
+}
+
 // allowsRedirect reports whether uri exactly matches one of the client's
 // registered redirect URIs. Matching is an exact string comparison per
 // RFC 6749 §3.1.2.3 / RFC 9700 §4.1.1 — no prefix or pattern matching.
@@ -68,6 +78,8 @@ type Oidc struct {
 	keychain   *keychain.Keychain
 	signer     jose.Signer
 	idTokenTTL time.Duration
+	// keySecret is the SHA-256 of the signing key, the root of DeriveKey.
+	keySecret [sha256.Size]byte
 }
 
 type Config struct {
@@ -121,6 +133,11 @@ func New(cfg Config) (*Oidc, error) {
 
 	cfg.Keychain.Add(*signingKey)
 
+	der, err := x509.MarshalPKCS8PrivateKey(signingKey.Key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode signing key: %w", err)
+	}
+
 	signer, err := jose.NewSigner(jose.SigningKey{
 		Algorithm: jose.RS256,
 		Key:       signingKey,
@@ -135,7 +152,16 @@ func New(cfg Config) (*Oidc, error) {
 		keychain:   cfg.Keychain,
 		signer:     signer,
 		idTokenTTL: defaultIDTokenTTL,
+		keySecret:  sha256.Sum256(der),
 	}, nil
+}
+
+// DeriveKey returns a secret for label that stays the same across restarts
+// for as long as the signing key does.
+func (o *Oidc) DeriveKey(label string) []byte {
+	mac := hmac.New(sha256.New, o.keySecret[:])
+	mac.Write([]byte(label))
+	return mac.Sum(nil)
 }
 
 func (o *Oidc) IDTokenTTL() time.Duration {
@@ -371,7 +397,7 @@ func (o *Oidc) ValidateTokenRequest(req TokenRequest) error {
 		return ErrInvalidClient
 	}
 
-	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
+	if !client.authenticates(req.ClientSecret) {
 		return ErrInvalidClient
 	}
 
@@ -391,7 +417,7 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 		return ErrInvalidClient
 	}
 
-	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(req.ClientSecret)) != 1 {
+	if !client.authenticates(req.ClientSecret) {
 		return ErrInvalidClient
 	}
 
@@ -402,20 +428,39 @@ func (o *Oidc) ValidateRevocationRequest(req RevocationRequest) error {
 	return nil
 }
 
-func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
+// verifiedClaims returns the claims of a token this provider signed.
+func (o *Oidc) verifiedClaims(tokenString string) (IDTokenPayload, error) {
+	var claims IDTokenPayload
 	token, err := jose.ParseSignedCompact(tokenString, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse token: %w", err)
+		return claims, fmt.Errorf("failed to parse token: %w", err)
 	}
 
 	payload, err := token.Verify(o.keychain.GetAll()[0].Public().Key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify token: %w", err)
+		return claims, fmt.Errorf("failed to verify token: %w", err)
 	}
 
-	var claims IDTokenPayload
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal claims: %w", err)
+		return claims, fmt.Errorf("failed to unmarshal claims: %w", err)
+	}
+	return claims, nil
+}
+
+// TokenAudience returns the client a token this provider signed was issued
+// to.
+func (o *Oidc) TokenAudience(tokenString string) (string, error) {
+	claims, err := o.verifiedClaims(tokenString)
+	if err != nil {
+		return "", err
+	}
+	return claims.Audience, nil
+}
+
+func (o *Oidc) GetUserinfoFromToken(tokenString string) (*UserinfoResponse, error) {
+	claims, err := o.verifiedClaims(tokenString)
+	if err != nil {
+		return nil, err
 	}
 
 	if time.Now().Unix() > claims.Expiration {

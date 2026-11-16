@@ -24,6 +24,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -73,6 +74,20 @@ var ErrRegistrationClosed = errors.New("registration is closed")
 // the minimum policy. Routes match it with errors.Is to show a friendly,
 // retryable message instead of treating it as an opaque failure.
 var ErrWeakPassword = errors.New("password does not meet the minimum requirements")
+
+// errInvalidUTF8 refuses a value that encoding/json would rewrite: it replaces
+// each invalid UTF-8 byte with U+FFFD when users.json is written, so two names
+// that differ only there become one on disk and the next start fails.
+var errInvalidUTF8 = errors.New("username, email and groups must be valid UTF-8 text")
+
+func validUTF8(groups []string, values ...string) bool {
+	for _, v := range append(values, groups...) {
+		if !utf8.ValidString(v) {
+			return false
+		}
+	}
+	return true
+}
 
 // dummyPasswordHash is a valid argon2id hash verified on the username-not-found
 // path of Authenticate so that path spends the same ~100ms as a real password
@@ -235,7 +250,11 @@ func (u *User) registerWithPassword(username, password string, groups []string, 
 
 	// Hash before acquiring the lock: argon2id takes ~100ms and must not block other requests.
 	id := ulid.Make().String()
-	return u.register(id, username, hash([]byte(id), password), groups, email, selfService)
+	passwordHash, err := gatedHash([]byte(id), password)
+	if err != nil {
+		return "", err
+	}
+	return u.register(id, username, passwordHash, groups, email, selfService)
 }
 
 // RegisterLocked creates a user whose password cannot be matched (see
@@ -252,6 +271,9 @@ func (u *User) RegisterLocked(username string, groups []string, email string) (s
 func (u *User) register(id, username, hashedPassword string, groups []string, email string, selfService bool) (string, error) {
 	if u.Static {
 		return "", ErrReadOnly
+	}
+	if !validUTF8(groups, username, email) {
+		return "", errInvalidUTF8
 	}
 
 	u.mu.Lock()
@@ -344,10 +366,15 @@ func (u *User) ChangePassword(userID string, oldPassword, newPassword string) er
 	}
 
 	// verifyPassword and hash run argon2id (~100ms each); keep them out of the lock.
-	if !verifyPassword(user, oldPassword) {
-		return errors.New("invalid old password")
+	if ok, err := verifyPassword(user, oldPassword); err != nil {
+		return err
+	} else if !ok {
+		return ErrInvalidOldPassword
 	}
-	newHash := hash([]byte(user.ID), newPassword)
+	newHash, err := gatedHash([]byte(user.ID), newPassword)
+	if err != nil {
+		return err
+	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -376,7 +403,10 @@ func (u *User) SetPassword(userID, newPassword string) error {
 	}
 
 	// hash runs argon2id (~100ms); keep it out of the lock.
-	newHash := hash([]byte(user.ID), newPassword)
+	newHash, err := gatedHash([]byte(user.ID), newPassword)
+	if err != nil {
+		return err
+	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -388,7 +418,23 @@ func (u *User) SetPassword(userID, newPassword string) error {
 	return nil
 }
 
+// ErrInvalidOldPassword is returned by ChangePassword for a wrong current
+// password.
+var ErrInvalidOldPassword = errors.New("invalid old password")
+
+// ErrInvalidCredentials is returned by Verify for an unknown username or a
+// wrong password.
+var ErrInvalidCredentials = errors.New("invalid username or password")
+
+// Authenticate reports whether password is the password of username.
 func (u *User) Authenticate(username, password string) (UserInfo, bool) {
+	user, err := u.Verify(username, password)
+	return user, err == nil
+}
+
+// Verify returns the user whose password is password, ErrInvalidCredentials,
+// or ErrBusy when the derivation gate refused and nothing was checked.
+func (u *User) Verify(username, password string) (UserInfo, error) {
 	u.mu.RLock()
 	i := slices.IndexFunc(u.users, func(u UserInfo) bool {
 		return u.Username == username
@@ -397,14 +443,23 @@ func (u *User) Authenticate(username, password string) (UserInfo, bool) {
 		u.mu.RUnlock()
 		// Run a verify against a dummy hash so the not-found path takes the same
 		// ~100ms as a real check, closing the username-enumeration timing oracle.
-		_ = verifyPassword(UserInfo{Password: dummyPasswordHash}, password)
-		return UserInfo{}, false
+		if _, err := verifyPassword(UserInfo{Password: dummyPasswordHash}, password); err != nil {
+			return UserInfo{}, err
+		}
+		return UserInfo{}, ErrInvalidCredentials
 	}
 	user := u.users[i]
 	u.mu.RUnlock()
 
 	// verifyPassword runs argon2id/bcrypt (~100ms); keep it out of the lock.
-	return user, verifyPassword(user, password)
+	ok, err := verifyPassword(user, password)
+	if err != nil {
+		return UserInfo{}, err
+	}
+	if !ok {
+		return UserInfo{}, ErrInvalidCredentials
+	}
+	return user, nil
 }
 
 func (u *User) SaveUsers() error {

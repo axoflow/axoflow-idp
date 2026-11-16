@@ -16,6 +16,7 @@ Axoflow-IdP is a simple yet feature-rich OIDC provider that enables authenticati
     "clients": [
     {
         "id": "your-client-id",
+        "clientSecret": "change-me",
         "redirectUri": "http://localhost:3000/callback"
     }
     ],
@@ -48,6 +49,32 @@ go run main.go
 > callbacks with a `redirectUris` array alongside (or instead of) the singular
 > `redirectUri`; any request whose `redirect_uri` is not an exact match is
 > rejected.
+
+Every client needs a `clientSecret`; the IdP refuses to start with a client
+that has none. An authorization code is redeemed only by the client it was
+issued to, with the `redirect_uri` it was issued for, and `/revoke` records a
+token only for the client it was issued to.
+
+## Request handling
+
+- Requests above 64 KiB (headers or body) are refused. The server times out a
+  request header after 5s, a request after 30s, a response after 30s and an
+  idle connection after 120s.
+- Password hashing runs at most 4 at a time. A request that cannot get a slot
+  within 2s is answered `503 Service Unavailable` with `Retry-After: 2`.
+- Each username has 5 sign-in attempts that never wait, refilled one every
+  30s. Beyond that, a sign-in is answered like a wrong password, with
+  `Retry-After`. A successful sign-in sets a `device` cookie: sign-ins of that
+  username from that browser skip the limit, so nobody else can lock the
+  owner out by using up the attempts. The cookie is derived from the signing
+  key and stays valid until that key changes. The current-password check of
+  `/password` uses the same attempts and answers `429` when none are left.
+- Pages cannot be framed (`X-Frame-Options: DENY`,
+  `Content-Security-Policy: frame-ancestors 'none'`), and the pages that sign
+  in, show an account or carry a token are sent with `Cache-Control: no-store`.
+- A browser form posted to `/login`, `/register` or the login form of
+  `/oidc/auth` from another origin is refused with `403`. Clients that send
+  neither `Origin` nor `Sec-Fetch-Site` are not affected.
 
 ## Seeding the user database
 

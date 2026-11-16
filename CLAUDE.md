@@ -28,10 +28,10 @@ CONFIG=config.json go run .   # serves on :8080
 ```
 
 Templates load from `./templates` (override with `TEMPLATES_DIR`). A minimal
-`config.json` needs `baseUrl`, at least one `client` (`id` + `redirectUri`),
-and a `signingKey` (`generateIfMissing: true` for local dev). `config.json`,
-`users.json`, and `signing-key.json` are gitignored local/dev artifacts — never
-commit real secrets or users.
+`config.json` needs `baseUrl`, at least one `client` (`id`, `redirectUri` and
+`clientSecret`), and a `signingKey` (`generateIfMissing: true` for local
+dev). `config.json`, `users.json`, and `signing-key.json` are gitignored
+local/dev artifacts — never commit real secrets or users.
 
 ### Local Kubernetes (Axoflow devs)
 

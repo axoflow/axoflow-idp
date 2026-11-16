@@ -48,12 +48,14 @@ func newBootstrapRoutes(t *testing.T, users string, cfg user.Config) *Routes {
 	}
 
 	return &Routes{
-		session:  session.New(),
-		user:     u,
-		oidc:     &oidc.Oidc{},
-		template: tpl,
-		baseURL:  "https://idp.example.com",
-		csrfKey:  generateCSRFKey(),
+		session:      session.New(),
+		user:         u,
+		oidc:         &oidc.Oidc{},
+		template:     tpl,
+		baseURL:      "https://idp.example.com",
+		csrfKey:      generateCSRFKey(),
+		logins:       newLimiter(),
+		signInOrigin: mustSignInOrigin(t, "https://idp.example.com"),
 	}
 }
 
